@@ -9,10 +9,16 @@
     "clean:appledouble": "find . -depth -name '._*' -exec rm -rf {} +",
     "dev:local": "tsx apps/gateway/api/src/bot.ts",
     "dev": "op run --env-file=.env.op -- yarn dev:local",
+    "dev:api:local": "tsx apps/gateway/api/src/server.ts",
+    "dev:api": "op run --env-file=.env.op -- yarn dev:api:local",
     "start:local": "node dist/apps/gateway/api/bot.js",
     "start": "op run --env-file=.env.op -- yarn start:local",
+    "start:api:local": "node dist/apps/gateway/api/server.js",
+    "start:api": "op run --env-file=.env.op -- yarn start:api:local",
     "register:commands:local": "tsx apps/gateway/api/src/registerCommands.ts",
     "register:commands": "op run --env-file=.env.op -- yarn register:commands:local",
+    "api:smoke:local": "tsx apps/gateway/api/src/smoke.ts",
+    "api:smoke": "op run --env-file=.env.op -- yarn api:smoke:local",
     "db:migrate:local": "tsx apps/gateway/state/src/migrate.ts",
     "db:migrate": "op run --env-file=.env.op -- yarn db:migrate:local",
     "db:cleanup:local": "tsx apps/gateway/state/src/cleanup.ts",
@@ -31,7 +37,9 @@
   "dependencies": {
     "discord.js": "^14.18.0",
     "dotenv": "^16.4.7",
-    "pg": "^8.20.0"
+    "fastify": "^5.8.2",
+    "pg": "^8.20.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

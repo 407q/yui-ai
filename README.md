@@ -68,3 +68,10 @@ yarn db:cleanup
 ```
 
 ローカル環境変数（`op run` なし）で実行する場合は `:local` サフィックスを利用します。
+
+## P3 Gateway API コマンド
+
+```bash
+yarn dev:api
+yarn api:smoke
+```

@@ -79,3 +79,38 @@ Compose（`agent` / `postgres`）を併用する場合:
 yarn compose:up
 yarn dev
 ```
+
+## Gateway API（P3）
+
+P3 では、Discord Bot モックとは別に Fastify ベースの Gateway API を追加しています。
+
+### 起動
+
+1Password 経由（標準）:
+
+```bash
+yarn dev:api
+```
+
+ローカル環境変数（`op run` なし）:
+
+```bash
+yarn dev:api:local
+```
+
+### エンドポイント
+
+- `POST /v1/discord/mentions/start`
+- `POST /v1/threads/:threadId/messages`
+- `GET /v1/threads/:threadId/status`
+- `POST /v1/threads/:threadId/cancel`
+- `POST /v1/threads/:threadId/close`
+- `GET /v1/sessions`
+- `GET /health`
+
+### スモークテスト
+
+```bash
+yarn db:migrate
+yarn api:smoke
+```
