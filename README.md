@@ -42,6 +42,7 @@ yarn register:commands
 yarn dev
 yarn build
 yarn start
+yarn orchestrator:smoke
 ```
 
 ## P1 実行基盤コマンド
@@ -95,10 +96,17 @@ yarn api:smoke
 - `POST /v1/agent/tasks/:taskId/cancel`
 - `yarn dev:agent`, `yarn agent:smoke`
 
+## P7 システム統合（Bot主導）
+
+- Discord Bot が `POST /v1/agent/tasks/run` / `GET /v1/agent/tasks/:taskId/status` / `POST /v1/agent/tasks/:taskId/cancel` を利用
+- `/cancel` `/close` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
+- `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
+- Copilot SDK provider は引き続き `mock`（実 SDK は P8）
+- Bot 起動時に Orchestrator が `compose:up` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
+- `yarn orchestrator:smoke` で Orchestrator の起動/復旧ロジックを検証可能
+
 ## 次フェーズ（実装計画）
 
-- P7: システム統合（Bot主導）
-  - Discord -> Gateway API -> Agent Runtime の実行導線を接続し、E2Eで挙動を確認
 - P8: Copilot SDK 実装
   - `AGENT_SDK_PROVIDER=copilot` を追加し、実 SDK 実行へ切り替え可能にする
 - P9: 運用品質

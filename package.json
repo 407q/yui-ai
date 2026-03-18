@@ -23,6 +23,8 @@
     "register:commands": "op run --env-file=.env.op -- yarn register:commands:local",
     "api:smoke:local": "tsx apps/gateway/api/src/smoke.ts",
     "api:smoke": "op run --env-file=.env.op -- yarn api:smoke:local",
+    "orchestrator:smoke:local": "tsx apps/gateway/api/src/orchestration/smoke.ts",
+    "orchestrator:smoke": "op run --env-file=.env.op -- yarn orchestrator:smoke:local",
     "agent:smoke:local": "tsx apps/agent/src/smoke.ts",
     "agent:smoke": "op run --env-file=.env.op -- yarn agent:smoke:local",
     "db:migrate:local": "tsx apps/gateway/state/src/migrate.ts",

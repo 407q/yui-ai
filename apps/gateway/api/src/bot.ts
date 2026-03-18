@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "node:path";
 import {
   ActionRowBuilder,
   AnyThreadChannel,
@@ -14,6 +15,7 @@ import {
   Message,
   type Snowflake,
 } from "discord.js";
+import { RuntimeSupervisor } from "./orchestration/supervisor.js";
 
 type SessionStatus =
   | "running"
@@ -26,6 +28,7 @@ type SessionStatus =
 
 type ApprovalDecision = "approved" | "rejected" | "timeout" | "canceled";
 type SystemControlMode = "exit" | "reboot";
+type RuntimeInfrastructureStatus = "booting" | "ready" | "failed";
 
 interface QueuedRun {
   prompt: string;
@@ -71,11 +74,39 @@ if (!DISCORD_BOT_TOKEN) {
 }
 const SYSTEM_ALERT_CHANNEL_ID = process.env.MOCK_SYSTEM_ALERT_CHANNEL_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
+const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
+const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
+const GATEWAY_API_PORT = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
+const ORCHESTRATOR_MONITOR_INTERVAL_SEC = parsePositiveInt(
+  process.env.MOCK_ORCHESTRATOR_MONITOR_INTERVAL_SEC,
+  15,
+);
+const ORCHESTRATOR_FAILURE_THRESHOLD = parsePositiveInt(
+  process.env.MOCK_ORCHESTRATOR_FAILURE_THRESHOLD,
+  3,
+);
+const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
+  process.env.MOCK_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
+  240,
+);
+const ORCHESTRATOR_ENABLED = process.env.MOCK_ORCHESTRATOR_ENABLED !== "false";
 
 const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.MOCK_IDLE_TIMEOUT_SEC, 600);
 const APPROVAL_TIMEOUT_SEC = parsePositiveInt(
   process.env.MOCK_APPROVAL_TIMEOUT_SEC,
   120,
+);
+const AGENT_STATUS_TIMEOUT_SEC = parsePositiveInt(
+  process.env.MOCK_AGENT_STATUS_TIMEOUT_SEC,
+  180,
+);
+const AGENT_POLL_INTERVAL_MS = parsePositiveInt(
+  process.env.MOCK_AGENT_POLL_INTERVAL_MS,
+  800,
+);
+const AGENT_APPROVAL_RETRY_MAX = parsePositiveInt(
+  process.env.MOCK_AGENT_APPROVAL_RETRY_MAX,
+  3,
 );
 const TYPING_PULSE_MS = 7000;
 const REBOOT_EXIT_CODE = 75;
@@ -96,6 +127,10 @@ const pendingApprovals = new Map<string, PendingApproval>();
 const idleTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const runningSessionIds = new Set<string>();
 let isSystemControlPending = false;
+let runtimeInfrastructureStatus: RuntimeInfrastructureStatus = ORCHESTRATOR_ENABLED
+  ? "booting"
+  : "ready";
+let runtimeSupervisor: RuntimeSupervisor | null = null;
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) {
@@ -154,6 +189,88 @@ interface GatewayApprovalRequestResponse {
   };
 }
 
+interface GatewayAgentToolCall {
+  toolName: string;
+  executionTarget?: string;
+  arguments: Record<string, unknown>;
+  reason: string;
+  delayMs?: number;
+}
+
+interface GatewayAgentTaskSnapshot {
+  task_id: string;
+  session_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "canceled";
+  bootstrap_mode: "create" | "resume";
+  send_and_wait_count: number;
+  started_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+  result?: {
+    final_answer: string;
+    tool_results: unknown[];
+  } | null;
+  error?: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  } | null;
+}
+
+interface GatewayAgentRunResponse {
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  task: {
+    taskId: string;
+    status: string;
+  };
+  agentTask: GatewayAgentTaskSnapshot;
+}
+
+interface GatewayAgentTaskStatusResponse {
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  task: {
+    taskId: string;
+    status: string;
+  };
+  agentTask: GatewayAgentTaskSnapshot;
+}
+
+interface GatewayThreadStatusResponse {
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  latestTask: {
+    taskId: string;
+    status: string;
+  } | null;
+  pendingApproval: {
+    approvalId: string;
+    status: string;
+  } | null;
+}
+
+class GatewayApiRequestError extends Error {
+  constructor(
+    readonly method: string,
+    readonly pathname: string,
+    readonly statusCode: number,
+    readonly statusText: string,
+    readonly responseText: string,
+  ) {
+    super(
+      `[gateway-api] ${method} ${pathname} failed: ${statusCode} ${statusText} ${responseText}`,
+    );
+    this.name = "GatewayApiRequestError";
+  }
+}
+
 async function gatewayApiRequest<T>(
   method: "GET" | "POST",
   pathname: string,
@@ -169,8 +286,12 @@ async function gatewayApiRequest<T>(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(
-      `[gateway-api] ${method} ${pathname} failed: ${response.status} ${response.statusText} ${text}`,
+    throw new GatewayApiRequestError(
+      method,
+      pathname,
+      response.status,
+      response.statusText,
+      text,
     );
   }
 
@@ -318,6 +439,35 @@ function summarizeError(error: unknown): string {
   }
 }
 
+class SessionRunCanceledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionRunCanceledError";
+  }
+}
+
+function mapGatewaySessionStatus(status: string): SessionStatus {
+  if (
+    status === "running" ||
+    status === "waiting_approval" ||
+    status === "idle_waiting" ||
+    status === "idle_paused" ||
+    status === "canceled" ||
+    status === "failed" ||
+    status === "closed_by_user"
+  ) {
+    return status;
+  }
+  return "running";
+}
+
+function isIgnorableTaskCancelError(error: unknown): boolean {
+  if (!(error instanceof GatewayApiRequestError)) {
+    return false;
+  }
+  return error.statusCode === 404 || error.statusCode === 409;
+}
+
 async function sendSystemAlert(content: string): Promise<void> {
   if (!SYSTEM_ALERT_CHANNEL_ID) {
     return;
@@ -333,6 +483,73 @@ async function sendSystemAlert(content: string): Promise<void> {
   } catch (error) {
     console.error("[mockup] system alert failed", error);
   }
+}
+
+function getInfrastructureStatusMessage(): string {
+  if (runtimeInfrastructureStatus === "ready") {
+    return "ready";
+  }
+  if (runtimeInfrastructureStatus === "booting") {
+    return "booting";
+  }
+  return "failed";
+}
+
+function buildInfrastructureNotReadyMessage(): string {
+  if (runtimeInfrastructureStatus === "booting") {
+    return "⚙️ システム起動中です。しばらく待ってから再試行してください。";
+  }
+  return "🚨 システムの起動に失敗しています。`/reboot` で再起動するか、管理者へ連絡してください。";
+}
+
+function isInfrastructureReady(): boolean {
+  return runtimeInfrastructureStatus === "ready";
+}
+
+async function bootInfrastructure(): Promise<void> {
+  if (!ORCHESTRATOR_ENABLED) {
+    runtimeInfrastructureStatus = "ready";
+    return;
+  }
+
+  runtimeInfrastructureStatus = "booting";
+  const supervisor = new RuntimeSupervisor({
+    projectRoot: process.cwd(),
+    gatewayApiBaseUrl: GATEWAY_API_BASE_URL,
+    gatewayApiHost: GATEWAY_API_HOST,
+    gatewayApiPort: GATEWAY_API_PORT,
+    agentRuntimeBaseUrl: AGENT_RUNTIME_BASE_URL,
+    monitorIntervalSec: ORCHESTRATOR_MONITOR_INTERVAL_SEC,
+    failureThreshold: ORCHESTRATOR_FAILURE_THRESHOLD,
+    commandTimeoutSec: ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
+    onLog: (message) => {
+      console.log(`[orchestrator] ${message}`);
+    },
+    onAlert: async (message) => {
+      await sendSystemAlert(message);
+    },
+  });
+  runtimeSupervisor = supervisor;
+
+  await sendSystemAlert("🟡 [orchestrator] 起動準備を開始します。");
+  try {
+    await supervisor.boot();
+    runtimeInfrastructureStatus = "ready";
+    await sendSystemAlert("🟢 [orchestrator] 起動準備が完了しました。");
+  } catch (error) {
+    runtimeInfrastructureStatus = "failed";
+    runtimeSupervisor = null;
+    throw error;
+  }
+}
+
+async function shutdownInfrastructure(): Promise<void> {
+  if (!runtimeSupervisor) {
+    return;
+  }
+
+  await runtimeSupervisor.shutdown();
+  runtimeSupervisor = null;
 }
 
 async function reportRuntimeError(context: string, error: unknown): Promise<void> {
@@ -402,6 +619,12 @@ async function handleIdleTimeout(sessionId: string): Promise<void> {
     session.pendingApprovalId = undefined;
   }
 
+  try {
+    await syncCancelWithGateway(session, session.ownerUserId);
+  } catch (error) {
+    console.error("[mockup] idle timeout cancel sync failed", error);
+  }
+
   setSessionStatus(
     session,
     "idle_paused",
@@ -429,6 +652,11 @@ function buildStatusEmbed(session: MockSession): EmbedBuilder {
     .setColor(0x5b8def)
     .addFields(
       { name: "status", value: `\`${session.status}\``, inline: true },
+      {
+        name: "infra",
+        value: `\`${getInfrastructureStatusMessage()}\``,
+        inline: true,
+      },
       { name: "last_event", value: session.lastEvent || "-" },
       { name: "idle_deadline", value: idleDeadline, inline: true },
       { name: "updated_at", value: updatedAt, inline: true },
@@ -555,7 +783,312 @@ async function requestApproval(
   });
 }
 
-async function runMockTask(
+function buildAgentToolCalls(prompt: string): GatewayAgentToolCall[] {
+  const toolCalls: GatewayAgentToolCall[] = [];
+  const hostReadPath = extractHostReadDirectivePath(prompt);
+  if (hostReadPath) {
+    toolCalls.push({
+      toolName: "host.file_read",
+      executionTarget: "gateway_adapter",
+      arguments: {
+        path: hostReadPath,
+      },
+      reason: "user requested host file read",
+    });
+  }
+  return toolCalls;
+}
+
+function extractHostReadDirectivePath(prompt: string): string | null {
+  const match = prompt.match(/#host-read:\s*(.+)$/m);
+  const rawPath = match?.[1]?.trim();
+  if (!rawPath) {
+    return null;
+  }
+  return path.resolve(rawPath);
+}
+
+function resolveApprovalRequestFromResults(
+  toolResults: unknown[],
+  toolCalls: GatewayAgentToolCall[],
+): ToolApprovalRequest | null {
+  for (let index = 0; index < toolResults.length; index += 1) {
+    const result = asRecord(toolResults[index]);
+    if (!result) {
+      continue;
+    }
+
+    if (result.status !== "error" || result.error_code !== "approval_required") {
+      continue;
+    }
+
+    const details = asRecord(result.details);
+    const toolCall = toolCalls[index];
+    const operation =
+      readString(details, "operation") ?? inferApprovalOperationFromToolCall(toolCall);
+    const target =
+      readString(details, "scope") ?? inferApprovalTargetFromToolCall(toolCall);
+    if (!operation || !target) {
+      continue;
+    }
+
+    return {
+      tool: toolCall?.toolName ?? `host.${operation}`,
+      operation: describeApprovalOperation(operation),
+      target,
+    };
+  }
+
+  return null;
+}
+
+function summarizeToolErrors(toolResults: unknown[]): string[] {
+  const summaries: string[] = [];
+  for (const result of toolResults) {
+    const record = asRecord(result);
+    if (!record || record.status !== "error") {
+      continue;
+    }
+    const errorCode =
+      readString(record, "error_code") ?? readString(record, "code") ?? "unknown_error";
+    const message =
+      readString(record, "message") ?? "ツール実行でエラーが発生しました。";
+    summaries.push(`${errorCode}: ${message}`);
+  }
+  return summaries;
+}
+
+function inferApprovalOperationFromToolCall(
+  toolCall: GatewayAgentToolCall | undefined,
+): string | null {
+  switch (toolCall?.toolName) {
+    case "host.file_read":
+      return "read";
+    case "host.file_write":
+      return "write";
+    case "host.file_delete":
+      return "delete";
+    case "host.file_list":
+      return "list";
+    case "host.cli_exec":
+      return "exec";
+    case "host.http_request":
+      return "http_request";
+    default:
+      return null;
+  }
+}
+
+function inferApprovalTargetFromToolCall(
+  toolCall: GatewayAgentToolCall | undefined,
+): string | null {
+  if (!toolCall) {
+    return null;
+  }
+
+  if (
+    toolCall.toolName === "host.file_read" ||
+    toolCall.toolName === "host.file_write" ||
+    toolCall.toolName === "host.file_delete" ||
+    toolCall.toolName === "host.file_list"
+  ) {
+    const filePath = readString(toolCall.arguments, "path");
+    return filePath ? path.resolve(filePath) : null;
+  }
+
+  if (toolCall.toolName === "host.cli_exec") {
+    return readString(toolCall.arguments, "command");
+  }
+
+  if (toolCall.toolName === "host.http_request") {
+    const rawUrl = readString(toolCall.arguments, "url");
+    if (!rawUrl) {
+      return null;
+    }
+    try {
+      return new URL(rawUrl).origin;
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  return null;
+}
+
+function describeApprovalOperation(operation: string): string {
+  switch (operation) {
+    case "read":
+      return "ファイル内容の読み取り";
+    case "write":
+      return "ファイル内容の書き込み";
+    case "delete":
+      return "ファイル削除";
+    case "list":
+      return "ディレクトリ一覧取得";
+    case "exec":
+      return "CLI コマンド実行";
+    case "http_request":
+      return "HTTP リクエスト送信";
+    default:
+      return operation;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = record?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+async function waitForAgentTaskTerminalStatus(
+  session: MockSession,
+  taskId: string,
+  runSequence: number,
+): Promise<GatewayAgentTaskStatusResponse> {
+  const deadline = Date.now() + AGENT_STATUS_TIMEOUT_SEC * 1000;
+  while (Date.now() <= deadline) {
+    if (isRunCanceled(session, runSequence)) {
+      throw new SessionRunCanceledError(
+        "run canceled while waiting for agent status",
+      );
+    }
+
+    const status = await gatewayApiRequest<GatewayAgentTaskStatusResponse>(
+      "GET",
+      `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+    );
+    session.gatewaySessionId = status.session.sessionId;
+    session.currentTaskId = status.task.taskId;
+    setSessionStatus(
+      session,
+      mapGatewaySessionStatus(status.session.status),
+      `agent task ${status.agentTask.status}`,
+    );
+
+    if (
+      status.agentTask.status === "completed" ||
+      status.agentTask.status === "failed" ||
+      status.agentTask.status === "canceled"
+    ) {
+      return status;
+    }
+
+    await wait(AGENT_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Agent task status polling timed out after ${AGENT_STATUS_TIMEOUT_SEC} seconds.`,
+  );
+}
+
+async function runAgentTaskAttempt(
+  session: MockSession,
+  prompt: string,
+  attachmentNames: string[],
+  toolCalls: GatewayAgentToolCall[],
+  runSequence: number,
+): Promise<GatewayAgentTaskStatusResponse> {
+  await ensureGatewayTaskForRun(session, prompt, attachmentNames);
+  if (!session.gatewaySessionId || !session.currentTaskId) {
+    throw new Error("Gateway task is not initialized.");
+  }
+
+  const runAccepted = await gatewayApiRequest<GatewayAgentRunResponse>(
+    "POST",
+    "/v1/agent/tasks/run",
+    {
+      taskId: session.currentTaskId,
+      sessionId: session.gatewaySessionId,
+      userId: session.ownerUserId,
+      prompt,
+      toolCalls,
+    },
+  );
+  session.currentTaskId = runAccepted.task.taskId;
+  session.gatewaySessionId = runAccepted.session.sessionId;
+  setSessionStatus(
+    session,
+    mapGatewaySessionStatus(runAccepted.session.status),
+    "agent run accepted",
+  );
+
+  return waitForAgentTaskTerminalStatus(session, runAccepted.task.taskId, runSequence);
+}
+
+async function syncCancelWithGateway(
+  session: MockSession,
+  userId: Snowflake,
+): Promise<void> {
+  if (session.currentTaskId) {
+    try {
+      await gatewayApiRequest(
+        "POST",
+        `/v1/agent/tasks/${encodeURIComponent(session.currentTaskId)}/cancel`,
+        { userId },
+      );
+    } catch (error) {
+      if (!isIgnorableTaskCancelError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  await gatewayApiRequest("POST", `/v1/threads/${session.threadId}/cancel`, {
+    userId,
+  });
+}
+
+async function syncCloseWithGateway(
+  session: MockSession,
+  userId: Snowflake,
+): Promise<void> {
+  if (session.currentTaskId) {
+    try {
+      await gatewayApiRequest(
+        "POST",
+        `/v1/agent/tasks/${encodeURIComponent(session.currentTaskId)}/cancel`,
+        { userId },
+      );
+    } catch (error) {
+      if (!isIgnorableTaskCancelError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  await gatewayApiRequest("POST", `/v1/threads/${session.threadId}/close`, {
+    userId,
+  });
+}
+
+async function refreshSessionFromGateway(session: MockSession): Promise<void> {
+  const status = await gatewayApiRequest<GatewayThreadStatusResponse>(
+    "GET",
+    `/v1/threads/${session.threadId}/status`,
+  );
+  session.gatewaySessionId = status.session.sessionId;
+  session.currentTaskId = status.latestTask?.taskId;
+  session.pendingApprovalId =
+    status.pendingApproval?.status === "requested"
+      ? status.pendingApproval.approvalId
+      : undefined;
+  setSessionStatus(
+    session,
+    mapGatewaySessionStatus(status.session.status),
+    `status synced: ${status.session.status}`,
+  );
+}
+
+async function runAgentTask(
   session: MockSession,
   prompt: string,
   attachmentNames: string[],
@@ -606,8 +1139,6 @@ async function runMockTask(
   };
 
   try {
-    await ensureGatewayTaskForRun(session, prompt, attachmentNames);
-
     if (attachmentNames.length > 0) {
       await sendToThread(
         session.threadId,
@@ -615,72 +1146,89 @@ async function runMockTask(
       );
     }
 
-    startTyping();
-    await wait(700);
-    clearTyping();
-    if (isRunCanceled(session, runSequence)) {
-      setSessionStatus(session, "idle_waiting", "run canceled before approval");
-      await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
-      return;
-    }
+    let attempt = 0;
+    let terminal: GatewayAgentTaskStatusResponse | null = null;
+    while (attempt <= AGENT_APPROVAL_RETRY_MAX) {
+      if (isRunCanceled(session, runSequence)) {
+        throw new SessionRunCanceledError("run canceled before agent execution");
+      }
 
-    const approvalDecision = await requestApproval(session, {
-      tool: "host.file_read",
-      operation: "ファイル内容の読み取り",
-      target:
-        attachmentNames.length > 0
-          ? `添付ファイル: ${attachmentNames[0]}`
-          : "/Users/example/Documents/report.md",
-    });
-    session.pendingApprovalId = undefined;
-    touchSession(session);
-
-    if (approvalDecision === "rejected") {
-      setSessionStatus(session, "failed", "approval rejected");
-      await sendToThread(
-        session.threadId,
-        "❌ 承認が拒否されたため、このモックタスクを停止しました。",
-      );
-      return;
-    }
-
-    if (approvalDecision === "timeout") {
-      setSessionStatus(session, "failed", "approval timeout");
-      await sendToThread(
-        session.threadId,
-        "⏰ 承認タイムアウトのため、このモックタスクを停止しました。",
-      );
-      return;
-    }
-
-    if (approvalDecision === "canceled" || isRunCanceled(session, runSequence)) {
-      setSessionStatus(
+      const toolCalls = buildAgentToolCalls(prompt);
+      startTyping();
+      terminal = await runAgentTaskAttempt(
         session,
-        "idle_waiting",
-        "run canceled while waiting approval",
+        prompt,
+        attachmentNames,
+        toolCalls,
+        runSequence,
       );
-      await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
-      return;
+      clearTyping();
+
+      if (terminal.agentTask.status === "canceled") {
+        throw new SessionRunCanceledError("agent runtime canceled the task");
+      }
+      if (terminal.agentTask.status === "failed") {
+        const runtimeError = terminal.agentTask.error?.message ?? "agent runtime failed";
+        throw new Error(runtimeError);
+      }
+
+      const approvalRequest = resolveApprovalRequestFromResults(
+        terminal.agentTask.result?.tool_results ?? [],
+        toolCalls,
+      );
+      if (!approvalRequest) {
+        break;
+      }
+
+      if (attempt >= AGENT_APPROVAL_RETRY_MAX) {
+        throw new Error(
+          `approval retry limit reached (${AGENT_APPROVAL_RETRY_MAX})`,
+        );
+      }
+
+      const approvalDecision = await requestApproval(session, approvalRequest);
+      session.pendingApprovalId = undefined;
+      touchSession(session);
+
+      if (approvalDecision === "approved") {
+        attempt += 1;
+        await sendToThread(
+          session.threadId,
+          "✅ 承認を確認しました。Agent 実行を再開します。",
+        );
+        continue;
+      }
+
+      if (approvalDecision === "rejected") {
+        throw new Error("approval rejected");
+      }
+      if (approvalDecision === "timeout") {
+        throw new Error("approval timeout");
+      }
+      throw new SessionRunCanceledError("run canceled while waiting approval");
     }
 
-    setSessionStatus(session, "running", "approval granted, generating response");
-    await sendToThread(session.threadId, "🔍 承認済み。モック解析を続行します...");
-
-    startTyping();
-    await wait(1000);
-    clearTyping();
-    if (isRunCanceled(session, runSequence)) {
-      setSessionStatus(session, "idle_waiting", "run canceled during generation");
-      await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
-      return;
+    const runtimeResult = terminal?.agentTask.result;
+    const toolErrors = summarizeToolErrors(runtimeResult?.tool_results ?? []);
+    if (toolErrors.length > 0) {
+      await sendToThread(
+        session.threadId,
+        `⚠️ ツール実行エラー: ${toolErrors.slice(0, 3).join(" | ")}`,
+      );
     }
 
-    const rawLmMessage = prompt || "(empty prompt)";
+    const rawLmMessage = runtimeResult?.final_answer ?? prompt ?? "(empty prompt)";
     await relayLmMessage(session.threadId, rawLmMessage);
-    setSessionStatus(session, "idle_waiting", "waiting for next thread message");
+    setSessionStatus(session, "idle_waiting", "agent run completed");
     touchSession(session);
   } catch (error) {
     clearTyping();
+    if (error instanceof SessionRunCanceledError || isRunCanceled(session, runSequence)) {
+      setSessionStatus(session, "idle_waiting", "run canceled");
+      touchSession(session);
+      await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
+      return;
+    }
     setSessionStatus(session, "failed", summarizeError(error));
     touchSession(session);
     await sendToThread(
@@ -699,7 +1247,7 @@ async function runMockTask(
       !runningSessionIds.has(session.id)
     ) {
       session.queuedRun = undefined;
-      void runMockTask(
+      void runAgentTask(
         session,
         queuedRun.prompt,
         queuedRun.attachmentNames,
@@ -804,13 +1352,18 @@ function closeSession(session: MockSession, by: Snowflake): void {
   clearIdleTimer(session.id);
 }
 
-function closeAllSessions(by: Snowflake): number {
+async function closeAllSessions(by: Snowflake): Promise<number> {
   let closedCount = 0;
   for (const session of sessionsById.values()) {
     if (session.status === "closed_by_user") {
       continue;
     }
 
+    try {
+      await syncCloseWithGateway(session, by);
+    } catch (error) {
+      console.error("[mockup] close sync failed during system control", error);
+    }
     closeSession(session, by);
     closedCount += 1;
   }
@@ -829,7 +1382,7 @@ async function executeSystemControl(
   }
 
   isSystemControlPending = true;
-  const closedCount = closeAllSessions(requestedBy);
+  const closedCount = await closeAllSessions(requestedBy);
 
   const actionLabel = mode === "reboot" ? "再起動" : "終了";
   const exitCode = mode === "reboot" ? REBOOT_EXIT_CODE : 0;
@@ -840,6 +1393,12 @@ async function executeSystemControl(
     `⚠️ [mockup-control] /${mode} requested by <@${requestedBy}> ` +
       `(closed_sessions: ${closedCount})`,
   );
+
+  try {
+    await shutdownInfrastructure();
+  } catch (error) {
+    console.error("[mockup] infrastructure shutdown failed", error);
+  }
 
   if (mode === "exit") {
     await setOfflineImmediately();
@@ -856,6 +1415,11 @@ async function executeSystemControl(
 
 async function startSessionFromMention(message: Message): Promise<void> {
   if (!message.inGuild() || !client.user) {
+    return;
+  }
+
+  if (!isInfrastructureReady()) {
+    await message.reply(buildInfrastructureNotReadyMessage());
     return;
   }
 
@@ -899,7 +1463,7 @@ async function startSessionFromMention(message: Message): Promise<void> {
   attachSessionToUser(session);
   touchSession(session);
   await addReviewedReaction(message);
-  await runMockTask(session, prompt, attachmentNames, message.author.id);
+  await runAgentTask(session, prompt, attachmentNames, message.author.id);
 }
 
 async function handleSlashCommand(
@@ -955,7 +1519,20 @@ async function handleSlashCommand(
 
   touchSession(session);
 
+  if (!isInfrastructureReady()) {
+    await interaction.reply({
+      content: buildInfrastructureNotReadyMessage(),
+      ephemeral: true,
+    });
+    return;
+  }
+
   if (commandName === "status") {
+    try {
+      await refreshSessionFromGateway(session);
+    } catch (error) {
+      console.error("[mockup] status sync failed", error);
+    }
     await interaction.reply({
       embeds: [buildStatusEmbed(session)],
       ephemeral: true,
@@ -965,13 +1542,7 @@ async function handleSlashCommand(
 
   if (commandName === "cancel") {
     try {
-      await gatewayApiRequest(
-        "POST",
-        `/v1/threads/${session.threadId}/cancel`,
-        {
-          userId: interaction.user.id,
-        },
-      );
+      await syncCancelWithGateway(session, interaction.user.id);
     } catch (error) {
       console.error("[mockup] cancel sync failed", error);
       await interaction.reply({
@@ -989,13 +1560,7 @@ async function handleSlashCommand(
 
   if (commandName === "close") {
     try {
-      await gatewayApiRequest(
-        "POST",
-        `/v1/threads/${session.threadId}/close`,
-        {
-          userId: interaction.user.id,
-        },
-      );
+      await syncCloseWithGateway(session, interaction.user.id);
     } catch (error) {
       console.error("[mockup] close sync failed", error);
       await interaction.reply({
@@ -1030,6 +1595,11 @@ async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
 
+  if (!isInfrastructureReady()) {
+    await message.reply(buildInfrastructureNotReadyMessage());
+    return;
+  }
+
   touchSession(session);
 
   if (session.status === "closed_by_user") {
@@ -1058,16 +1628,28 @@ async function handleThreadMessage(message: Message): Promise<void> {
     await message.reply("▶️ セッションを自動再開します。");
   }
 
-  await runMockTask(session, prompt, attachmentNames, message.author.id);
+  await runAgentTask(session, prompt, attachmentNames, message.author.id);
 }
 
 client.once(Events.ClientReady, (readyClient) => {
   void (async () => {
     const startupMessage =
       `[mockup] Logged in as ${readyClient.user.tag} | ` +
-      `idle=${IDLE_TIMEOUT_SEC}s | approval=${APPROVAL_TIMEOUT_SEC}s`;
+      `idle=${IDLE_TIMEOUT_SEC}s | approval=${APPROVAL_TIMEOUT_SEC}s | ` +
+      `agent_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
     console.log(startupMessage);
     await sendSystemAlert(`🟢 ${startupMessage}`);
+
+    if (ORCHESTRATOR_ENABLED) {
+      try {
+        await bootInfrastructure();
+      } catch (error) {
+        console.error("[mockup] orchestrator boot failed", error);
+        await sendSystemAlert(
+          `🚨 [orchestrator] boot failed: ${summarizeError(error)}`,
+        );
+      }
+    }
   })().catch((error: unknown) => {
     console.error("[mockup] ready handler failed", error);
   });
@@ -1115,6 +1697,26 @@ process.on("unhandledRejection", (reason: unknown) => {
 
 process.on("uncaughtException", (error: Error) => {
   void reportRuntimeError("uncaughtException", error).finally(() => {
+    process.exit(1);
+  });
+});
+
+process.once("SIGTERM", () => {
+  void (async () => {
+    await shutdownInfrastructure();
+    process.exit(0);
+  })().catch((error: unknown) => {
+    console.error("[mockup] SIGTERM shutdown failed", error);
+    process.exit(1);
+  });
+});
+
+process.once("SIGINT", () => {
+  void (async () => {
+    await shutdownInfrastructure();
+    process.exit(0);
+  })().catch((error: unknown) => {
+    console.error("[mockup] SIGINT shutdown failed", error);
     process.exit(1);
   });
 });

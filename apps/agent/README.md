@@ -5,7 +5,7 @@ P6 で Agent Runtime を実装し、`createSession/resumeSession + sendAndWait(1
 
 フェーズ位置づけ:
 
-- P7: Discord/Bot 経路との本統合（Gateway API 連携を E2E 接続）
+- P7: Discord/Bot 経路との統合を実施済み（Gateway API 連携を E2E 接続）
 - P8: `AGENT_SDK_PROVIDER=copilot` の実装（実 Copilot SDK provider 追加）
 
 ## 実装内容
