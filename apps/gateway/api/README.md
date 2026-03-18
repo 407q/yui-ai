@@ -37,6 +37,7 @@ cp .env.example .env
 - `MOCK_ORCHESTRATOR_MONITOR_INTERVAL_SEC`（任意。既定: `15`）
 - `MOCK_ORCHESTRATOR_FAILURE_THRESHOLD`（任意。既定: `3`）
 - `MOCK_ORCHESTRATOR_COMMAND_TIMEOUT_SEC`（任意。既定: `240`）
+- `MOCK_ORCHESTRATOR_COMPOSE_BUILD`（任意。既定: `true`）
 
 ## 実行
 
@@ -86,7 +87,7 @@ P7 の標準起動（推奨）:
 yarn dev
 ```
 
-`yarn dev` 起動時に Bot 内 Orchestrator が `compose:up` -> `db:migrate` -> `gateway-api` 起動を実行し、`agent/postgres/gateway-api` の監視と段階復旧を行います。
+`yarn dev` 起動時に Bot 内 Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を実行し、`agent/postgres/gateway-api` の監視と段階復旧を行います。
 
 Gateway API を別プロセスで手動起動したい場合は、以下で Orchestrator を無効化してください。
 

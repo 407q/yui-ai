@@ -38,6 +38,7 @@ export interface RuntimeSupervisorOptions {
   gatewayApiHost: string;
   gatewayApiPort: number;
   agentRuntimeBaseUrl: string;
+  composeBuild: boolean;
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
@@ -68,10 +69,17 @@ export class RuntimeSupervisor {
 
     try {
       this.log("boot: compose up");
-      await this.runCommand({
-        command: "yarn",
-        args: ["compose:up:local"],
-      });
+      await this.runCommand(
+        this.options.composeBuild
+          ? {
+              command: "docker",
+              args: ["compose", "up", "-d", "--build"],
+            }
+          : {
+              command: "yarn",
+              args: ["compose:up:local"],
+            },
+      );
       this.log("boot: db migrate");
       await this.runCommand({
         command: "yarn",

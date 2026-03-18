@@ -89,6 +89,8 @@ const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
   process.env.MOCK_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
   240,
 );
+const ORCHESTRATOR_COMPOSE_BUILD =
+  process.env.MOCK_ORCHESTRATOR_COMPOSE_BUILD !== "false";
 const ORCHESTRATOR_ENABLED = process.env.MOCK_ORCHESTRATOR_ENABLED !== "false";
 
 const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.MOCK_IDLE_TIMEOUT_SEC, 600);
@@ -519,6 +521,7 @@ async function bootInfrastructure(): Promise<void> {
     gatewayApiHost: GATEWAY_API_HOST,
     gatewayApiPort: GATEWAY_API_PORT,
     agentRuntimeBaseUrl: AGENT_RUNTIME_BASE_URL,
+    composeBuild: ORCHESTRATOR_COMPOSE_BUILD,
     monitorIntervalSec: ORCHESTRATOR_MONITOR_INTERVAL_SEC,
     failureThreshold: ORCHESTRATOR_FAILURE_THRESHOLD,
     commandTimeoutSec: ORCHESTRATOR_COMMAND_TIMEOUT_SEC,

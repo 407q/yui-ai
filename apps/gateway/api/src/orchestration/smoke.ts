@@ -27,7 +27,9 @@ async function runBootScenario(): Promise<void> {
   await supervisor.shutdown();
 
   assert(
-    harness.commands.some((command) => command === "yarn compose:up:local"),
+    harness.commands.some(
+      (command) => command === "docker compose up -d --build",
+    ),
     "boot should call compose up",
   );
   assert(
@@ -98,6 +100,7 @@ function createSupervisor(
     gatewayApiHost: "127.0.0.1",
     gatewayApiPort: 3800,
     agentRuntimeBaseUrl: "http://127.0.0.1:3801",
+    composeBuild: true,
     monitorIntervalSec: 1,
     failureThreshold,
     commandTimeoutSec: 30,

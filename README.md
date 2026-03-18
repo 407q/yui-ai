@@ -102,7 +102,7 @@ yarn api:smoke
 - `/cancel` `/close` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
 - `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
 - Copilot SDK provider は引き続き `mock`（実 SDK は P8）
-- Bot 起動時に Orchestrator が `compose:up` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
+- Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
 - `yarn orchestrator:smoke` で Orchestrator の起動/復旧ロジックを検証可能
 
 ## 次フェーズ（実装計画）
