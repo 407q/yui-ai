@@ -31,6 +31,8 @@ export class MemoryStore {
 
   async upsert(input: UpsertMemoryInput): Promise<MemoryEntry> {
     const tags = input.tagsJson ?? [];
+    const valueJson = JSON.stringify(input.valueJson);
+    const tagsJson = JSON.stringify(tags);
     const { rows } = await this.pool.query<MemoryRow>(
       `
       INSERT INTO memory_entries (
@@ -55,8 +57,8 @@ export class MemoryStore {
         input.userId,
         input.namespace,
         input.key,
-        input.valueJson,
-        tags,
+        valueJson,
+        tagsJson,
       ],
     );
 
