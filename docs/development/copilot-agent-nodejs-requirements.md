@@ -61,7 +61,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 
 ### 3.1 ランタイム
 
-- Node.js: **22 LTS 以上**
+- Node.js: **20 LTS 以上（推奨: 22 LTS 以上）**
 - TypeScript: **5.x**, `strict: true`
 - モジュール: ESM
 
