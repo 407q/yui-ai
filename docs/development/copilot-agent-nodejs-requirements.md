@@ -13,6 +13,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 - 外部 MCP サーバーは **使用しない**
 - Copilot SDK は **create/resume + sendAndWait(1回)** で実行する
 - 実行基盤は **Docker Compose** を用いる
+- Gateway 系（`apps/gateway/*`）は **ホストマシン上で実行**し、Compose には含めない
 - シークレット注入は **1Password CLI (`op run`)** 経由で行う
 - ホスト上のファイル/CLI操作は **read を含め全操作で承認必須**
 - 添付ファイルは Agent コンテナへ転送し、LM が自由に読み書き可能
@@ -83,10 +84,10 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 ### 3.4 コンテナ実行基盤（Docker Compose）
 
 - Docker Compose v2 で構成管理すること
-- 最低限のサービス: `gateway`, `agent`, `postgres`
-- `gateway` と `agent` は同一 Compose ネットワーク内で名前解決可能であること
-- 永続ボリューム例: `postgres_data`, `attachment_data`, `gateway_state`
-- `depends_on + healthcheck` で起動順序を制御すること
+- 最低限のサービス: `agent`, `postgres`（Gateway 類はホスト実行）
+- ホスト実行の Gateway から `agent` と `postgres` に疎通できること
+- 永続ボリューム例: `postgres_data`, `agent_workspace_data`
+- `depends_on + healthcheck` で Compose サービスの起動順序を制御すること
 
 ### 3.5 シークレット管理（1Password CLI）
 
@@ -184,7 +185,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 | FR-025 | アイドルタイマーは同一スレッドのユーザー発言（通常メッセージおよびスレッド内コマンド）で再計算される |
 | FR-026 | `container.file_*` は承認不要で実行できる（スコープはセッションのコンテナ領域に限定） |
 | FR-027 | `container.cli_exec` は承認不要で実行でき、Python を含む CLI でファイル解析を行える |
-| FR-028 | Docker Compose で `gateway` `agent` `postgres` を起動し、サービス間疎通できる |
+| FR-028 | Docker Compose で `agent` `postgres` を起動し、ホスト実行の Gateway から疎通できる |
 | FR-029 | 実行時シークレットは `op run` 経由でのみ注入する |
 | FR-030 | 永続層は PostgreSQL を主DBとして実装し、`sessions/tasks/approvals/events/memory/audit` を保持する |
 | FR-031 | Discord メッセージ/Interaction の重複配送を冪等に処理し、タスク二重起動を防止する |
@@ -347,7 +348,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 
 - 主DBは PostgreSQL（Compose 上の `postgres` サービス）を採用
 - `STATE_STORE_DSN` と `MEMORY_STORE_DSN` は同一 PostgreSQL を指してよい
-- 添付実体・生成物は `ATTACHMENT_ROOT`（Compose volume）に保存し、メタ情報は PostgreSQL 管理
+- 添付実体・生成物は `ATTACHMENT_ROOT`（ホスト上ディレクトリ）に保存し、必要に応じて Agent コンテナへマウント/転送する
 
 推奨インデックス:
 
@@ -386,7 +387,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 | NFR-007 | アイドルタイムアウト（10分）の `idle_paused` 遷移判定誤差は±10秒以内 |
 | NFR-008 | Discord イベント重複配送時でも副作用は1回に収まる（冪等） |
 | NFR-009 | `/cancel` 受信後、実行中ジョブは速やかに中断シグナルを受ける |
-| NFR-010 | Compose の各サービスは `healthcheck` を実装する |
+| NFR-010 | Compose 管理対象サービス（`agent`, `postgres`）は `healthcheck` を実装する |
 | NFR-011 | 平文シークレットをリポジトリに保存しない（`op run` 前提） |
 
 ---

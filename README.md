@@ -17,10 +17,16 @@ apps/
     container-tools/
 ```
 
+## Runtime Topology
+
+- Gateway 系（`apps/gateway/*`）: ホストマシン上で実行
+- コンテナ実行（Docker Compose）: `apps/agent` と `postgres`
+
 仕様ドキュメント:
 
-- `copilot-agent-system-design.md`
-- `copilot-agent-nodejs-requirements.md`
+- `docs/development/copilot-agent-system-design.md`
+- `docs/development/copilot-agent-nodejs-requirements.md`
+- `docs/development/implementation-flow.md`（実装手順ガイド）
 
 ## 実装済みモック（Discord Bot）
 
