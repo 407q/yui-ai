@@ -50,7 +50,7 @@ yarn start
 cp .env.op.example .env.op
 yarn compose:up
 yarn compose:ps
-yarn dev:gateway:op
+yarn dev
 ```
 
 停止:
@@ -62,7 +62,9 @@ yarn compose:down
 ## P2 永続層コマンド
 
 ```bash
-yarn db:migrate:op
-yarn db:smoke:op
-yarn db:cleanup:op
+yarn db:migrate
+yarn db:smoke
+yarn db:cleanup
 ```
+
+ローカル環境変数（`op run` なし）で実行する場合は `:local` サフィックスを利用します。

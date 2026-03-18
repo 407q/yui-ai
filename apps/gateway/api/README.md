@@ -33,9 +33,18 @@ cp .env.example .env
 
 ## 実行
 
+1Password 経由（標準）:
+
 ```bash
 yarn register:commands
 yarn dev
+```
+
+ローカル環境変数（`op run` なし）:
+
+```bash
+yarn register:commands:local
+yarn dev:local
 ```
 
 本番相当ビルド:
@@ -43,6 +52,12 @@ yarn dev
 ```bash
 yarn build
 yarn start
+```
+
+ローカル環境変数（`op run` なし）:
+
+```bash
+yarn start:local
 ```
 
 ## コマンドの意味
@@ -55,15 +70,12 @@ yarn start
 
 ## 1Password CLI 経由で実行する場合
 
-`.env.op` に `op://...` 参照を置き、`op run` で注入します。
-
-```bash
-op run --env-file=.env.op -- yarn dev
-```
+`.env.op` に `op://...` 参照を置きます。  
+`yarn dev` / `yarn register:commands` / `yarn start` は `op run` 経由で実行されます。
 
 Compose（`agent` / `postgres`）を併用する場合:
 
 ```bash
-op run --env-file=.env.op -- docker compose up -d
-op run --env-file=.env.op -- yarn dev
+yarn compose:up
+yarn dev
 ```

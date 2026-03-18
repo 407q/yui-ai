@@ -16,16 +16,20 @@
 
 ## 実行コマンド
 
+1Password 経由（標準）:
+
 ```bash
 yarn db:migrate
 yarn db:cleanup
 yarn db:smoke
 ```
 
-1Password 経由:
+ローカル環境変数（`op run` なし）:
 
 ```bash
-op run --env-file=.env.op -- yarn db:migrate
+yarn db:migrate:local
+yarn db:cleanup:local
+yarn db:smoke:local
 ```
 
 ホスト実行時に DSN のホスト名を補正したい場合は、`.env.op` に以下を設定します。
