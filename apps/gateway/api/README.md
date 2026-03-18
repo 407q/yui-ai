@@ -1,7 +1,7 @@
 # Discord Bot UX Mockup
 
 Discord 側 UX の確認用として、Bot 部分のみをモック実装したものです。  
-Gateway / Agent 実処理は呼び出しません。
+Copilot 実処理はモックのままですが、セッション状態・承認状態は Gateway API へ反映します。
 
 ## 実装している UX
 
@@ -30,6 +30,7 @@ cp .env.example .env
 - `DISCORD_CLIENT_ID`（Slash 登録時）
 - `DISCORD_GUILD_ID`（任意。指定時はギルドコマンドとして登録）
 - `MOCK_SYSTEM_ALERT_CHANNEL_ID`（任意。起動/エラー通知先）
+- `GATEWAY_API_BASE_URL`（任意。既定: `http://127.0.0.1:3800`）
 
 ## 実行
 
@@ -77,6 +78,8 @@ Compose（`agent` / `postgres`）を併用する場合:
 
 ```bash
 yarn compose:up
+yarn db:migrate
+yarn dev:api
 yarn dev
 ```
 
@@ -105,6 +108,8 @@ yarn dev:api:local
 - `GET /v1/threads/:threadId/status`
 - `POST /v1/threads/:threadId/cancel`
 - `POST /v1/threads/:threadId/close`
+- `POST /v1/threads/:threadId/approvals/request`
+- `POST /v1/approvals/:approvalId/respond`
 - `GET /v1/sessions`
 - `GET /health`
 

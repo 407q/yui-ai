@@ -25,6 +25,21 @@ const threadActionBodySchema = z.object({
   userId: z.string().min(1),
 });
 
+const approvalRequestBodySchema = z.object({
+  userId: z.string().min(1),
+  operation: z.string().min(1),
+  path: z.string().min(1),
+});
+
+const approvalParamsSchema = z.object({
+  approvalId: z.string().min(1),
+});
+
+const approvalRespondBodySchema = z.object({
+  userId: z.string().min(1).optional(),
+  decision: z.enum(["approved", "rejected", "timeout"]),
+});
+
 const listSessionsQuerySchema = z.object({
   userId: z.string().min(1),
   limit: z.coerce.number().int().min(1).max(100).optional().default(20),
@@ -123,6 +138,56 @@ export async function registerGatewayRoutes(
       userId: body.userId,
     });
     return result;
+  });
+
+  app.post("/v1/threads/:threadId/approvals/request", async (request) => {
+    const params = parseOrThrow(
+      threadParamsSchema,
+      request.params,
+      "invalid_thread_params",
+    );
+    const body = parseOrThrow(
+      approvalRequestBodySchema,
+      request.body,
+      "invalid_approval_request",
+    );
+
+    const result = await service.requestApproval({
+      threadId: params.threadId,
+      userId: body.userId,
+      operation: body.operation,
+      path: body.path,
+    });
+
+    return {
+      session: result.session,
+      task: result.task,
+      approval: result.approval,
+    };
+  });
+
+  app.post("/v1/approvals/:approvalId/respond", async (request) => {
+    const params = parseOrThrow(
+      approvalParamsSchema,
+      request.params,
+      "invalid_approval_params",
+    );
+    const body = parseOrThrow(
+      approvalRespondBodySchema,
+      request.body,
+      "invalid_approval_respond_request",
+    );
+
+    const result = await service.respondApproval({
+      approvalId: params.approvalId,
+      decision: body.decision,
+      responderId: body.userId ?? null,
+    });
+    return {
+      session: result.session,
+      task: result.task,
+      approval: result.approval,
+    };
   });
 
   app.get("/v1/sessions", async (request) => {

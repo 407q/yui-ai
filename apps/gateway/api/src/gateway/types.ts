@@ -17,6 +17,13 @@ export type TaskStatus =
   | "failed"
   | "canceled";
 
+export type ApprovalStatus =
+  | "requested"
+  | "approved"
+  | "rejected"
+  | "timeout"
+  | "canceled";
+
 export interface SessionRecord {
   sessionId: string;
   userId: string;
@@ -40,7 +47,20 @@ export interface TaskRecord {
   updatedAt: Date;
 }
 
+export interface ApprovalRecord {
+  approvalId: string;
+  taskId: string;
+  sessionId: string;
+  operation: string;
+  path: string;
+  status: ApprovalStatus;
+  requestedAt: Date;
+  respondedAt: Date | null;
+  responderId: string | null;
+}
+
 export interface ThreadStatusResponse {
   session: SessionRecord;
   latestTask: TaskRecord | null;
+  pendingApproval: ApprovalRecord | null;
 }

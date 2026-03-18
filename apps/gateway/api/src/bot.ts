@@ -44,6 +44,7 @@ interface MockSession {
   ownerUserId: Snowflake;
   channelId: Snowflake;
   threadId: Snowflake;
+  gatewaySessionId?: string;
   status: SessionStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -69,6 +70,7 @@ if (!DISCORD_BOT_TOKEN) {
   throw new Error("DISCORD_BOT_TOKEN is required.");
 }
 const SYSTEM_ALERT_CHANNEL_ID = process.env.MOCK_SYSTEM_ALERT_CHANNEL_ID;
+const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 
 const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.MOCK_IDLE_TIMEOUT_SEC, 600);
 const APPROVAL_TIMEOUT_SEC = parsePositiveInt(
@@ -118,6 +120,95 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+interface GatewayStartResponse {
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  taskId: string;
+}
+
+interface GatewayThreadMessageResponse {
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  taskId: string;
+  resumedFromIdle: boolean;
+}
+
+interface GatewayApprovalRequestResponse {
+  approval: {
+    approvalId: string;
+    status: string;
+  };
+  session: {
+    sessionId: string;
+    status: string;
+  };
+  task: {
+    taskId: string;
+    status: string;
+  };
+}
+
+async function gatewayApiRequest<T>(
+  method: "GET" | "POST",
+  pathname: string,
+  payload?: unknown,
+): Promise<T> {
+  const response = await fetch(`${GATEWAY_API_BASE_URL}${pathname}`, {
+    method,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+    },
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `[gateway-api] ${method} ${pathname} failed: ${response.status} ${response.statusText} ${text}`,
+    );
+  }
+
+  return (await response.json()) as T;
+}
+
+async function ensureGatewayTaskForRun(
+  session: MockSession,
+  prompt: string,
+  attachmentNames: string[],
+): Promise<void> {
+  if (!session.gatewaySessionId) {
+    const started = await gatewayApiRequest<GatewayStartResponse>(
+      "POST",
+      "/v1/discord/mentions/start",
+      {
+        userId: session.ownerUserId,
+        channelId: session.channelId,
+        threadId: session.threadId,
+        prompt,
+        attachmentNames,
+      },
+    );
+    session.gatewaySessionId = started.session.sessionId;
+    session.currentTaskId = started.taskId;
+    return;
+  }
+
+  const task = await gatewayApiRequest<GatewayThreadMessageResponse>(
+    "POST",
+    `/v1/threads/${session.threadId}/messages`,
+    {
+      userId: session.ownerUserId,
+      prompt,
+      attachmentNames,
+    },
+  );
+  session.currentTaskId = task.taskId;
 }
 
 async function addReviewedReaction(message: Message): Promise<void> {
@@ -388,8 +479,18 @@ async function requestApproval(
   session: MockSession,
   request: ToolApprovalRequest,
 ): Promise<ApprovalDecision> {
-  const approvalId = newId("apr");
+  const gatewayApproval = await gatewayApiRequest<GatewayApprovalRequestResponse>(
+    "POST",
+    `/v1/threads/${session.threadId}/approvals/request`,
+    {
+      userId: session.ownerUserId,
+      operation: request.operation,
+      path: request.target,
+    },
+  );
+  const approvalId = gatewayApproval.approval.approvalId;
   session.pendingApprovalId = approvalId;
+  session.currentTaskId = gatewayApproval.task.taskId;
   setSessionStatus(
     session,
     "waiting_approval",
@@ -433,6 +534,15 @@ async function requestApproval(
 
       pendingApprovals.delete(approvalId);
       session.pendingApprovalId = undefined;
+      void gatewayApiRequest(
+        "POST",
+        `/v1/approvals/${approvalId}/respond`,
+        {
+          decision: "timeout",
+        },
+      ).catch((error: unknown) => {
+        console.error("[mockup] approval timeout sync failed", error);
+      });
       resolve("timeout");
     }, APPROVAL_TIMEOUT_SEC * 1000);
 
@@ -473,7 +583,6 @@ async function runMockTask(
   const runSequence = session.runSequence;
   session.cancelRequested = false;
   session.queuedRun = undefined;
-  session.currentTaskId = newId("tsk");
   setSessionStatus(
     session,
     "running",
@@ -497,6 +606,8 @@ async function runMockTask(
   };
 
   try {
+    await ensureGatewayTaskForRun(session, prompt, attachmentNames);
+
     if (attachmentNames.length > 0) {
       await sendToThread(
         session.threadId,
@@ -508,7 +619,7 @@ async function runMockTask(
     await wait(700);
     clearTyping();
     if (isRunCanceled(session, runSequence)) {
-      setSessionStatus(session, "canceled", "run canceled before approval");
+      setSessionStatus(session, "idle_waiting", "run canceled before approval");
       await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
       return;
     }
@@ -543,7 +654,11 @@ async function runMockTask(
     }
 
     if (approvalDecision === "canceled" || isRunCanceled(session, runSequence)) {
-      setSessionStatus(session, "canceled", "run canceled while waiting approval");
+      setSessionStatus(
+        session,
+        "idle_waiting",
+        "run canceled while waiting approval",
+      );
       await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
       return;
     }
@@ -555,7 +670,7 @@ async function runMockTask(
     await wait(1000);
     clearTyping();
     if (isRunCanceled(session, runSequence)) {
-      setSessionStatus(session, "canceled", "run canceled during generation");
+      setSessionStatus(session, "idle_waiting", "run canceled during generation");
       await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
       return;
     }
@@ -564,6 +679,15 @@ async function runMockTask(
     await relayLmMessage(session.threadId, rawLmMessage);
     setSessionStatus(session, "idle_waiting", "waiting for next thread message");
     touchSession(session);
+  } catch (error) {
+    clearTyping();
+    setSessionStatus(session, "failed", summarizeError(error));
+    touchSession(session);
+    await sendToThread(
+      session.threadId,
+      "❌ 実行中にエラーが発生しました。少し待ってから再試行してください。",
+    );
+    console.error("[mockup] run failed", error);
   } finally {
     clearTyping();
     runningSessionIds.delete(session.id);
@@ -621,7 +745,32 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
   }
 
   const decision: ApprovalDecision = action === "approve" ? "approved" : "rejected";
-  settleApproval(approvalId, decision);
+  try {
+    await gatewayApiRequest(
+      "POST",
+      `/v1/approvals/${approvalId}/respond`,
+      {
+        userId: interaction.user.id,
+        decision,
+      },
+    );
+  } catch (error) {
+    console.error("[mockup] approval response sync failed", error);
+    await interaction.reply({
+      content:
+        "承認結果を Gateway API へ反映できませんでした。しばらく待ってから再試行してください。",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!settleApproval(approvalId, decision)) {
+    await interaction.reply({
+      content: "この承認は既に処理済みか期限切れです。",
+      ephemeral: true,
+    });
+    return;
+  }
 
   await interaction.update({ components: [] });
   await interaction.followUp({
@@ -633,7 +782,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
 
 function cancelSession(session: MockSession, by: Snowflake): void {
   session.cancelRequested = true;
-  setSessionStatus(session, "canceled", `canceled by <@${by}>`);
+  setSessionStatus(session, "idle_waiting", `task canceled by <@${by}>`);
 
   if (session.pendingApprovalId) {
     settleApproval(session.pendingApprovalId, "canceled");
@@ -815,12 +964,48 @@ async function handleSlashCommand(
   }
 
   if (commandName === "cancel") {
+    try {
+      await gatewayApiRequest(
+        "POST",
+        `/v1/threads/${session.threadId}/cancel`,
+        {
+          userId: interaction.user.id,
+        },
+      );
+    } catch (error) {
+      console.error("[mockup] cancel sync failed", error);
+      await interaction.reply({
+        content:
+          "Gateway API へのキャンセル反映に失敗しました。しばらく待ってから再試行してください。",
+        ephemeral: true,
+      });
+      return;
+    }
+
     cancelSession(session, interaction.user.id);
     await interaction.reply({ content: "🛑 タスクをキャンセルしました。" });
     return;
   }
 
   if (commandName === "close") {
+    try {
+      await gatewayApiRequest(
+        "POST",
+        `/v1/threads/${session.threadId}/close`,
+        {
+          userId: interaction.user.id,
+        },
+      );
+    } catch (error) {
+      console.error("[mockup] close sync failed", error);
+      await interaction.reply({
+        content:
+          "Gateway API へのクローズ反映に失敗しました。しばらく待ってから再試行してください。",
+        ephemeral: true,
+      });
+      return;
+    }
+
     closeSession(session, interaction.user.id);
     await interaction.reply({ content: "🔒 セッションを終了しました。" });
   } else {

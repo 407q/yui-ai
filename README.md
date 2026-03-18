@@ -75,3 +75,8 @@ yarn db:cleanup
 yarn dev:api
 yarn api:smoke
 ```
+
+## P4 Approval フロー（API 追加）
+
+- `POST /v1/threads/:threadId/approvals/request`
+- `POST /v1/approvals/:approvalId/respond`

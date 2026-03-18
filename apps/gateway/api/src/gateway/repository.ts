@@ -1,5 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import type {
+  ApprovalRecord,
+  ApprovalStatus,
   SessionRecord,
   SessionStatus,
   TaskRecord,
@@ -33,6 +35,14 @@ export interface AppendTaskEventInput {
   timestamp?: Date;
 }
 
+export interface CreateApprovalInput {
+  approvalId: string;
+  taskId: string;
+  sessionId: string;
+  operation: string;
+  path: string;
+}
+
 export interface GatewayRepository {
   ping(): Promise<void>;
   createSessionAndTask(
@@ -46,6 +56,7 @@ export interface GatewayRepository {
     lastThreadActivityAt: Date,
     idleDeadlineAt: Date | null,
   ): Promise<void>;
+  findSessionById(sessionId: string): Promise<SessionRecord | null>;
   updateSessionStatus(
     sessionId: string,
     status: SessionStatus,
@@ -56,7 +67,24 @@ export interface GatewayRepository {
   ): Promise<void>;
   findLatestTaskBySessionId(sessionId: string): Promise<TaskRecord | null>;
   findLatestActiveTaskBySessionId(sessionId: string): Promise<TaskRecord | null>;
+  findTaskById(taskId: string): Promise<TaskRecord | null>;
   updateTaskStatus(taskId: string, status: TaskStatus): Promise<void>;
+  createApproval(input: CreateApprovalInput): Promise<ApprovalRecord>;
+  findApprovalById(approvalId: string): Promise<ApprovalRecord | null>;
+  findLatestPendingApprovalBySessionId(
+    sessionId: string,
+  ): Promise<ApprovalRecord | null>;
+  resolveApproval(
+    approvalId: string,
+    status: ApprovalStatus,
+    responderId: string | null,
+  ): Promise<void>;
+  grantPathPermission(
+    sessionId: string,
+    operation: string,
+    path: string,
+    grantedBy: string,
+  ): Promise<void>;
   listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]>;
 }
 
@@ -130,6 +158,22 @@ export class PostgresGatewayRepository implements GatewayRepository {
     }
 
     return toSessionRecord(requireRow(rows[0], "session by thread_id"));
+  }
+
+  async findSessionById(sessionId: string): Promise<SessionRecord | null> {
+    const { rows } = await this.pool.query<SessionRow>(
+      `
+      SELECT *
+      FROM sessions
+      WHERE session_id = $1
+      `,
+      [sessionId],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return toSessionRecord(requireRow(rows[0], "session by session_id"));
   }
 
   async updateSessionActivity(
@@ -219,6 +263,22 @@ export class PostgresGatewayRepository implements GatewayRepository {
     );
   }
 
+  async findTaskById(taskId: string): Promise<TaskRecord | null> {
+    const { rows } = await this.pool.query<TaskRow>(
+      `
+      SELECT *
+      FROM tasks
+      WHERE task_id = $1
+      `,
+      [taskId],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return toTaskRecord(requireRow(rows[0], "task by task_id"));
+  }
+
   async updateTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
     await this.pool.query(
       `
@@ -229,6 +289,115 @@ export class PostgresGatewayRepository implements GatewayRepository {
       WHERE task_id = $1
       `,
       [taskId, status],
+    );
+  }
+
+  async createApproval(input: CreateApprovalInput): Promise<ApprovalRecord> {
+    const { rows } = await this.pool.query<ApprovalRow>(
+      `
+      INSERT INTO approvals (
+        approval_id,
+        task_id,
+        session_id,
+        operation,
+        path,
+        status,
+        requested_at
+      )
+      VALUES ($1, $2, $3, $4, $5, 'requested', NOW())
+      RETURNING *
+      `,
+      [
+        input.approvalId,
+        input.taskId,
+        input.sessionId,
+        input.operation,
+        input.path,
+      ],
+    );
+
+    return toApprovalRecord(requireRow(rows[0], "inserted approval"));
+  }
+
+  async findApprovalById(approvalId: string): Promise<ApprovalRecord | null> {
+    const { rows } = await this.pool.query<ApprovalRow>(
+      `
+      SELECT *
+      FROM approvals
+      WHERE approval_id = $1
+      `,
+      [approvalId],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return toApprovalRecord(requireRow(rows[0], "approval by approval_id"));
+  }
+
+  async findLatestPendingApprovalBySessionId(
+    sessionId: string,
+  ): Promise<ApprovalRecord | null> {
+    const { rows } = await this.pool.query<ApprovalRow>(
+      `
+      SELECT *
+      FROM approvals
+      WHERE session_id = $1
+        AND status = 'requested'
+      ORDER BY requested_at DESC
+      LIMIT 1
+      `,
+      [sessionId],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return toApprovalRecord(
+      requireRow(rows[0], "latest pending approval by session_id"),
+    );
+  }
+
+  async resolveApproval(
+    approvalId: string,
+    status: ApprovalStatus,
+    responderId: string | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `
+      UPDATE approvals
+      SET
+        status = $2,
+        responded_at = NOW(),
+        responder_id = $3
+      WHERE approval_id = $1
+      `,
+      [approvalId, status, responderId],
+    );
+  }
+
+  async grantPathPermission(
+    sessionId: string,
+    operation: string,
+    path: string,
+    grantedBy: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `
+      INSERT INTO session_path_permissions (
+        session_id,
+        operation,
+        path,
+        granted_by,
+        granted_at
+      )
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (session_id, operation, path)
+      DO UPDATE SET
+        granted_by = EXCLUDED.granted_by,
+        granted_at = EXCLUDED.granted_at
+      `,
+      [sessionId, operation, path, grantedBy],
     );
   }
 
@@ -324,6 +493,18 @@ interface TaskRow {
   updated_at: Date;
 }
 
+interface ApprovalRow {
+  approval_id: string;
+  task_id: string;
+  session_id: string;
+  operation: string;
+  path: string;
+  status: ApprovalStatus;
+  requested_at: Date;
+  responded_at: Date | null;
+  responder_id: string | null;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -348,6 +529,20 @@ function toTaskRecord(row: TaskRow): TaskRecord {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
+  return {
+    approvalId: row.approval_id,
+    taskId: row.task_id,
+    sessionId: row.session_id,
+    operation: row.operation,
+    path: row.path,
+    status: row.status,
+    requestedAt: row.requested_at,
+    respondedAt: row.responded_at,
+    responderId: row.responder_id,
   };
 }
 

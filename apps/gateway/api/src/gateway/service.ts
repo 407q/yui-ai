@@ -5,8 +5,12 @@ import type {
   CreateSessionAndTaskInput,
 } from "./repository.js";
 import type {
+  ApprovalRecord,
+  ApprovalStatus,
   SessionRecord,
   SessionStatus,
+  TaskRecord,
+  TaskStatus,
   ThreadStatusResponse,
 } from "./types.js";
 
@@ -37,6 +41,19 @@ export interface ThreadCancelInput {
 export interface ThreadCloseInput {
   threadId: string;
   userId: string;
+}
+
+export interface ApprovalRequestInput {
+  threadId: string;
+  userId: string;
+  operation: string;
+  path: string;
+}
+
+export interface ApprovalRespondInput {
+  approvalId: string;
+  decision: "approved" | "rejected" | "timeout";
+  responderId?: string | null;
 }
 
 export class GatewayApiService {
@@ -167,9 +184,208 @@ export class GatewayApiService {
     const latestTask = await this.repository.findLatestTaskBySessionId(
       session.sessionId,
     );
+    const pendingApproval = await this.repository.findLatestPendingApprovalBySessionId(
+      session.sessionId,
+    );
     return {
       session,
       latestTask,
+      pendingApproval,
+    };
+  }
+
+  async requestApproval(input: ApprovalRequestInput): Promise<{
+    session: SessionRecord;
+    task: TaskRecord;
+    approval: ApprovalRecord;
+  }> {
+    let session = await this.requireSessionByThreadId(input.threadId);
+    session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOpen(session);
+
+    const now = new Date();
+    const idleDeadlineAt = this.calculateIdleDeadline(now);
+    await this.repository.updateSessionActivity(
+      session.sessionId,
+      now,
+      idleDeadlineAt,
+    );
+
+    const pendingApproval = await this.repository.findLatestPendingApprovalBySessionId(
+      session.sessionId,
+    );
+    if (pendingApproval) {
+      throw new GatewayApiError(
+        409,
+        "approval_already_pending",
+        "A pending approval already exists for this session.",
+        {
+          sessionId: session.sessionId,
+          approvalId: pendingApproval.approvalId,
+        },
+      );
+    }
+
+    let task = await this.repository.findLatestActiveTaskBySessionId(
+      session.sessionId,
+    );
+    if (!task) {
+      task = await this.repository.createTask({
+        taskId: newId("task"),
+        sessionId: session.sessionId,
+        userId: input.userId,
+        status: "running",
+      });
+    }
+
+    const approval = await this.repository.createApproval({
+      approvalId: newId("apr"),
+      taskId: task.taskId,
+      sessionId: session.sessionId,
+      operation: input.operation,
+      path: input.path,
+    });
+
+    await this.repository.updateTaskStatus(task.taskId, "waiting_approval");
+    await this.repository.updateSessionStatus(session.sessionId, "waiting_approval");
+    await this.repository.appendTaskEvent({
+      eventId: newId("event"),
+      taskId: task.taskId,
+      eventType: "approval.requested",
+      payloadJson: {
+        approvalId: approval.approvalId,
+        operation: input.operation,
+        path: input.path,
+        requestedBy: input.userId,
+      },
+      timestamp: now,
+    });
+
+    return {
+      session: {
+        ...session,
+        status: "waiting_approval",
+        lastThreadActivityAt: now,
+        idleDeadlineAt,
+        updatedAt: now,
+      },
+      task: {
+        ...task,
+        status: "waiting_approval",
+        updatedAt: now,
+      },
+      approval,
+    };
+  }
+
+  async respondApproval(input: ApprovalRespondInput): Promise<{
+    session: SessionRecord;
+    task: TaskRecord;
+    approval: ApprovalRecord;
+  }> {
+    const approval = await this.repository.findApprovalById(input.approvalId);
+    if (!approval) {
+      throw new GatewayApiError(
+        404,
+        "approval_not_found",
+        "No approval request was found.",
+        { approvalId: input.approvalId },
+      );
+    }
+
+    if (approval.status !== "requested") {
+      throw new GatewayApiError(
+        409,
+        "approval_already_resolved",
+        "Approval request is already resolved.",
+        {
+          approvalId: approval.approvalId,
+          status: approval.status,
+        },
+      );
+    }
+
+    const session = await this.repository.findSessionById(approval.sessionId);
+    if (!session) {
+      throw new GatewayApiError(
+        404,
+        "session_not_found",
+        "Approval target session was not found.",
+        { approvalId: approval.approvalId, sessionId: approval.sessionId },
+      );
+    }
+
+    const task = await this.repository.findTaskById(approval.taskId);
+    if (!task) {
+      throw new GatewayApiError(
+        404,
+        "task_not_found",
+        "Approval target task was not found.",
+        { approvalId: approval.approvalId, taskId: approval.taskId },
+      );
+    }
+
+    const now = new Date();
+    const approvalStatus = mapDecisionToApprovalStatus(input.decision);
+    const taskStatus: TaskStatus =
+      input.decision === "approved" ? "running" : "failed";
+    const sessionStatus: SessionStatus =
+      input.decision === "approved" ? "running" : "idle_waiting";
+    const idleDeadlineAt =
+      sessionStatus === "idle_waiting" ? this.calculateIdleDeadline(now) : null;
+
+    await this.repository.resolveApproval(
+      approval.approvalId,
+      approvalStatus,
+      input.responderId ?? null,
+    );
+    await this.repository.updateTaskStatus(task.taskId, taskStatus);
+    await this.repository.updateSessionStatus(session.sessionId, sessionStatus);
+    await this.repository.updateSessionActivity(
+      session.sessionId,
+      now,
+      idleDeadlineAt,
+    );
+    await this.repository.appendTaskEvent({
+      eventId: newId("event"),
+      taskId: task.taskId,
+      eventType: `approval.${approvalStatus}`,
+      payloadJson: {
+        approvalId: approval.approvalId,
+        decision: input.decision,
+        responderId: input.responderId ?? null,
+      },
+      timestamp: now,
+    });
+
+    if (input.decision === "approved") {
+      await this.repository.grantPathPermission(
+        approval.sessionId,
+        approval.operation,
+        approval.path,
+        input.responderId ?? "system",
+      );
+    }
+
+    return {
+      session: {
+        ...session,
+        status: sessionStatus,
+        lastThreadActivityAt: now,
+        idleDeadlineAt,
+        updatedAt: now,
+      },
+      task: {
+        ...task,
+        status: taskStatus,
+        updatedAt: now,
+      },
+      approval: {
+        ...approval,
+        status: approvalStatus,
+        respondedAt: now,
+        responderId: input.responderId ?? null,
+      },
     };
   }
 
@@ -192,6 +408,9 @@ export class GatewayApiService {
     const activeTask = await this.repository.findLatestActiveTaskBySessionId(
       session.sessionId,
     );
+    const pendingApproval = await this.repository.findLatestPendingApprovalBySessionId(
+      session.sessionId,
+    );
     const now = new Date();
     const idleDeadlineAt = this.calculateIdleDeadline(now);
 
@@ -202,6 +421,24 @@ export class GatewayApiService {
         taskId: activeTask.taskId,
         eventType: "thread.task.canceled",
         payloadJson: {
+          requestedBy: input.userId,
+        },
+        timestamp: now,
+      });
+    }
+
+    if (pendingApproval) {
+      await this.repository.resolveApproval(
+        pendingApproval.approvalId,
+        "canceled",
+        input.userId,
+      );
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: pendingApproval.taskId,
+        eventType: "approval.canceled",
+        payloadJson: {
+          approvalId: pendingApproval.approvalId,
           requestedBy: input.userId,
         },
         timestamp: now,
@@ -241,6 +478,9 @@ export class GatewayApiService {
     const activeTask = await this.repository.findLatestActiveTaskBySessionId(
       session.sessionId,
     );
+    const pendingApproval = await this.repository.findLatestPendingApprovalBySessionId(
+      session.sessionId,
+    );
     if (activeTask) {
       await this.repository.updateTaskStatus(activeTask.taskId, "canceled");
       await this.repository.appendTaskEvent({
@@ -248,6 +488,24 @@ export class GatewayApiService {
         taskId: activeTask.taskId,
         eventType: "thread.session.closed",
         payloadJson: {
+          requestedBy: input.userId,
+        },
+        timestamp: now,
+      });
+    }
+
+    if (pendingApproval) {
+      await this.repository.resolveApproval(
+        pendingApproval.approvalId,
+        "canceled",
+        input.userId,
+      );
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: pendingApproval.taskId,
+        eventType: "approval.canceled",
+        payloadJson: {
+          approvalId: pendingApproval.approvalId,
           requestedBy: input.userId,
         },
         timestamp: now,
@@ -272,6 +530,20 @@ export class GatewayApiService {
 
   async listUserSessions(userId: string, limit = 20): Promise<SessionRecord[]> {
     return this.repository.listSessionsByUser(userId, limit);
+  }
+
+  private assertSessionOpen(session: SessionRecord): void {
+    if (session.status === "closed_by_user") {
+      throw new GatewayApiError(
+        409,
+        "session_closed",
+        "The session is already closed.",
+        {
+          sessionId: session.sessionId,
+          threadId: session.threadId,
+        },
+      );
+    }
   }
 
   private async requireSessionByThreadId(threadId: string): Promise<SessionRecord> {
@@ -317,4 +589,18 @@ function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 8)}_${randomUUID().slice(0, 8)}`;
+}
+
+function mapDecisionToApprovalStatus(
+  decision: ApprovalRespondInput["decision"],
+): ApprovalStatus {
+  if (decision === "approved") {
+    return "approved";
+  }
+
+  if (decision === "rejected") {
+    return "rejected";
+  }
+
+  return "timeout";
 }

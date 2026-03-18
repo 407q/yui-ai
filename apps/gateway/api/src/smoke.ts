@@ -54,6 +54,61 @@ async function main(): Promise<void> {
     });
     assertStatusCode(messageResponse.statusCode, 200, "threads/messages");
 
+    const requestApprovalResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "read",
+        path: "/tmp/example.txt",
+      },
+    });
+    assertStatusCode(
+      requestApprovalResponse.statusCode,
+      200,
+      "threads/approvals/request",
+    );
+    const requestApprovalBody = requestApprovalResponse.json() as {
+      session: { status: string };
+      task: { status: string };
+      approval: { approvalId: string; status: string };
+    };
+    assert(
+      requestApprovalBody.session.status === "waiting_approval",
+      "approval request should move session to waiting_approval",
+    );
+    assert(
+      requestApprovalBody.approval.status === "requested",
+      "approval should start as requested",
+    );
+
+    const respondApprovalResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${requestApprovalBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      respondApprovalResponse.statusCode,
+      200,
+      "approvals/respond",
+    );
+    const respondApprovalBody = respondApprovalResponse.json() as {
+      session: { status: string };
+      task: { status: string };
+      approval: { status: string };
+    };
+    assert(
+      respondApprovalBody.session.status === "running",
+      "approved response should move session to running",
+    );
+    assert(
+      respondApprovalBody.approval.status === "approved",
+      "approval should be approved",
+    );
+
     const statusResponse = await app.inject({
       method: "GET",
       url: `/v1/threads/${threadId}/status`,
