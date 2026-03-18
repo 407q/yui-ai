@@ -27,3 +27,8 @@ yarn db:smoke
 ```bash
 op run --env-file=.env.op -- yarn db:migrate
 ```
+
+ホスト実行時に DSN のホスト名を補正したい場合は、`.env.op` に以下を設定します。
+
+- `POSTGRES_HOST=127.0.0.1`
+- `POSTGRES_PORT=55432`
