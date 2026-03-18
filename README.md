@@ -43,3 +43,18 @@ yarn dev
 yarn build
 yarn start
 ```
+
+## P1 実行基盤コマンド
+
+```bash
+cp .env.op.example .env.op
+yarn compose:up
+yarn compose:ps
+yarn dev:gateway:op
+```
+
+停止:
+
+```bash
+yarn compose:down
+```

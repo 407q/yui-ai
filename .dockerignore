@@ -1,0 +1,9 @@
+._*
+.DS_Store
+.git
+node_modules
+dist
+.env
+.env.op
+.env.local
+.env.*.local

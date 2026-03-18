@@ -7,8 +7,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx apps/gateway/api/src/bot.ts",
+    "dev:gateway:op": "op run --env-file=.env.op -- yarn dev",
     "start": "node dist/apps/gateway/api/bot.js",
-    "register:commands": "tsx apps/gateway/api/src/registerCommands.ts"
+    "register:commands": "tsx apps/gateway/api/src/registerCommands.ts",
+    "register:commands:op": "op run --env-file=.env.op -- yarn register:commands",
+    "compose:up": "op run --env-file=.env.op -- docker compose up -d",
+    "compose:down": "docker compose down --remove-orphans",
+    "compose:ps": "docker compose ps",
+    "compose:logs": "docker compose logs -f --tail=100"
   },
   "dependencies": {
     "discord.js": "^14.18.0",

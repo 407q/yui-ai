@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: yui-ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  agent:
+    build:
+      context: .
+      dockerfile: apps/agent/Dockerfile
+    container_name: yui-ai-agent
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_BIND_HOST: 0.0.0.0
+      AGENT_PORT: "3801"
+      STATE_STORE_DSN: ${STATE_STORE_DSN:?STATE_STORE_DSN is required}
+      MEMORY_STORE_DSN: ${MEMORY_STORE_DSN:?MEMORY_STORE_DSN is required}
+    ports:
+      - "${AGENT_PORT:-3801}:3801"
+    volumes:
+      - agent_workspace_data:/agent/session
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3801/health').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1));",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  agent_workspace_data:

@@ -60,3 +60,10 @@ yarn start
 ```bash
 op run --env-file=.env.op -- yarn dev
 ```
+
+Compose（`agent` / `postgres`）を併用する場合:
+
+```bash
+op run --env-file=.env.op -- docker compose up -d
+op run --env-file=.env.op -- yarn dev
+```
