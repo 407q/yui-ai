@@ -80,3 +80,9 @@ yarn api:smoke
 
 - `POST /v1/threads/:threadId/approvals/request`
 - `POST /v1/approvals/:approvalId/respond`
+
+## P5 MCP / Tool Adapter（API 追加）
+
+- `POST /v1/mcp/tool-call`
+- `container.*` / `host.*` / `memory.*` を Gateway で実行
+- `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加

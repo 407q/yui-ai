@@ -2,7 +2,9 @@ import type { Pool, PoolClient } from "pg";
 import type {
   ApprovalRecord,
   ApprovalStatus,
+  MemoryEntryRecord,
   SessionRecord,
+  SessionPathPermissionRecord,
   SessionStatus,
   TaskRecord,
   TaskStatus,
@@ -43,6 +45,32 @@ export interface CreateApprovalInput {
   path: string;
 }
 
+export interface AppendAuditLogInput {
+  logId: string;
+  correlationId: string;
+  actor: string;
+  decision: string;
+  reason?: string | null;
+  raw: Record<string, unknown>;
+  timestamp?: Date;
+}
+
+export interface UpsertMemoryInput {
+  memoryId: string;
+  userId: string;
+  namespace: string;
+  key: string;
+  valueJson: Record<string, unknown>;
+  tagsJson?: string[];
+}
+
+export interface SearchMemoryInput {
+  userId: string;
+  namespace: string;
+  query?: string;
+  limit: number;
+}
+
 export interface GatewayRepository {
   ping(): Promise<void>;
   createSessionAndTask(
@@ -79,12 +107,30 @@ export interface GatewayRepository {
     status: ApprovalStatus,
     responderId: string | null,
   ): Promise<void>;
+  findLatestApprovalByScope(
+    sessionId: string,
+    operation: string,
+    path: string,
+  ): Promise<ApprovalRecord | null>;
   grantPathPermission(
     sessionId: string,
     operation: string,
     path: string,
     grantedBy: string,
   ): Promise<void>;
+  listPathPermissions(
+    sessionId: string,
+    operation: string,
+  ): Promise<SessionPathPermissionRecord[]>;
+  appendAuditLog(input: AppendAuditLogInput): Promise<void>;
+  upsertMemory(input: UpsertMemoryInput): Promise<MemoryEntryRecord>;
+  getMemory(
+    userId: string,
+    namespace: string,
+    key: string,
+  ): Promise<MemoryEntryRecord | null>;
+  searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]>;
+  deleteMemory(userId: string, namespace: string, key: string): Promise<void>;
   listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]>;
 }
 
@@ -376,6 +422,30 @@ export class PostgresGatewayRepository implements GatewayRepository {
     );
   }
 
+  async findLatestApprovalByScope(
+    sessionId: string,
+    operation: string,
+    path: string,
+  ): Promise<ApprovalRecord | null> {
+    const { rows } = await this.pool.query<ApprovalRow>(
+      `
+      SELECT *
+      FROM approvals
+      WHERE session_id = $1
+        AND operation = $2
+        AND path = $3
+      ORDER BY requested_at DESC
+      LIMIT 1
+      `,
+      [sessionId, operation, path],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return toApprovalRecord(requireRow(rows[0], "latest approval by scope"));
+  }
+
   async grantPathPermission(
     sessionId: string,
     operation: string,
@@ -398,6 +468,155 @@ export class PostgresGatewayRepository implements GatewayRepository {
         granted_at = EXCLUDED.granted_at
       `,
       [sessionId, operation, path, grantedBy],
+    );
+  }
+
+  async listPathPermissions(
+    sessionId: string,
+    operation: string,
+  ): Promise<SessionPathPermissionRecord[]> {
+    const { rows } = await this.pool.query<SessionPathPermissionRow>(
+      `
+      SELECT *
+      FROM session_path_permissions
+      WHERE session_id = $1
+        AND operation = $2
+      ORDER BY granted_at DESC
+      `,
+      [sessionId, operation],
+    );
+    return rows.map(toSessionPathPermissionRecord);
+  }
+
+  async appendAuditLog(input: AppendAuditLogInput): Promise<void> {
+    await this.pool.query(
+      `
+      INSERT INTO audit_logs (
+        log_id,
+        correlation_id,
+        actor,
+        decision,
+        reason,
+        raw,
+        "timestamp"
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `,
+      [
+        input.logId,
+        input.correlationId,
+        input.actor,
+        input.decision,
+        input.reason ?? null,
+        JSON.stringify(input.raw),
+        input.timestamp ?? new Date(),
+      ],
+    );
+  }
+
+  async upsertMemory(input: UpsertMemoryInput): Promise<MemoryEntryRecord> {
+    const { rows } = await this.pool.query<MemoryEntryRow>(
+      `
+      INSERT INTO memory_entries (
+        memory_id,
+        user_id,
+        namespace,
+        "key",
+        value_json,
+        tags_json,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ON CONFLICT (user_id, namespace, "key")
+      DO UPDATE SET
+        value_json = EXCLUDED.value_json,
+        tags_json = EXCLUDED.tags_json,
+        updated_at = NOW()
+      RETURNING *
+      `,
+      [
+        input.memoryId,
+        input.userId,
+        input.namespace,
+        input.key,
+        JSON.stringify(input.valueJson),
+        JSON.stringify(input.tagsJson ?? []),
+      ],
+    );
+    return toMemoryEntryRecord(requireRow(rows[0], "upserted memory entry"));
+  }
+
+  async getMemory(
+    userId: string,
+    namespace: string,
+    key: string,
+  ): Promise<MemoryEntryRecord | null> {
+    const { rows } = await this.pool.query<MemoryEntryRow>(
+      `
+      SELECT *
+      FROM memory_entries
+      WHERE user_id = $1
+        AND namespace = $2
+        AND "key" = $3
+      `,
+      [userId, namespace, key],
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+    return toMemoryEntryRecord(requireRow(rows[0], "memory by key"));
+  }
+
+  async searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]> {
+    const normalizedLimit = Math.min(Math.max(input.limit, 1), 100);
+    if (!input.query || input.query.trim().length === 0) {
+      const { rows } = await this.pool.query<MemoryEntryRow>(
+        `
+        SELECT *
+        FROM memory_entries
+        WHERE user_id = $1
+          AND namespace = $2
+        ORDER BY updated_at DESC
+        LIMIT $3
+        `,
+        [input.userId, input.namespace, normalizedLimit],
+      );
+      return rows.map(toMemoryEntryRecord);
+    }
+
+    const search = `%${input.query}%`;
+    const { rows } = await this.pool.query<MemoryEntryRow>(
+      `
+      SELECT *
+      FROM memory_entries
+      WHERE user_id = $1
+        AND namespace = $2
+        AND (
+          "key" ILIKE $3
+          OR value_json::TEXT ILIKE $3
+          OR tags_json::TEXT ILIKE $3
+        )
+      ORDER BY updated_at DESC
+      LIMIT $4
+      `,
+      [input.userId, input.namespace, search, normalizedLimit],
+    );
+    return rows.map(toMemoryEntryRecord);
+  }
+
+  async deleteMemory(
+    userId: string,
+    namespace: string,
+    key: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `
+      DELETE FROM memory_entries
+      WHERE user_id = $1
+        AND namespace = $2
+        AND "key" = $3
+      `,
+      [userId, namespace, key],
     );
   }
 
@@ -505,6 +724,25 @@ interface ApprovalRow {
   responder_id: string | null;
 }
 
+interface SessionPathPermissionRow {
+  session_id: string;
+  operation: string;
+  path: string;
+  granted_by: string;
+  granted_at: Date;
+  expires_at: Date | null;
+}
+
+interface MemoryEntryRow {
+  memory_id: string;
+  user_id: string;
+  namespace: string;
+  key: string;
+  value_json: Record<string, unknown>;
+  tags_json: string[];
+  updated_at: Date;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -543,6 +781,31 @@ function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
     requestedAt: row.requested_at,
     respondedAt: row.responded_at,
     responderId: row.responder_id,
+  };
+}
+
+function toSessionPathPermissionRecord(
+  row: SessionPathPermissionRow,
+): SessionPathPermissionRecord {
+  return {
+    sessionId: row.session_id,
+    operation: row.operation,
+    path: row.path,
+    grantedBy: row.granted_by,
+    grantedAt: row.granted_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+function toMemoryEntryRecord(row: MemoryEntryRow): MemoryEntryRecord {
+  return {
+    memoryId: row.memory_id,
+    userId: row.user_id,
+    namespace: row.namespace,
+    key: row.key,
+    valueJson: row.value_json,
+    tagsJson: row.tags_json,
+    updatedAt: row.updated_at,
   };
 }
 

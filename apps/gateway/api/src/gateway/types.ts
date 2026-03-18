@@ -64,3 +64,22 @@ export interface ThreadStatusResponse {
   latestTask: TaskRecord | null;
   pendingApproval: ApprovalRecord | null;
 }
+
+export interface SessionPathPermissionRecord {
+  sessionId: string;
+  operation: string;
+  path: string;
+  grantedBy: string;
+  grantedAt: Date;
+  expiresAt: Date | null;
+}
+
+export interface MemoryEntryRecord {
+  memoryId: string;
+  userId: string;
+  namespace: string;
+  key: string;
+  valueJson: Record<string, unknown>;
+  tagsJson: string[];
+  updatedAt: Date;
+}
