@@ -6,15 +6,16 @@
   "packageManager": "yarn@1.22.22",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "clean:appledouble": "find . -depth -name '._*' -exec rm -rf {} +",
     "dev": "tsx apps/gateway/api/src/bot.ts",
     "dev:gateway:op": "op run --env-file=.env.op -- yarn dev",
     "start": "node dist/apps/gateway/api/bot.js",
     "register:commands": "tsx apps/gateway/api/src/registerCommands.ts",
     "register:commands:op": "op run --env-file=.env.op -- yarn register:commands",
-    "compose:up": "op run --env-file=.env.op -- docker compose up -d",
-    "compose:down": "docker compose down --remove-orphans",
-    "compose:ps": "docker compose ps",
-    "compose:logs": "docker compose logs -f --tail=100"
+    "compose:up": "yarn clean:appledouble && op run --env-file=.env.op -- docker compose up -d",
+    "compose:down": "yarn clean:appledouble && op run --env-file=.env.op -- docker compose down --remove-orphans",
+    "compose:ps": "yarn clean:appledouble && op run --env-file=.env.op -- docker compose ps",
+    "compose:logs": "yarn clean:appledouble && op run --env-file=.env.op -- docker compose logs -f --tail=100"
   },
   "dependencies": {
     "discord.js": "^14.18.0",
