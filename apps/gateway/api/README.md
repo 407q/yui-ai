@@ -129,3 +129,5 @@ yarn dev:api:local
 yarn db:migrate
 yarn api:smoke
 ```
+
+`api:smoke` は実行時に、各検証ステップの request/response 要約を標準出力へ表示します。

@@ -18,6 +18,7 @@ async function main(): Promise<void> {
     logger: false,
     pool,
   });
+  const reporter = new SmokeReporter();
 
   const userId = `user_${randomUUID()}`;
   const threadId = `thread_${randomUUID()}`;
@@ -32,12 +33,21 @@ async function main(): Promise<void> {
   try {
     await fs.mkdir(path.dirname(hostFilePath), { recursive: true });
     await fs.writeFile(hostFilePath, "host smoke content", "utf8");
+    console.log("[api:smoke] request/response summary:");
 
     await app.ready();
 
     const healthResponse = await app.inject({
       method: "GET",
       url: "/health",
+    });
+    const healthBody = parseJsonBody(healthResponse.body);
+    reporter.logHttp({
+      label: "health",
+      method: "GET",
+      url: "/health",
+      statusCode: healthResponse.statusCode,
+      responseBody: healthBody,
     });
     assertStatusCode(healthResponse.statusCode, 200, "health");
 
@@ -52,15 +62,30 @@ async function main(): Promise<void> {
         attachmentNames: ["sample.txt"],
       },
     });
+    const startResponseBody = parseJsonBody(startResponse.body);
+    reporter.logHttp({
+      label: "mentions/start",
+      method: "POST",
+      url: "/v1/discord/mentions/start",
+      payload: {
+        userId,
+        channelId,
+        threadId,
+        prompt: "P3 smoke start",
+        attachmentNames: ["sample.txt"],
+      },
+      statusCode: startResponse.statusCode,
+      responseBody: startResponseBody,
+    });
     assertStatusCode(startResponse.statusCode, 201, "mentions/start");
-    const startBody = startResponse.json() as {
+    const startBody = startResponseBody as {
       session: { sessionId: string; status: string };
       taskId: string;
     };
     sessionId = startBody.session.sessionId;
     assert(startBody.session.status === "running", "session should start as running");
 
-    const externalTargetResult = await callMcpTool(app, {
+    const externalTargetResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -77,7 +102,7 @@ async function main(): Promise<void> {
       "external target should return external_mcp_disabled",
     );
 
-    const containerWriteResult = await callMcpTool(app, {
+    const containerWriteResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -91,7 +116,7 @@ async function main(): Promise<void> {
     });
     assert(containerWriteResult.status === "ok", "container.file_write should succeed");
 
-    const containerReadResult = await callMcpTool(app, {
+    const containerReadResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -109,7 +134,7 @@ async function main(): Promise<void> {
       "container file content should match written value",
     );
 
-    const outOfScopeReadResult = await callMcpTool(app, {
+    const outOfScopeReadResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -126,7 +151,7 @@ async function main(): Promise<void> {
       "out-of-scope read should return container_path_out_of_scope",
     );
 
-    const hostReadBeforeApproval = await callMcpTool(app, {
+    const hostReadBeforeApproval = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -155,12 +180,27 @@ async function main(): Promise<void> {
         path: hostFilePath,
       },
     });
+    const hostApprovalRequestResponseBody = parseJsonBody(
+      hostApprovalRequestResponse.body,
+    );
+    reporter.logHttp({
+      label: "threads/approvals/request(host)",
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "read",
+        path: hostFilePath,
+      },
+      statusCode: hostApprovalRequestResponse.statusCode,
+      responseBody: hostApprovalRequestResponseBody,
+    });
     assertStatusCode(
       hostApprovalRequestResponse.statusCode,
       200,
       "threads/approvals/request(host)",
     );
-    const hostApprovalRequestBody = hostApprovalRequestResponse.json() as {
+    const hostApprovalRequestBody = hostApprovalRequestResponseBody as {
       approval: { approvalId: string; status: string };
     };
     assert(
@@ -176,13 +216,27 @@ async function main(): Promise<void> {
         decision: "approved",
       },
     });
+    const hostApprovalRespondResponseBody = parseJsonBody(
+      hostApprovalRespondResponse.body,
+    );
+    reporter.logHttp({
+      label: "approvals/respond(host)",
+      method: "POST",
+      url: `/v1/approvals/${hostApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+      statusCode: hostApprovalRespondResponse.statusCode,
+      responseBody: hostApprovalRespondResponseBody,
+    });
     assertStatusCode(
       hostApprovalRespondResponse.statusCode,
       200,
       "approvals/respond(host)",
     );
 
-    const hostReadAfterApproval = await callMcpTool(app, {
+    const hostReadAfterApproval = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -203,7 +257,7 @@ async function main(): Promise<void> {
       "host read should return file content",
     );
 
-    const memoryUpsertResult = await callMcpTool(app, {
+    const memoryUpsertResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -221,7 +275,7 @@ async function main(): Promise<void> {
     });
     assert(memoryUpsertResult.status === "ok", "memory.upsert should succeed");
 
-    const memoryGetResult = await callMcpTool(app, {
+    const memoryGetResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -244,7 +298,7 @@ async function main(): Promise<void> {
       "memory.get should return stored value",
     );
 
-    const memorySearchResult = await callMcpTool(app, {
+    const memorySearchResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -266,7 +320,7 @@ async function main(): Promise<void> {
       "memory.search should include upserted key",
     );
 
-    const memoryDeleteResult = await callMcpTool(app, {
+    const memoryDeleteResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
       call_id: `call_${randomUUID()}`,
@@ -289,6 +343,19 @@ async function main(): Promise<void> {
         attachmentNames: [],
       },
     });
+    const messageResponseBody = parseJsonBody(messageResponse.body);
+    reporter.logHttp({
+      label: "threads/messages",
+      method: "POST",
+      url: `/v1/threads/${threadId}/messages`,
+      payload: {
+        userId,
+        prompt: "follow-up prompt",
+        attachmentNames: [],
+      },
+      statusCode: messageResponse.statusCode,
+      responseBody: messageResponseBody,
+    });
     assertStatusCode(messageResponse.statusCode, 200, "threads/messages");
 
     const requestApprovalResponse = await app.inject({
@@ -300,12 +367,25 @@ async function main(): Promise<void> {
         path: "/tmp/example.txt",
       },
     });
+    const requestApprovalResponseBody = parseJsonBody(requestApprovalResponse.body);
+    reporter.logHttp({
+      label: "threads/approvals/request",
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "read",
+        path: "/tmp/example.txt",
+      },
+      statusCode: requestApprovalResponse.statusCode,
+      responseBody: requestApprovalResponseBody,
+    });
     assertStatusCode(
       requestApprovalResponse.statusCode,
       200,
       "threads/approvals/request",
     );
-    const requestApprovalBody = requestApprovalResponse.json() as {
+    const requestApprovalBody = requestApprovalResponseBody as {
       session: { status: string };
       task: { status: string };
       approval: { approvalId: string; status: string };
@@ -327,12 +407,24 @@ async function main(): Promise<void> {
         decision: "approved",
       },
     });
+    const respondApprovalResponseBody = parseJsonBody(respondApprovalResponse.body);
+    reporter.logHttp({
+      label: "approvals/respond",
+      method: "POST",
+      url: `/v1/approvals/${requestApprovalBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+      statusCode: respondApprovalResponse.statusCode,
+      responseBody: respondApprovalResponseBody,
+    });
     assertStatusCode(
       respondApprovalResponse.statusCode,
       200,
       "approvals/respond",
     );
-    const respondApprovalBody = respondApprovalResponse.json() as {
+    const respondApprovalBody = respondApprovalResponseBody as {
       session: { status: string };
       task: { status: string };
       approval: { status: string };
@@ -350,6 +442,14 @@ async function main(): Promise<void> {
       method: "GET",
       url: `/v1/threads/${threadId}/status`,
     });
+    const statusResponseBody = parseJsonBody(statusResponse.body);
+    reporter.logHttp({
+      label: "threads/status",
+      method: "GET",
+      url: `/v1/threads/${threadId}/status`,
+      statusCode: statusResponse.statusCode,
+      responseBody: statusResponseBody,
+    });
     assertStatusCode(statusResponse.statusCode, 200, "threads/status");
 
     const cancelResponse = await app.inject({
@@ -357,8 +457,17 @@ async function main(): Promise<void> {
       url: `/v1/threads/${threadId}/cancel`,
       payload: { userId },
     });
+    const cancelResponseBody = parseJsonBody(cancelResponse.body);
+    reporter.logHttp({
+      label: "threads/cancel",
+      method: "POST",
+      url: `/v1/threads/${threadId}/cancel`,
+      payload: { userId },
+      statusCode: cancelResponse.statusCode,
+      responseBody: cancelResponseBody,
+    });
     assertStatusCode(cancelResponse.statusCode, 200, "threads/cancel");
-    const cancelBody = cancelResponse.json() as {
+    const cancelBody = cancelResponseBody as {
       session: { status: string };
       canceledTaskId: string | null;
     };
@@ -369,8 +478,17 @@ async function main(): Promise<void> {
       url: `/v1/threads/${threadId}/close`,
       payload: { userId },
     });
+    const closeResponseBody = parseJsonBody(closeResponse.body);
+    reporter.logHttp({
+      label: "threads/close",
+      method: "POST",
+      url: `/v1/threads/${threadId}/close`,
+      payload: { userId },
+      statusCode: closeResponse.statusCode,
+      responseBody: closeResponseBody,
+    });
     assertStatusCode(closeResponse.statusCode, 200, "threads/close");
-    const closeBody = closeResponse.json() as {
+    const closeBody = closeResponseBody as {
       session: { status: string };
     };
     assert(closeBody.session.status === "closed_by_user", "close should set closed status");
@@ -379,8 +497,16 @@ async function main(): Promise<void> {
       method: "GET",
       url: `/v1/sessions?userId=${encodeURIComponent(userId)}`,
     });
+    const listResponseBody = parseJsonBody(listResponse.body);
+    reporter.logHttp({
+      label: "sessions/list",
+      method: "GET",
+      url: `/v1/sessions?userId=${encodeURIComponent(userId)}`,
+      statusCode: listResponse.statusCode,
+      responseBody: listResponseBody,
+    });
     assertStatusCode(listResponse.statusCode, 200, "sessions/list");
-    const listBody = listResponse.json() as {
+    const listBody = listResponseBody as {
       sessions: Array<{ sessionId: string }>;
     };
     assert(
@@ -430,6 +556,7 @@ interface McpCallPayload {
 
 async function callMcpTool(
   app: ReturnType<typeof buildGatewayApiServer>,
+  reporter: SmokeReporter,
   payload: McpCallPayload,
 ): Promise<McpResult> {
   const response = await app.inject({
@@ -437,8 +564,17 @@ async function callMcpTool(
     url: "/v1/mcp/tool-call",
     payload,
   });
+  const responseBody = parseJsonBody(response.body);
+  reporter.logHttp({
+    label: `mcp/tool-call(${payload.tool_name})`,
+    method: "POST",
+    url: "/v1/mcp/tool-call",
+    payload,
+    statusCode: response.statusCode,
+    responseBody,
+  });
   assertStatusCode(response.statusCode, 200, `mcp/tool-call(${payload.tool_name})`);
-  return response.json() as McpResult;
+  return responseBody as McpResult;
 }
 
 function assertStatusCode(
@@ -457,6 +593,104 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw new Error(`[api:smoke] assertion failed: ${message}`);
   }
+}
+
+interface SmokeHttpLogInput {
+  label: string;
+  method: string;
+  url: string;
+  payload?: unknown;
+  statusCode: number;
+  responseBody: unknown;
+}
+
+class SmokeReporter {
+  private step = 0;
+
+  logHttp(input: SmokeHttpLogInput): void {
+    this.step += 1;
+    const step = String(this.step).padStart(2, "0");
+    const payloadSummary = summarizeForLog(input.payload);
+    const responseSummary = summarizeForLog(input.responseBody);
+    const line =
+      `[api:smoke][${step}] ${input.label} ` +
+      `${input.method} ${input.url} ` +
+      `req=${payloadSummary} -> ${input.statusCode} res=${responseSummary}`;
+    console.log(line);
+  }
+}
+
+function parseJsonBody(raw: string): unknown {
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function summarizeForLog(value: unknown): string {
+  if (value === undefined) {
+    return "-";
+  }
+
+  const normalized = normalizeForLog(value, 0);
+  const text = JSON.stringify(normalized);
+  return truncateText(text, 240);
+}
+
+function normalizeForLog(value: unknown, depth: number): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (depth >= 3) {
+    return "[depth-limit]";
+  }
+
+  if (typeof value === "string") {
+    return truncateText(value, 80);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const maxItems = 5;
+    const items = value
+      .slice(0, maxItems)
+      .map((item) => normalizeForLog(item, depth + 1));
+    if (value.length > maxItems) {
+      items.push(`...(+${value.length - maxItems})`);
+    }
+    return items;
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const maxKeys = 8;
+    const normalized: Record<string, unknown> = {};
+    for (const [key, current] of entries.slice(0, maxKeys)) {
+      normalized[key] = normalizeForLog(current, depth + 1);
+    }
+    if (entries.length > maxKeys) {
+      normalized.__more_keys = entries.length - maxKeys;
+    }
+    return normalized;
+  }
+
+  return String(value);
+}
+
+function truncateText(input: string, maxLength: number): string {
+  if (input.length <= maxLength) {
+    return input;
+  }
+  return `${input.slice(0, maxLength - 3)}...`;
 }
 
 main().catch((error) => {
