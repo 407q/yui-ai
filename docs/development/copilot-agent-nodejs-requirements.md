@@ -1,6 +1,7 @@
 # 個人用 AI エージェント Node.js 実装要件定義書
 
 関連設計: `copilot-agent-system-design.md`
+実装フェーズ定義: `implementation-flow.md`（P7: システム統合 / P8: Copilot SDK 実装 / P9: 運用品質）
 
 ---
 

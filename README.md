@@ -94,3 +94,14 @@ yarn api:smoke
 - `GET /v1/agent/tasks/:taskId/status`
 - `POST /v1/agent/tasks/:taskId/cancel`
 - `yarn dev:agent`, `yarn agent:smoke`
+
+## 次フェーズ（実装計画）
+
+- P7: システム統合（Bot主導）
+  - Discord -> Gateway API -> Agent Runtime の実行導線を接続し、E2Eで挙動を確認
+- P8: Copilot SDK 実装
+  - `AGENT_SDK_PROVIDER=copilot` を追加し、実 SDK 実行へ切り替え可能にする
+- P9: 運用品質
+  - 監査ログ、冪等、バックアップ、監視復旧運用を整備
+
+詳細は `docs/development/implementation-flow.md` を参照してください。

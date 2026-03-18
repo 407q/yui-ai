@@ -87,6 +87,11 @@ yarn dev
 
 P3 で Fastify ベースの Gateway API を追加し、P5 で MCP tool endpoint と adapter 実行、P6 で Agent Runtime オーケストレーション API を追加しています。
 
+次フェーズ（計画）:
+
+- P7: Discord 経路から Agent Runtime API（`/v1/agent/tasks/*`）の本統合を実施
+- P8: 実 Copilot SDK provider 連携時の実行結果/エラー整合を反映
+
 ### 起動
 
 1Password 経由（標準）:

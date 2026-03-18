@@ -1,5 +1,7 @@
 # 個人用 AI エージェント設計ドキュメント（GitHub Copilot SDK + Gateway + Discord）
 
+実装フェーズ定義: `implementation-flow.md`（P7: システム統合 / P8: Copilot SDK 実装 / P9: 運用品質）
+
 ## 1. 目的
 
 Discord から投入された単一タスクを、Copilot の Agentic な振る舞いで実行する。  
