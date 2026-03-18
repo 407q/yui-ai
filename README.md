@@ -58,3 +58,11 @@ yarn dev:gateway:op
 ```bash
 yarn compose:down
 ```
+
+## P2 永続層コマンド
+
+```bash
+yarn db:migrate:op
+yarn db:smoke:op
+yarn db:cleanup:op
+```
