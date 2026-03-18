@@ -83,9 +83,9 @@ yarn dev:api
 yarn dev
 ```
 
-## Gateway API（P3-P5）
+## Gateway API（P3-P6）
 
-P3 で Fastify ベースの Gateway API を追加し、P5 で MCP tool endpoint と adapter 実行を追加しています。
+P3 で Fastify ベースの Gateway API を追加し、P5 で MCP tool endpoint と adapter 実行、P6 で Agent Runtime オーケストレーション API を追加しています。
 
 ### 起動
 
@@ -111,6 +111,9 @@ yarn dev:api:local
 - `POST /v1/threads/:threadId/approvals/request`
 - `POST /v1/approvals/:approvalId/respond`
 - `POST /v1/mcp/tool-call`
+- `POST /v1/agent/tasks/run`
+- `GET /v1/agent/tasks/:taskId/status`
+- `POST /v1/agent/tasks/:taskId/cancel`
 - `GET /v1/sessions`
 - `GET /health`
 

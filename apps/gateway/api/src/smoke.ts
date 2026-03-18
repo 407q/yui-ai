@@ -2,6 +2,11 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type {
+  AgentRuntimeClient,
+  AgentRuntimeRunTaskInput,
+  AgentRuntimeTaskSnapshot,
+} from "./agent/runtimeClient.js";
 import { createGatewayPool } from "./gateway/db.js";
 import { buildGatewayApiServer } from "./server.js";
 
@@ -14,9 +19,11 @@ async function main(): Promise<void> {
   process.env.CONTAINER_SESSION_ROOT = containerSessionRoot;
 
   const pool = createGatewayPool();
+  const agentRuntimeClient = createMockAgentRuntimeClient();
   const app = buildGatewayApiServer({
     logger: false,
     pool,
+    agentRuntimeClient,
   });
   const reporter = new SmokeReporter();
 
@@ -84,6 +91,70 @@ async function main(): Promise<void> {
     };
     sessionId = startBody.session.sessionId;
     assert(startBody.session.status === "running", "session should start as running");
+
+    const agentRunResponse = await app.inject({
+      method: "POST",
+      url: "/v1/agent/tasks/run",
+      payload: {
+        taskId: startBody.taskId,
+        sessionId: startBody.session.sessionId,
+        userId,
+        prompt: "agent runtime smoke run",
+        toolCalls: [
+          {
+            toolName: "memory.upsert",
+            executionTarget: "gateway_adapter",
+            arguments: {
+              namespace: "agent-smoke",
+              key: "entry",
+              value: { text: "hello" },
+            },
+            reason: "store state",
+            delayMs: 20,
+          },
+        ],
+      },
+    });
+    const agentRunResponseBody = parseJsonBody(agentRunResponse.body);
+    reporter.logHttp({
+      label: "agent/tasks/run",
+      method: "POST",
+      url: "/v1/agent/tasks/run",
+      payload: {
+        taskId: startBody.taskId,
+        sessionId: startBody.session.sessionId,
+        userId,
+        prompt: "agent runtime smoke run",
+        toolCalls: [
+          {
+            toolName: "memory.upsert",
+          },
+        ],
+      },
+      statusCode: agentRunResponse.statusCode,
+      responseBody: agentRunResponseBody,
+    });
+    assertStatusCode(agentRunResponse.statusCode, 200, "agent/tasks/run");
+    const agentRunBody = agentRunResponseBody as {
+      agentTask: {
+        status: string;
+      };
+    };
+    assert(
+      agentRunBody.agentTask.status === "running",
+      "agent run should start with running status",
+    );
+
+    const agentStatusCompleted = await waitForAgentTerminalStatus(
+      app,
+      reporter,
+      startBody.taskId,
+      20,
+    );
+    assert(
+      agentStatusCompleted.agentTask.status === "completed",
+      "agent status should become completed",
+    );
 
     const externalTargetResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
@@ -357,6 +428,84 @@ async function main(): Promise<void> {
       responseBody: messageResponseBody,
     });
     assertStatusCode(messageResponse.statusCode, 200, "threads/messages");
+    const messageBody = messageResponseBody as {
+      taskId: string;
+    };
+
+    const agentCancelRunResponse = await app.inject({
+      method: "POST",
+      url: "/v1/agent/tasks/run",
+      payload: {
+        taskId: messageBody.taskId,
+        sessionId: startBody.session.sessionId,
+        userId,
+        prompt: "agent runtime cancel smoke run",
+        toolCalls: [
+          {
+            toolName: "memory.search",
+            executionTarget: "gateway_adapter",
+            arguments: {
+              namespace: "agent-smoke",
+              query: "entry",
+              limit: 5,
+            },
+            reason: "long run",
+            delayMs: 500,
+          },
+        ],
+      },
+    });
+    const agentCancelRunBody = parseJsonBody(agentCancelRunResponse.body);
+    reporter.logHttp({
+      label: "agent/tasks/run(cancel)",
+      method: "POST",
+      url: "/v1/agent/tasks/run",
+      payload: {
+        taskId: messageBody.taskId,
+        sessionId: startBody.session.sessionId,
+        userId,
+        prompt: "agent runtime cancel smoke run",
+        toolCalls: [{ toolName: "memory.search", delayMs: 500 }],
+      },
+      statusCode: agentCancelRunResponse.statusCode,
+      responseBody: agentCancelRunBody,
+    });
+    assertStatusCode(
+      agentCancelRunResponse.statusCode,
+      200,
+      "agent/tasks/run(cancel)",
+    );
+
+    const agentCancelResponse = await app.inject({
+      method: "POST",
+      url: `/v1/agent/tasks/${encodeURIComponent(messageBody.taskId)}/cancel`,
+      payload: {
+        userId,
+      },
+    });
+    const agentCancelResponseBody = parseJsonBody(agentCancelResponse.body);
+    reporter.logHttp({
+      label: "agent/tasks/cancel",
+      method: "POST",
+      url: `/v1/agent/tasks/${encodeURIComponent(messageBody.taskId)}/cancel`,
+      payload: {
+        userId,
+      },
+      statusCode: agentCancelResponse.statusCode,
+      responseBody: agentCancelResponseBody,
+    });
+    assertStatusCode(agentCancelResponse.statusCode, 200, "agent/tasks/cancel");
+
+    const canceledStatus = await waitForAgentTerminalStatus(
+      app,
+      reporter,
+      messageBody.taskId,
+      20,
+    );
+    assert(
+      canceledStatus.agentTask.status === "canceled",
+      "agent cancel should lead to canceled status",
+    );
 
     const requestApprovalResponse = await app.inject({
       method: "POST",
@@ -577,6 +726,178 @@ async function callMcpTool(
   return responseBody as McpResult;
 }
 
+async function waitForAgentTerminalStatus(
+  app: ReturnType<typeof buildGatewayApiServer>,
+  reporter: SmokeReporter,
+  taskId: string,
+  maxAttempts: number,
+): Promise<{
+  agentTask: {
+    status: string;
+  };
+}> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+    });
+    const responseBody = parseJsonBody(response.body);
+    reporter.logHttp({
+      label: "agent/tasks/status",
+      method: "GET",
+      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+      statusCode: response.statusCode,
+      responseBody,
+    });
+    assertStatusCode(response.statusCode, 200, "agent/tasks/status");
+    const body = responseBody as {
+      agentTask: {
+        status: string;
+      };
+    };
+    if (
+      body.agentTask.status === "completed" ||
+      body.agentTask.status === "failed" ||
+      body.agentTask.status === "canceled"
+    ) {
+      return body;
+    }
+    await sleep(80);
+  }
+
+  throw new Error(
+    `[api:smoke] agent task ${taskId} did not reach terminal status in time`,
+  );
+}
+
+function createMockAgentRuntimeClient(): AgentRuntimeClient {
+  const tasks = new Map<
+    string,
+    AgentRuntimeTaskSnapshot & {
+      timer: NodeJS.Timeout | null;
+    }
+  >();
+  const knownSessions = new Set<string>();
+
+  return {
+    async runTask(input: AgentRuntimeRunTaskInput): Promise<AgentRuntimeTaskSnapshot> {
+      const now = new Date();
+      const delayMs = Math.max(
+        20,
+        ...((input.tool_calls ?? []).map((toolCall) => toolCall.delay_ms ?? 0)),
+      );
+      const snapshot: AgentRuntimeTaskSnapshot & { timer: NodeJS.Timeout | null } = {
+        task_id: input.task_id,
+        session_id: input.session_id,
+        status: "running",
+        bootstrap_mode: knownSessions.has(input.session_id) ? "resume" : "create",
+        send_and_wait_count: 0,
+        started_at: now.toISOString(),
+        updated_at: now.toISOString(),
+        completed_at: null,
+        result: null,
+        error: null,
+        timer: null,
+      };
+
+      snapshot.timer = setTimeout(() => {
+        const current = tasks.get(input.task_id);
+        if (!current || current.status !== "running") {
+          return;
+        }
+        const doneAt = new Date();
+        current.status = "completed";
+        current.send_and_wait_count = 1;
+        current.updated_at = doneAt.toISOString();
+        current.completed_at = doneAt.toISOString();
+        current.result = {
+          final_answer: `mock runtime completed: ${input.prompt}`,
+          tool_results: [],
+        };
+      }, delayMs);
+      tasks.set(input.task_id, snapshot);
+      knownSessions.add(input.session_id);
+
+      return toSnapshot(snapshot);
+    },
+
+    async getTaskStatus(taskId: string): Promise<AgentRuntimeTaskSnapshot> {
+      const current = tasks.get(taskId);
+      if (!current) {
+        return {
+          task_id: taskId,
+          session_id: "unknown",
+          status: "failed",
+          bootstrap_mode: "create",
+          send_and_wait_count: 0,
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          result: null,
+          error: {
+            code: "task_not_found",
+            message: "mock runtime task not found",
+          },
+        };
+      }
+      return toSnapshot(current);
+    },
+
+    async cancelTask(taskId: string): Promise<AgentRuntimeTaskSnapshot> {
+      const current = tasks.get(taskId);
+      if (!current) {
+        return {
+          task_id: taskId,
+          session_id: "unknown",
+          status: "failed",
+          bootstrap_mode: "create",
+          send_and_wait_count: 0,
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          result: null,
+          error: {
+            code: "task_not_found",
+            message: "mock runtime task not found",
+          },
+        };
+      }
+      if (current.timer) {
+        clearTimeout(current.timer);
+        current.timer = null;
+      }
+      if (current.status === "running") {
+        const canceledAt = new Date();
+        current.status = "canceled";
+        current.updated_at = canceledAt.toISOString();
+        current.completed_at = canceledAt.toISOString();
+        current.error = {
+          code: "task_canceled",
+          message: "mock runtime canceled",
+        };
+      }
+      return toSnapshot(current);
+    },
+  };
+}
+
+function toSnapshot(
+  value: AgentRuntimeTaskSnapshot & { timer: NodeJS.Timeout | null },
+): AgentRuntimeTaskSnapshot {
+  return {
+    task_id: value.task_id,
+    session_id: value.session_id,
+    status: value.status,
+    bootstrap_mode: value.bootstrap_mode,
+    send_and_wait_count: value.send_and_wait_count,
+    started_at: value.started_at,
+    updated_at: value.updated_at,
+    completed_at: value.completed_at ?? null,
+    result: value.result ?? null,
+    error: value.error ?? null,
+  };
+}
+
 function assertStatusCode(
   actual: number,
   expected: number,
@@ -691,6 +1012,12 @@ function truncateText(input: string, maxLength: number): string {
     return input;
   }
   return `${input.slice(0, maxLength - 3)}...`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 main().catch((error) => {

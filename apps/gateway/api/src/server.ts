@@ -3,6 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import {
+  HttpAgentRuntimeClient,
+  type AgentRuntimeClient,
+} from "./agent/runtimeClient.js";
 import { createGatewayPool } from "./gateway/db.js";
 import { GatewayApiError } from "./gateway/errors.js";
 import {
@@ -24,6 +28,9 @@ interface BuildGatewayApiServerOptions {
   hostCliTimeoutSec?: number;
   hostHttpTimeoutSec?: number;
   hostCliAllowlist?: string[];
+  agentRuntimeClient?: AgentRuntimeClient;
+  agentRuntimeBaseUrl?: string;
+  agentRuntimeTimeoutSec?: number;
 }
 
 export function buildGatewayApiServer(
@@ -35,9 +42,17 @@ export function buildGatewayApiServer(
 
   const pool = options.pool ?? createGatewayPool();
   const repository = options.repository ?? new PostgresGatewayRepository(pool);
+  const agentRuntimeClient =
+    options.agentRuntimeClient ??
+    new HttpAgentRuntimeClient({
+      baseUrl: options.agentRuntimeBaseUrl ?? resolveAgentRuntimeBaseUrl(),
+      timeoutSec:
+        options.agentRuntimeTimeoutSec ?? resolveAgentRuntimeTimeoutSec(),
+    });
   const service = new GatewayApiService(repository, {
     sessionIdleTimeoutSec:
       options.sessionIdleTimeoutSec ?? resolveSessionIdleTimeoutSec(),
+    agentRuntimeClient,
   });
   const mcpService = new McpToolService(repository, {
     containerSessionRoot:
@@ -138,6 +153,14 @@ function resolveHostCliAllowlist(): string[] {
     return ["git", "node", "npm", "yarn", "curl"];
   }
   return commands;
+}
+
+function resolveAgentRuntimeBaseUrl(): string {
+  return process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
+}
+
+function resolveAgentRuntimeTimeoutSec(): number {
+  return parsePositiveInt(process.env.AGENT_RUNTIME_TIMEOUT_SEC, 30);
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

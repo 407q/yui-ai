@@ -86,3 +86,11 @@ yarn api:smoke
 - `POST /v1/mcp/tool-call`
 - `container.*` / `host.*` / `memory.*` を Gateway で実行
 - `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加
+
+## P6 Agent Runtime（API/コマンド追加）
+
+- `apps/agent` に `create/resume + sendAndWait(1回)` 実行モデルを実装（mock provider）
+- `POST /v1/agent/tasks/run`
+- `GET /v1/agent/tasks/:taskId/status`
+- `POST /v1/agent/tasks/:taskId/cancel`
+- `yarn dev:agent`, `yarn agent:smoke`

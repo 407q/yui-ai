@@ -40,6 +40,31 @@ const approvalRespondBodySchema = z.object({
   decision: z.enum(["approved", "rejected", "timeout"]),
 });
 
+const taskParamsSchema = z.object({
+  taskId: z.string().min(1),
+});
+
+const agentToolCallSchema = z.object({
+  toolName: z.string().min(1),
+  executionTarget: z.string().optional(),
+  arguments: z.record(z.string(), z.unknown()),
+  reason: z.string().min(1),
+  delayMs: z.number().int().min(0).max(10000).optional(),
+});
+
+const agentRunBodySchema = z.object({
+  taskId: z.string().min(1),
+  sessionId: z.string().min(1),
+  userId: z.string().min(1),
+  prompt: z.string().min(1),
+  attachmentMountPath: z.string().optional(),
+  toolCalls: z.array(agentToolCallSchema).optional().default([]),
+});
+
+const agentCancelBodySchema = z.object({
+  userId: z.string().min(1),
+});
+
 const listSessionsQuerySchema = z.object({
   userId: z.string().min(1),
   limit: z.coerce.number().int().min(1).max(100).optional().default(20),
@@ -199,6 +224,57 @@ export async function registerGatewayRoutes(
 
     const sessions = await service.listUserSessions(query.userId, query.limit);
     return { sessions };
+  });
+
+  app.post("/v1/agent/tasks/run", async (request) => {
+    const body = parseOrThrow(
+      agentRunBodySchema,
+      request.body,
+      "invalid_agent_run_request",
+    );
+    const result = await service.runAgentTask({
+      taskId: body.taskId,
+      sessionId: body.sessionId,
+      userId: body.userId,
+      prompt: body.prompt,
+      attachmentMountPath: body.attachmentMountPath,
+      toolCalls: body.toolCalls.map((toolCall) => ({
+        tool_name: toolCall.toolName,
+        execution_target: toolCall.executionTarget,
+        arguments: toolCall.arguments,
+        reason: toolCall.reason,
+        delay_ms: toolCall.delayMs,
+      })),
+    });
+    return result;
+  });
+
+  app.get("/v1/agent/tasks/:taskId/status", async (request) => {
+    const params = parseOrThrow(
+      taskParamsSchema,
+      request.params,
+      "invalid_task_params",
+    );
+    return service.getAgentTaskStatus({
+      taskId: params.taskId,
+    });
+  });
+
+  app.post("/v1/agent/tasks/:taskId/cancel", async (request) => {
+    const params = parseOrThrow(
+      taskParamsSchema,
+      request.params,
+      "invalid_task_params",
+    );
+    const body = parseOrThrow(
+      agentCancelBodySchema,
+      request.body,
+      "invalid_agent_cancel_request",
+    );
+    return service.cancelAgentTask({
+      taskId: params.taskId,
+      userId: body.userId,
+    });
   });
 }
 

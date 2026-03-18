@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type {
+  AgentRuntimeClient,
+  AgentRuntimeTaskStatus,
+  AgentRuntimeToolCall,
+} from "../agent/runtimeClient.js";
 import { GatewayApiError } from "./errors.js";
 import type {
   GatewayRepository,
@@ -16,6 +21,7 @@ import type {
 
 export interface GatewayApiServiceOptions {
   sessionIdleTimeoutSec: number;
+  agentRuntimeClient?: AgentRuntimeClient;
 }
 
 export interface MentionStartInput {
@@ -54,6 +60,24 @@ export interface ApprovalRespondInput {
   approvalId: string;
   decision: "approved" | "rejected" | "timeout";
   responderId?: string | null;
+}
+
+export interface AgentTaskRunInput {
+  taskId: string;
+  sessionId: string;
+  userId: string;
+  prompt: string;
+  attachmentMountPath?: string;
+  toolCalls?: AgentRuntimeToolCall[];
+}
+
+export interface AgentTaskStatusInput {
+  taskId: string;
+}
+
+export interface AgentTaskCancelInput {
+  taskId: string;
+  userId: string;
 }
 
 export class GatewayApiService {
@@ -532,6 +556,261 @@ export class GatewayApiService {
     return this.repository.listSessionsByUser(userId, limit);
   }
 
+  async runAgentTask(input: AgentTaskRunInput): Promise<{
+    session: SessionRecord;
+    task: TaskRecord;
+    agentTask: {
+      task_id: string;
+      session_id: string;
+      status: AgentRuntimeTaskStatus;
+      bootstrap_mode: "create" | "resume";
+      send_and_wait_count: number;
+      started_at: string;
+      updated_at: string;
+    };
+  }> {
+    const runtimeClient = this.requireAgentRuntimeClient();
+    const task = await this.repository.findTaskById(input.taskId);
+    if (!task) {
+      throw new GatewayApiError(404, "task_not_found", "Task was not found.", {
+        taskId: input.taskId,
+      });
+    }
+    const session = await this.repository.findSessionById(input.sessionId);
+    if (!session) {
+      throw new GatewayApiError(
+        404,
+        "session_not_found",
+        "Session was not found.",
+        {
+          sessionId: input.sessionId,
+        },
+      );
+    }
+    if (task.sessionId !== session.sessionId) {
+      throw new GatewayApiError(
+        409,
+        "task_session_mismatch",
+        "Task and session association is invalid.",
+        {
+          taskId: task.taskId,
+          taskSessionId: task.sessionId,
+          sessionId: session.sessionId,
+        },
+      );
+    }
+
+    const now = new Date();
+    const idleDeadlineAt = this.calculateIdleDeadline(now);
+    if (task.status !== "running") {
+      await this.repository.updateTaskStatus(task.taskId, "running");
+    }
+    if (session.status !== "running") {
+      await this.repository.updateSessionStatus(session.sessionId, "running");
+    }
+    await this.repository.updateSessionActivity(session.sessionId, now, idleDeadlineAt);
+    await this.repository.appendTaskEvent({
+      eventId: newId("event"),
+      taskId: task.taskId,
+      eventType: "agent.run.requested",
+      payloadJson: {
+        requestedBy: input.userId,
+      },
+      timestamp: now,
+    });
+
+    const agentTask = await runtimeClient.runTask({
+      task_id: task.taskId,
+      session_id: session.sessionId,
+      prompt: input.prompt,
+      thread_context: {
+        channel_id: session.channelId,
+        thread_id: session.threadId,
+      },
+      attachment_mount_path:
+        input.attachmentMountPath ??
+        `/agent/session/${session.sessionId}/attachments`,
+      runtime_policy: {
+        tool_routing: {
+          mode: "gateway_only",
+          allow_external_mcp: false,
+        },
+      },
+      tool_calls: input.toolCalls ?? [],
+    });
+
+    await this.repository.appendTaskEvent({
+      eventId: newId("event"),
+      taskId: task.taskId,
+      eventType: "agent.run.accepted",
+      payloadJson: {
+        bootstrapMode: agentTask.bootstrap_mode,
+      },
+      timestamp: new Date(),
+    });
+
+    return {
+      session: {
+        ...session,
+        status: "running",
+        lastThreadActivityAt: now,
+        idleDeadlineAt,
+        updatedAt: now,
+      },
+      task: {
+        ...task,
+        status: "running",
+        updatedAt: now,
+      },
+      agentTask: {
+        task_id: agentTask.task_id,
+        session_id: agentTask.session_id,
+        status: agentTask.status,
+        bootstrap_mode: agentTask.bootstrap_mode,
+        send_and_wait_count: agentTask.send_and_wait_count,
+        started_at: agentTask.started_at,
+        updated_at: agentTask.updated_at,
+      },
+    };
+  }
+
+  async getAgentTaskStatus(input: AgentTaskStatusInput): Promise<{
+    session: SessionRecord;
+    task: TaskRecord;
+    agentTask: {
+      task_id: string;
+      session_id: string;
+      status: AgentRuntimeTaskStatus;
+      bootstrap_mode: "create" | "resume";
+      send_and_wait_count: number;
+      started_at: string;
+      updated_at: string;
+      completed_at: string | null;
+      result: {
+        final_answer: string;
+        tool_results: unknown[];
+      } | null;
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      } | null;
+    };
+  }> {
+    const runtimeClient = this.requireAgentRuntimeClient();
+    const task = await this.repository.findTaskById(input.taskId);
+    if (!task) {
+      throw new GatewayApiError(404, "task_not_found", "Task was not found.", {
+        taskId: input.taskId,
+      });
+    }
+    const session = await this.repository.findSessionById(task.sessionId);
+    if (!session) {
+      throw new GatewayApiError(
+        404,
+        "session_not_found",
+        "Session for task was not found.",
+        {
+          taskId: task.taskId,
+          sessionId: task.sessionId,
+        },
+      );
+    }
+
+    const agentTask = await runtimeClient.getTaskStatus(task.taskId);
+    const updated = await this.syncTaskStatusFromRuntime(task, session, agentTask.status);
+
+    return {
+      session: updated.session,
+      task: updated.task,
+      agentTask: {
+        task_id: agentTask.task_id,
+        session_id: agentTask.session_id,
+        status: agentTask.status,
+        bootstrap_mode: agentTask.bootstrap_mode,
+        send_and_wait_count: agentTask.send_and_wait_count,
+        started_at: agentTask.started_at,
+        updated_at: agentTask.updated_at,
+        completed_at: agentTask.completed_at ?? null,
+        result: agentTask.result ?? null,
+        error: agentTask.error ?? null,
+      },
+    };
+  }
+
+  async cancelAgentTask(input: AgentTaskCancelInput): Promise<{
+    session: SessionRecord;
+    task: TaskRecord;
+    agentTask: {
+      task_id: string;
+      session_id: string;
+      status: AgentRuntimeTaskStatus;
+      bootstrap_mode: "create" | "resume";
+      send_and_wait_count: number;
+      started_at: string;
+      updated_at: string;
+      completed_at: string | null;
+      result: {
+        final_answer: string;
+        tool_results: unknown[];
+      } | null;
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      } | null;
+    };
+  }> {
+    const runtimeClient = this.requireAgentRuntimeClient();
+    const task = await this.repository.findTaskById(input.taskId);
+    if (!task) {
+      throw new GatewayApiError(404, "task_not_found", "Task was not found.", {
+        taskId: input.taskId,
+      });
+    }
+    const session = await this.repository.findSessionById(task.sessionId);
+    if (!session) {
+      throw new GatewayApiError(
+        404,
+        "session_not_found",
+        "Session for task was not found.",
+        {
+          taskId: task.taskId,
+          sessionId: task.sessionId,
+        },
+      );
+    }
+
+    const canceled = await runtimeClient.cancelTask(task.taskId);
+    await this.repository.appendTaskEvent({
+      eventId: newId("event"),
+      taskId: task.taskId,
+      eventType: "agent.run.cancel_requested",
+      payloadJson: {
+        requestedBy: input.userId,
+      },
+      timestamp: new Date(),
+    });
+
+    const updated = await this.syncTaskStatusFromRuntime(task, session, canceled.status);
+    return {
+      session: updated.session,
+      task: updated.task,
+      agentTask: {
+        task_id: canceled.task_id,
+        session_id: canceled.session_id,
+        status: canceled.status,
+        bootstrap_mode: canceled.bootstrap_mode,
+        send_and_wait_count: canceled.send_and_wait_count,
+        started_at: canceled.started_at,
+        updated_at: canceled.updated_at,
+        completed_at: canceled.completed_at ?? null,
+        result: canceled.result ?? null,
+        error: canceled.error ?? null,
+      },
+    };
+  }
+
   private assertSessionOpen(session: SessionRecord): void {
     if (session.status === "closed_by_user") {
       throw new GatewayApiError(
@@ -582,6 +861,96 @@ export class GatewayApiService {
 
   private calculateIdleDeadline(base: Date): Date {
     return new Date(base.getTime() + this.options.sessionIdleTimeoutSec * 1000);
+  }
+
+  private requireAgentRuntimeClient(): AgentRuntimeClient {
+    if (!this.options.agentRuntimeClient) {
+      throw new GatewayApiError(
+        503,
+        "agent_runtime_unconfigured",
+        "Agent runtime client is not configured.",
+      );
+    }
+    return this.options.agentRuntimeClient;
+  }
+
+  private async syncTaskStatusFromRuntime(
+    task: TaskRecord,
+    session: SessionRecord,
+    runtimeStatus: AgentRuntimeTaskStatus,
+  ): Promise<{ session: SessionRecord; task: TaskRecord }> {
+    const now = new Date();
+    const mappedTaskStatus = this.mapRuntimeStatusToTaskStatus(runtimeStatus);
+    const mappedSessionStatus = this.mapRuntimeStatusToSessionStatus(runtimeStatus);
+    const idleDeadlineAt =
+      mappedSessionStatus === "idle_waiting" ? this.calculateIdleDeadline(now) : null;
+
+    if (mappedTaskStatus !== task.status) {
+      await this.repository.updateTaskStatus(task.taskId, mappedTaskStatus);
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: task.taskId,
+        eventType: `agent.run.${runtimeStatus}`,
+        payloadJson: {
+          runtimeStatus,
+        },
+        timestamp: now,
+      });
+    }
+
+    if (mappedSessionStatus !== session.status) {
+      await this.repository.updateSessionStatus(session.sessionId, mappedSessionStatus);
+    }
+
+    if (
+      mappedSessionStatus === "idle_waiting" ||
+      mappedSessionStatus === "running" ||
+      mappedSessionStatus === "failed"
+    ) {
+      await this.repository.updateSessionActivity(
+        session.sessionId,
+        now,
+        idleDeadlineAt,
+      );
+    }
+
+    return {
+      session: {
+        ...session,
+        status: mappedSessionStatus,
+        lastThreadActivityAt: now,
+        idleDeadlineAt,
+        updatedAt: now,
+      },
+      task: {
+        ...task,
+        status: mappedTaskStatus,
+        updatedAt: now,
+      },
+    };
+  }
+
+  private mapRuntimeStatusToTaskStatus(status: AgentRuntimeTaskStatus): TaskStatus {
+    if (status === "queued" || status === "running") {
+      return "running";
+    }
+    if (status === "completed") {
+      return "completed";
+    }
+    if (status === "canceled") {
+      return "canceled";
+    }
+    return "failed";
+  }
+
+  private mapRuntimeStatusToSessionStatus(status: AgentRuntimeTaskStatus): SessionStatus {
+    if (status === "queued" || status === "running") {
+      return "running";
+    }
+    if (status === "failed") {
+      return "failed";
+    }
+    return "idle_waiting";
   }
 }
 
