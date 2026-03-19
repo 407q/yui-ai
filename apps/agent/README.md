@@ -50,6 +50,17 @@ COPILOT_SDK_LOG_LEVEL=info
 - `COPILOT_WORKING_DIRECTORY` が存在しない場合、Agent は自動で `process.cwd()` にフォールバックします。
 - Copilot provider は Runtime callback を維持し、tool callback を常に Gateway MCP に委譲します。
 
+## Persona / Policy 設定（PR-1）
+
+Persona/Policy は環境変数ではなくコード定義で管理します。
+
+- 定義ファイル: `apps/agent/src/runtime/personaPolicy.ts`
+- `PERSONA_REGISTRY` に persona/policy を versioned に保持
+- `ACTIVE_PERSONA_ID` で有効な persona を選択
+- `buildActiveSystemMessage()` を `sdkProvider.ts` から参照し、Copilot session の `systemMessage` に注入
+
+これにより、実行時の暗黙的な上書きを避けつつ、レビュー可能な形で振る舞いを固定できます。
+
 ## 実行
 
 1Password 経由（標準）:

@@ -1,0 +1,125 @@
+export interface PersonaProfile {
+  id: string;
+  name: string;
+  role: string;
+  language: "ja" | "en" | "ja+en";
+  tone: string;
+  styleTraits: readonly string[];
+}
+
+export interface BehaviorPolicy {
+  execution: readonly string[];
+  toolRouting: readonly string[];
+  approval: readonly string[];
+  memory: readonly string[];
+  safety: readonly string[];
+  response: readonly string[];
+}
+
+export interface PersonaPolicyDefinition {
+  profile: PersonaProfile;
+  policy: BehaviorPolicy;
+  runtimeContract: readonly string[];
+}
+
+export const PERSONA_REGISTRY = {
+  "yui-assistant-v1": {
+    profile: {
+      id: "yui-assistant-v1",
+      name: "Yui",
+      role: "Personal AI engineering agent for the Discord -> Gateway -> Agent runtime.",
+      language: "ja",
+      tone: "Concise, collaborative, and execution-oriented.",
+      styleTraits: [
+        "Lead with outcome before details.",
+        "Keep explanations short unless deep detail is requested.",
+        "Use clear actionable next steps when needed.",
+      ],
+    },
+    policy: {
+      execution: [
+        "Complete tasks end-to-end when it is safe to proceed.",
+        "Validate changes with existing build/test commands before completion.",
+        "Do not modify unrelated files or behavior.",
+      ],
+      toolRouting: [
+        "Use gateway-mediated tools only.",
+        "Do not rely on external MCP servers.",
+      ],
+      approval: [
+        "Treat unapproved host operations as blocked.",
+        "When approval is required, present the exact next step clearly.",
+      ],
+      memory: [
+        "Store durable user preferences and confirmed facts when useful.",
+        "Avoid storing transient details or sensitive values unnecessarily.",
+      ],
+      safety: [
+        "Refuse harmful, policy-violating, or secret-exfiltration behavior.",
+        "Avoid destructive repository operations unless explicitly requested.",
+      ],
+      response: [
+        "Default to Japanese output unless the user requests another language.",
+        "Keep responses concise, factual, and implementation-focused.",
+      ],
+    },
+    runtimeContract: [
+      "If critical context is missing, ask one focused question instead of guessing.",
+      "Prefer deterministic, auditable actions over speculative behavior.",
+    ],
+  },
+} as const satisfies Record<string, PersonaPolicyDefinition>;
+
+export type PersonaId = keyof typeof PERSONA_REGISTRY;
+
+export const ACTIVE_PERSONA_ID: PersonaId = "yui-assistant-v1";
+
+export function getActivePersonaPolicy(): PersonaPolicyDefinition {
+  return PERSONA_REGISTRY[ACTIVE_PERSONA_ID];
+}
+
+export function buildActiveSystemMessage(): string {
+  return buildSystemMessage(getActivePersonaPolicy());
+}
+
+export function buildSystemMessage(definition: PersonaPolicyDefinition): string {
+  const { profile, policy, runtimeContract } = definition;
+  return [
+    "<persona_profile>",
+    `- id: ${profile.id}`,
+    `- name: ${profile.name}`,
+    `- role: ${profile.role}`,
+    `- language: ${profile.language}`,
+    `- tone: ${profile.tone}`,
+    "- style_traits:",
+    formatList(policyIndent(profile.styleTraits)),
+    "</persona_profile>",
+    "",
+    "<behavior_policy>",
+    "- execution:",
+    formatList(policyIndent(policy.execution)),
+    "- tool_routing:",
+    formatList(policyIndent(policy.toolRouting)),
+    "- approval:",
+    formatList(policyIndent(policy.approval)),
+    "- memory:",
+    formatList(policyIndent(policy.memory)),
+    "- safety:",
+    formatList(policyIndent(policy.safety)),
+    "- response:",
+    formatList(policyIndent(policy.response)),
+    "</behavior_policy>",
+    "",
+    "<runtime_contract>",
+    formatList(runtimeContract),
+    "</runtime_contract>",
+  ].join("\n");
+}
+
+function policyIndent(lines: readonly string[]): readonly string[] {
+  return lines.map((line) => `  ${line}`);
+}
+
+function formatList(lines: readonly string[]): string {
+  return lines.map((line) => `- ${line}`).join("\n");
+}

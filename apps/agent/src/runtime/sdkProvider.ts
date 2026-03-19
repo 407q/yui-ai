@@ -19,6 +19,7 @@ import type {
   PermissionRequestResult,
   ToolCallResult,
 } from "./types.js";
+import { buildActiveSystemMessage } from "./personaPolicy.js";
 
 export interface SdkSessionHandle {
   sdk_session_id: string;
@@ -346,6 +347,9 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     const availableTools = tools.map((tool) => tool.name);
     return {
       model: this.options.model,
+      systemMessage: {
+        content: buildActiveSystemMessage(),
+      },
       onPermissionRequest: this.createPermissionHandler(state),
       tools,
       availableTools,
