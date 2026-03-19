@@ -33,8 +33,8 @@ apps/
 ## 実装済みモック（Discord Bot / デバッグ退避）
 
 - 実装場所: `apps/gateway/api`
-- 退避済みモック本体: `apps/gateway/api/src/debug/mock-bot.ts`
-- エントリポイント: `apps/gateway/api/src/bot.ts`（退避版を読み込み）
+- 本体エントリポイント: `apps/gateway/api/src/bot.ts`（通常/Copilot 経路）
+- mock エントリポイント: `apps/gateway/api/src/debug/mock-bot.ts`（`YUI_BOT_MODE=mock` で起動）
 - 詳細: `apps/gateway/api/README.md`
 
 ## 共通コマンド
