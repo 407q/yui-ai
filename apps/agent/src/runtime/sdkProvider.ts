@@ -535,13 +535,32 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     }
     assertNotAborted(activeSend.input.signal);
 
-    const permission = await activeSend.input.callbacks.onPermissionRequest({
-      task_id: activeSend.input.task_id,
-      session_id: activeSend.input.session_id,
-      tool_name: input.toolName,
-      reason,
-      arguments: input.arguments,
-    });
+    let permission: PermissionRequestResult;
+    try {
+      permission = await activeSend.input.callbacks.onPermissionRequest({
+        task_id: activeSend.input.task_id,
+        session_id: activeSend.input.session_id,
+        tool_name: input.toolName,
+        reason,
+        arguments: input.arguments,
+      });
+    } catch (error) {
+      const message = `permission request failed: ${error instanceof Error ? error.message : String(error)}`;
+      const failedResult: ToolCallResult = {
+        task_id: activeSend.input.task_id,
+        call_id: `call_${randomUUID()}`,
+        status: "error",
+        error_code: "permission_request_failed",
+        message,
+      };
+      activeSend.runtimeToolResults.push(failedResult);
+      return {
+        resultType: "failure",
+        textResultForLlm: message,
+        error: message,
+      };
+    }
+
     if (permission.decision === "deny") {
       const deniedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
@@ -559,15 +578,33 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     }
 
     const callId = `call_${randomUUID()}`;
-    const toolResult = await activeSend.input.onToolCall({
-      task_id: activeSend.input.task_id,
-      session_id: activeSend.input.session_id,
-      call_id: callId,
-      tool_name: input.toolName,
-      execution_target: executionTarget,
-      arguments: input.arguments,
-      reason,
-    });
+    let toolResult: ToolCallResult;
+    try {
+      toolResult = await activeSend.input.onToolCall({
+        task_id: activeSend.input.task_id,
+        session_id: activeSend.input.session_id,
+        call_id: callId,
+        tool_name: input.toolName,
+        execution_target: executionTarget,
+        arguments: input.arguments,
+        reason,
+      });
+    } catch (error) {
+      const message = `tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
+      const failedResult: ToolCallResult = {
+        task_id: activeSend.input.task_id,
+        call_id: callId,
+        status: "error",
+        error_code: "tool_execution_failed",
+        message,
+      };
+      activeSend.runtimeToolResults.push(failedResult);
+      return {
+        resultType: "failure",
+        textResultForLlm: message,
+        error: message,
+      };
+    }
     activeSend.runtimeToolResults.push(toolResult);
 
     if (toolResult.status === "ok") {
