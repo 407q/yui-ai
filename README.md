@@ -28,6 +28,7 @@ apps/
 - `docs/development/copilot-agent-nodejs-requirements.md`
 - `docs/development/implementation-flow.md`（実装手順ガイド）
 - `docs/development/runtime-environment-template.md`（実行環境定義）
+- `docs/development/copilot-e2e-test-runbook.md`（Copilot E2E テスト手順）
 
 ## 実装済みモック（Discord Bot / デバッグ退避）
 
