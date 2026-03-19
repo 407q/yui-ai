@@ -38,7 +38,8 @@ interface QueuedRun {
 
 interface ToolApprovalRequest {
   tool: string;
-  operation: string;
+  operationCode: string;
+  operationLabel: string;
   target: string;
 }
 
@@ -720,7 +721,7 @@ async function requestApproval(
     `/v1/threads/${session.threadId}/approvals/request`,
     {
       userId: session.ownerUserId,
-      operation: request.operation,
+      operation: request.operationCode,
       path: request.target,
     },
   );
@@ -730,7 +731,7 @@ async function requestApproval(
   setSessionStatus(
     session,
     "waiting_approval",
-    `approval requested: ${request.tool} ${request.operation} ${request.target}`,
+    `approval requested: ${request.tool} ${request.operationCode} ${request.target}`,
   );
   touchSession(session);
 
@@ -740,7 +741,7 @@ async function requestApproval(
     .setColor(0xffb020)
     .addFields(
       { name: "使用したいツール", value: request.tool },
-      { name: "行う操作", value: request.operation },
+      { name: "行う操作", value: request.operationLabel },
       { name: "ターゲットとなる場所", value: request.target },
     );
 
@@ -937,17 +938,18 @@ function resolveApprovalRequestFromResults(
 
     const details = asRecord(result.details);
     const toolCall = toolCalls[index];
-    const operation =
+    const operationCode =
       readString(details, "operation") ?? inferApprovalOperationFromToolCall(toolCall);
     const target =
       readString(details, "scope") ?? inferApprovalTargetFromToolCall(toolCall);
-    if (!operation || !target) {
+    if (!operationCode || !target) {
       continue;
     }
 
     return {
-      tool: toolCall?.toolName ?? `host.${operation}`,
-      operation: describeApprovalOperation(operation),
+      tool: toolCall?.toolName ?? `host.${operationCode}`,
+      operationCode,
+      operationLabel: describeApprovalOperation(operationCode),
       target,
     };
   }
