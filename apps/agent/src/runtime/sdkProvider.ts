@@ -493,17 +493,18 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
 
   private defineGatewayTool<TArgs extends Record<string, unknown>>(
     state: SdkSessionState,
-    toolName: string,
+    gatewayToolName: string,
     description: string,
     parameters: z.ZodType<TArgs>,
     defaultReason: string,
   ): CopilotTool<any> {
-    return defineTool<TArgs>(toolName, {
+    const copilotToolName = toCopilotCustomToolName(gatewayToolName);
+    return defineTool<TArgs>(copilotToolName, {
       description,
       parameters,
       handler: async (args): Promise<ToolResultObject> =>
         this.executeGatewayToolCall(state, {
-          toolName,
+          toolName: gatewayToolName,
           arguments: toRecord(args),
           defaultReason,
         }),
@@ -793,6 +794,10 @@ function mapToolErrorToResultType(
 
 function toSdkSessionId(sessionId: string): string {
   return `yui_sdk_${sessionId}`;
+}
+
+function toCopilotCustomToolName(toolName: string): string {
+  return toolName.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
