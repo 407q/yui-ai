@@ -101,6 +101,7 @@ yarn api:smoke
 - Discord Bot が `POST /v1/agent/tasks/run` / `GET /v1/agent/tasks/:taskId/status` / `POST /v1/agent/tasks/:taskId/cancel` を利用
 - `/cancel` `/close` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
 - `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
+- `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能
 - Copilot SDK provider は引き続き `mock`（実 SDK は P8）
 - Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
 - `yarn orchestrator:smoke` で Orchestrator の起動/復旧ロジックを検証可能

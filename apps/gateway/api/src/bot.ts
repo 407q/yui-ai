@@ -199,6 +199,11 @@ interface GatewayAgentToolCall {
   delayMs?: number;
 }
 
+interface GatewayAgentToolCallBuildResult {
+  toolCalls: GatewayAgentToolCall[];
+  errors: string[];
+}
+
 interface GatewayAgentTaskSnapshot {
   task_id: string;
   session_id: string;
@@ -786,29 +791,134 @@ async function requestApproval(
   });
 }
 
-function buildAgentToolCalls(prompt: string): GatewayAgentToolCall[] {
+function buildAgentToolCalls(prompt: string): GatewayAgentToolCallBuildResult {
   const toolCalls: GatewayAgentToolCall[] = [];
-  const hostReadPath = extractHostReadDirectivePath(prompt);
-  if (hostReadPath) {
-    toolCalls.push({
-      toolName: "host.file_read",
-      executionTarget: "gateway_adapter",
-      arguments: {
-        path: hostReadPath,
-      },
-      reason: "user requested host file read",
-    });
+  const errors: string[] = [];
+  const lines = prompt.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const hostReadPath = extractHostReadDirectivePath(trimmed);
+    if (hostReadPath) {
+      toolCalls.push({
+        toolName: "host.file_read",
+        executionTarget: "gateway_adapter",
+        arguments: {
+          path: hostReadPath,
+        },
+        reason: "user requested host file read",
+      });
+      continue;
+    }
+
+    const parsedToolDirective = parseToolDirectiveLine(trimmed);
+    if (!parsedToolDirective.matched) {
+      continue;
+    }
+    if (parsedToolDirective.error) {
+      errors.push(parsedToolDirective.error);
+      continue;
+    }
+    const parsedToolCall = parsedToolDirective.toolCall;
+    if (!parsedToolCall) {
+      errors.push("invalid #tool directive.");
+      continue;
+    }
+    toolCalls.push(parsedToolCall);
   }
-  return toolCalls;
+  return {
+    toolCalls,
+    errors,
+  };
 }
 
 function extractHostReadDirectivePath(prompt: string): string | null {
-  const match = prompt.match(/#host-read:\s*(.+)$/m);
+  const match = prompt.match(/^#host-read:\s*(.+)$/i);
   const rawPath = match?.[1]?.trim();
   if (!rawPath) {
     return null;
   }
   return path.resolve(rawPath);
+}
+
+function parseToolDirectiveLine(
+  line: string,
+):
+  | { matched: false }
+  | { matched: true; toolCall: GatewayAgentToolCall; error?: undefined }
+  | { matched: true; toolCall?: undefined; error: string } {
+  if (!line.startsWith("#tool:")) {
+    return { matched: false };
+  }
+
+  const body = line.slice("#tool:".length).trim();
+  if (!body) {
+    return {
+      matched: true,
+      error: "empty #tool directive. expected `#tool: <tool_name> <json_arguments>`.",
+    };
+  }
+
+  const firstSpaceIndex = body.indexOf(" ");
+  const toolName = (firstSpaceIndex === -1 ? body : body.slice(0, firstSpaceIndex)).trim();
+  const rawArgs =
+    firstSpaceIndex === -1 ? "" : body.slice(firstSpaceIndex + 1).trim();
+  if (!toolName) {
+    return {
+      matched: true,
+      error: "invalid #tool directive. tool name is required.",
+    };
+  }
+
+  let argumentsPayload: Record<string, unknown> = {};
+  if (rawArgs) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawArgs);
+    } catch {
+      return {
+        matched: true,
+        error:
+          `invalid #tool JSON for \`${toolName}\`. arguments must be a JSON object.`,
+      };
+    }
+    const record = asRecord(parsed);
+    if (!record) {
+      return {
+        matched: true,
+        error:
+          `invalid #tool arguments for \`${toolName}\`. JSON object is required.`,
+      };
+    }
+    argumentsPayload = record;
+  }
+
+  return {
+    matched: true,
+    toolCall: {
+      toolName,
+      executionTarget: "gateway_adapter",
+      arguments: argumentsPayload,
+      reason: "user requested tool execution via #tool directive",
+    },
+  };
+}
+
+function formatToolCallSummary(toolCalls: GatewayAgentToolCall[]): string {
+  const names = toolCalls.map((toolCall) => toolCall.toolName);
+  const uniqueNames = [...new Set(names)];
+  const listed = uniqueNames
+    .slice(0, 4)
+    .map((name) => `\`${name}\``)
+    .join(", ");
+  const remaining = uniqueNames.length - Math.min(uniqueNames.length, 4);
+  if (remaining > 0) {
+    return `${listed} (+${remaining})`;
+  }
+  return listed;
 }
 
 function resolveApprovalRequestFromResults(
@@ -1149,6 +1259,28 @@ async function runAgentTask(
       );
     }
 
+    const parsedToolCalls = buildAgentToolCalls(prompt);
+    if (parsedToolCalls.errors.length > 0) {
+      setSessionStatus(session, "idle_waiting", "invalid tool directive");
+      touchSession(session);
+      await sendToThread(
+        session.threadId,
+        [
+          "⚠️ ツール指定の解析に失敗しました。",
+          "形式: `#tool: <tool_name> <JSON object>` または `#host-read: <path>`",
+          ...parsedToolCalls.errors.slice(0, 3).map((error) => `- ${error}`),
+        ].join("\n"),
+      );
+      return;
+    }
+    const toolCalls = parsedToolCalls.toolCalls;
+    if (toolCalls.length > 0) {
+      await sendToThread(
+        session.threadId,
+        `🧪 ツール実行デモを開始します: ${formatToolCallSummary(toolCalls)}`,
+      );
+    }
+
     let attempt = 0;
     let terminal: GatewayAgentTaskStatusResponse | null = null;
     while (attempt <= AGENT_APPROVAL_RETRY_MAX) {
@@ -1156,7 +1288,6 @@ async function runAgentTask(
         throw new SessionRunCanceledError("run canceled before agent execution");
       }
 
-      const toolCalls = buildAgentToolCalls(prompt);
       startTyping();
       terminal = await runAgentTaskAttempt(
         session,
