@@ -120,16 +120,18 @@ const AGENT_APPROVAL_RETRY_MAX = parsePositiveInt(
   3,
 );
 const TYPING_PULSE_MS = 7000;
-const REBOOT_EXIT_CODE = 75;
-const SHUTDOWN_DELAY_MS = 700;
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+function createDiscordClient(): Client {
+  return new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  });
+}
+
+let client = createDiscordClient();
 
 const sessionsById = new Map<string, MockSession>();
 const sessionIdByThreadId = new Map<Snowflake, string>();
@@ -649,7 +651,34 @@ async function setOfflineImmediately(): Promise<void> {
     await client.user.setStatus("invisible");
   }
 
-  client.destroy();
+  await client.destroy();
+}
+
+function resetRuntimeStateForReboot(): void {
+  for (const timer of idleTimerBySessionId.values()) {
+    clearTimeout(timer);
+  }
+  idleTimerBySessionId.clear();
+
+  for (const approval of pendingApprovals.values()) {
+    clearTimeout(approval.timeout);
+    approval.resolve("canceled");
+  }
+  pendingApprovals.clear();
+
+  sessionsById.clear();
+  sessionIdByThreadId.clear();
+  sessionIdsByUserId.clear();
+  runningSessionIds.clear();
+}
+
+async function rebootInProcess(): Promise<void> {
+  resetRuntimeStateForReboot();
+  runtimeInfrastructureStatus = ORCHESTRATOR_ENABLED ? "booting" : "ready";
+  await setOfflineImmediately();
+  client = createDiscordClient();
+  registerClientEventHandlers();
+  await client.login(DISCORD_BOT_TOKEN);
 }
 
 async function handleIdleTimeout(sessionId: string): Promise<void> {
@@ -1565,7 +1594,6 @@ async function executeSystemControl(
   const closedCount = await closeAllSessions(requestedBy);
 
   const actionLabel = mode === "reboot" ? "再起動" : "終了";
-  const exitCode = mode === "reboot" ? REBOOT_EXIT_CODE : 0;
   await notify(
     `⚠️ \`/${mode}\` を受け付けました。全 ${closedCount} セッションを終了し、システムを${actionLabel}します。`,
   );
@@ -1574,23 +1602,33 @@ async function executeSystemControl(
       `(closed_sessions: ${closedCount})`,
   );
 
+  const shutdownOptions: RuntimeSupervisorShutdownOptions =
+    mode === "reboot" ? { stopCompose: ORCHESTRATOR_ENABLED } : {};
   try {
-    await shutdownInfrastructure();
+    await shutdownInfrastructure(shutdownOptions);
   } catch (error) {
     console.error(`${LOG_PREFIX} infrastructure shutdown failed`, error);
   }
 
-  if (mode === "exit") {
+  if (mode === "reboot") {
+    try {
+      await rebootInProcess();
+      return;
+    } catch (error) {
+      isSystemControlPending = false;
+      throw error;
+    }
+  }
+
+  try {
     await setOfflineImmediately();
-    setTimeout(() => {
-      process.exit(exitCode);
-    }, 50);
-    return;
+  } catch (error) {
+    console.error(`${LOG_PREFIX} failed to set offline during exit`, error);
   }
 
   setTimeout(() => {
-    process.exit(exitCode);
-  }, SHUTDOWN_DELAY_MS);
+    process.exit(0);
+  }, 50);
 }
 
 async function startSessionFromMention(message: Message): Promise<void> {
@@ -1811,16 +1849,18 @@ async function handleThreadMessage(message: Message): Promise<void> {
   await runAgentTask(session, prompt, attachmentNames, message.author.id);
 }
 
-client.once(Events.ClientReady, (readyClient) => {
-  void (async () => {
-    const startupMessage =
-      `[bot:${BOT_MODE}] Logged in as ${readyClient.user.tag} | ` +
-      `idle=${IDLE_TIMEOUT_SEC}s | approval=${APPROVAL_TIMEOUT_SEC}s | ` +
-      `agent_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
-    console.log(startupMessage);
-    await sendSystemAlert(`🟢 ${startupMessage}`);
+async function handleClientReady(readyClient: Client<true>): Promise<void> {
+  const startupMessage =
+    `[bot:${BOT_MODE}] Logged in as ${readyClient.user.tag} | ` +
+    `idle=${IDLE_TIMEOUT_SEC}s | approval=${APPROVAL_TIMEOUT_SEC}s | ` +
+    `agent_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
+  console.log(startupMessage);
+  await sendSystemAlert(`🟢 ${startupMessage}`);
 
-    if (ORCHESTRATOR_ENABLED) {
+  if (ORCHESTRATOR_ENABLED) {
+    if (runtimeSupervisor) {
+      runtimeInfrastructureStatus = "ready";
+    } else {
       try {
         await bootInfrastructure();
       } catch (error) {
@@ -1830,46 +1870,63 @@ client.once(Events.ClientReady, (readyClient) => {
         );
       }
     }
-  })().catch((error: unknown) => {
-    console.error(`${LOG_PREFIX} ready handler failed`, error);
+  } else {
+    runtimeInfrastructureStatus = "ready";
+  }
+
+  if (isSystemControlPending) {
+    isSystemControlPending = false;
+    await sendSystemAlert(`🟢 [${ALERT_TAG}:control] reboot completed.`);
+  }
+}
+
+function registerClientEventHandlers(): void {
+  client.on(Events.ClientReady, (readyClient) => {
+    void handleClientReady(readyClient).catch((error: unknown) => {
+      void reportRuntimeError("ready handler failed", error);
+    });
   });
-});
 
-client.on(Events.MessageCreate, (message) => {
-  void (async () => {
-    if (message.author.bot || !client.user) {
-      return;
-    }
+  client.on(Events.MessageCreate, (message) => {
+    void (async () => {
+      if (message.author.bot || !client.user) {
+        return;
+      }
 
-    if (message.inGuild() && message.mentions.users.has(client.user.id) && !message.channel.isThread()) {
-      await startSessionFromMention(message);
-      return;
-    }
+      if (
+        message.inGuild() &&
+        message.mentions.users.has(client.user.id) &&
+        !message.channel.isThread()
+      ) {
+        await startSessionFromMention(message);
+        return;
+      }
 
-    await handleThreadMessage(message);
-  })().catch((error: unknown) => {
-    void reportRuntimeError("message handler failed", error);
+      await handleThreadMessage(message);
+    })().catch((error: unknown) => {
+      void reportRuntimeError("message handler failed", error);
+    });
   });
-});
 
-client.on(Events.InteractionCreate, (interaction) => {
-  void (async () => {
-    if (interaction.isButton()) {
-      await handleApprovalButton(interaction);
-      return;
-    }
+  client.on(Events.InteractionCreate, (interaction) => {
+    void (async () => {
+      if (interaction.isButton()) {
+        await handleApprovalButton(interaction);
+        return;
+      }
 
-    if (interaction.isChatInputCommand()) {
-      await handleSlashCommand(interaction);
-    }
-  })().catch((error: unknown) => {
-    void reportRuntimeError("interaction handler failed", error);
+      if (interaction.isChatInputCommand()) {
+        await handleSlashCommand(interaction);
+      }
+    })().catch((error: unknown) => {
+      void reportRuntimeError("interaction handler failed", error);
+    });
   });
-});
 
-client.on(Events.Error, (error) => {
-  void reportRuntimeError("client error event", error);
-});
+  client.on(Events.Error, (error) => {
+    void reportRuntimeError("client error event", error);
+  });
+}
 
 process.on("unhandledRejection", (reason: unknown) => {
   void reportRuntimeError("unhandledRejection", reason);
@@ -1901,4 +1958,5 @@ process.once("SIGINT", () => {
   });
 });
 
+registerClientEventHandlers();
 void client.login(DISCORD_BOT_TOKEN);
