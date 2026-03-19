@@ -216,7 +216,7 @@ function resolveSdkProvider(): CopilotSdkProvider {
     }
     return new CopilotCliSdkProvider({
       githubToken,
-      model: process.env.COPILOT_MODEL ?? "gpt-5.3-codex",
+      model: process.env.COPILOT_MODEL ?? "claude-sonnet-4.6",
       workingDirectory: process.env.COPILOT_WORKING_DIRECTORY ?? process.cwd(),
       sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
       sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),

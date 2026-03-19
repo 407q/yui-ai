@@ -36,7 +36,7 @@ AGENT_SDK_PROVIDER=mock
 ```bash
 AGENT_SDK_PROVIDER=copilot
 COPILOT_GITHUB_TOKEN=<GitHub token>
-COPILOT_MODEL=gpt-5.3-codex
+COPILOT_MODEL=claude-sonnet-4.6
 COPILOT_WORKING_DIRECTORY=/Volumes/nekodisk/github/yui-ai
 COPILOT_SEND_TIMEOUT_MS=180000
 COPILOT_SDK_LOG_LEVEL=info
@@ -45,7 +45,7 @@ COPILOT_SDK_LOG_LEVEL=info
 補足:
 
 - `COPILOT_GITHUB_TOKEN` は必須です（未設定時は起動失敗）。
-- `COPILOT_MODEL` は任意（既定: `gpt-5.3-codex`）。
+- `COPILOT_MODEL` は任意（既定: `claude-sonnet-4.6`）。
 - Copilot provider は Runtime callback を維持し、tool callback を常に Gateway MCP に委譲します。
 
 ## 実行
