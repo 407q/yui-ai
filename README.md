@@ -106,7 +106,7 @@ yarn api:smoke
 - `AGENT_SDK_PROVIDER=copilot` を追加
 - `COPILOT_GITHUB_TOKEN` 必須（未設定時は Agent 起動エラー）
 - `COPILOT_MODEL`（既定: `claude-sonnet-4.6`）
-- `COPILOT_WORKING_DIRECTORY` / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
+- `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
 - mock provider は継続利用可能（`agent:smoke` 回帰維持）
 
 ## P7 システム統合（Bot主導）

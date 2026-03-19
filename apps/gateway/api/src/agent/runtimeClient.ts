@@ -98,13 +98,17 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
       controller.abort();
     }, this.options.timeoutSec * 1000);
 
+    const hasBody = payload !== undefined;
+    const headers: Record<string, string> = {};
+    if (hasBody) {
+      headers["content-type"] = "application/json; charset=utf-8";
+    }
+
     try {
       const response = await fetch(`${this.options.baseUrl}${pathname}`, {
         method,
-        headers: {
-          "content-type": "application/json; charset=utf-8",
-        },
-        body: payload ? JSON.stringify(payload) : undefined,
+        headers,
+        body: hasBody ? JSON.stringify(payload) : undefined,
         signal: controller.signal,
       });
       const body = await parseJson(response);

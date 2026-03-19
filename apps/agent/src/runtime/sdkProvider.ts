@@ -160,6 +160,8 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
   constructor(private readonly options: CopilotCliSdkProviderOptions) {
     this.client = new CopilotClient({
       autoStart: false,
+      autoRestart: false,
+      useStdio: false,
       githubToken: options.githubToken,
       useLoggedInUser: false,
       cwd: options.workingDirectory,
