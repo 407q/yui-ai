@@ -1659,13 +1659,6 @@ async function handleSlashCommand(
   }
 
   if (commandName === "exit") {
-    if (!IS_MOCK_MODE) {
-      await interaction.reply({
-        content: "このコマンドは mock bot 専用です。",
-        ephemeral: true,
-      });
-      return;
-    }
     await executeSystemControl("exit", interaction.user.id, (content) =>
       interaction.reply({ content }),
     );
@@ -1673,13 +1666,6 @@ async function handleSlashCommand(
   }
 
   if (commandName === "reboot") {
-    if (!IS_MOCK_MODE) {
-      await interaction.reply({
-        content: "このコマンドは mock bot 専用です。",
-        ephemeral: true,
-      });
-      return;
-    }
     await executeSystemControl("reboot", interaction.user.id, (content) =>
       interaction.reply({ content }),
     );
