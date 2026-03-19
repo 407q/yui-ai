@@ -1,6 +1,6 @@
-# Discord Bot UX Mockup
+# Discord Bot（P8前デバッグ退避版）
 
-Discord 側 UX の確認用として、Bot を中心に実装したものです。  
+P8 実装前のデバッグ用として、P7 時点の Bot モック実装を `apps/gateway/api/src/debug/mock-bot.ts` に退避しています。  
 P7 で Bot から Agent Runtime API（`/v1/agent/tasks/*`）へ接続済みで、Copilot SDK provider は現在 `mock` を利用します。
 
 ## 実装している UX
@@ -50,6 +50,12 @@ yarn register:commands
 yarn dev
 ```
 
+明示的に退避版モックを起動する場合:
+
+```bash
+yarn dev:mock
+```
+
 ローカル環境変数（`op run` なし）:
 
 ```bash
@@ -62,6 +68,12 @@ yarn dev:local
 ```bash
 yarn build
 yarn start
+```
+
+退避版モックをビルド成果物から起動する場合:
+
+```bash
+yarn start:mock
 ```
 
 ローカル環境変数（`op run` なし）:

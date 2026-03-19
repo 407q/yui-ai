@@ -29,9 +29,11 @@ apps/
 - `docs/development/implementation-flow.md`（実装手順ガイド）
 - `docs/development/runtime-environment-template.md`（実行環境定義）
 
-## 実装済みモック（Discord Bot）
+## 実装済みモック（Discord Bot / デバッグ退避）
 
 - 実装場所: `apps/gateway/api`
+- 退避済みモック本体: `apps/gateway/api/src/debug/mock-bot.ts`
+- エントリポイント: `apps/gateway/api/src/bot.ts`（退避版を読み込み）
 - 詳細: `apps/gateway/api/README.md`
 
 ## 共通コマンド
@@ -40,8 +42,10 @@ apps/
 yarn install
 yarn register:commands
 yarn dev
+yarn dev:mock
 yarn build
 yarn start
+yarn start:mock
 yarn orchestrator:smoke
 ```
 
