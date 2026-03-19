@@ -202,41 +202,35 @@ async function main(): Promise<void> {
 }
 
 function resolveSdkProvider(): CopilotSdkProvider {
-  const provider = process.env.AGENT_SDK_PROVIDER ?? "mock";
-  if (provider === "mock") {
+  const botMode = resolveBotMode();
+  if (botMode === "mock") {
     return new MockCopilotSdkProvider();
   }
-  if (provider === "copilot") {
-    assertCopilotNodeVersion();
-    const githubToken = process.env.COPILOT_GITHUB_TOKEN;
-    if (!githubToken) {
-      throw new AgentRuntimeError(
-        500,
-        "copilot_token_missing",
-        "COPILOT_GITHUB_TOKEN is required when AGENT_SDK_PROVIDER=copilot.",
-      );
-    }
-    return new CopilotCliSdkProvider({
-      githubToken,
-      model: process.env.COPILOT_MODEL ?? "claude-sonnet-4.6",
-      workingDirectory: resolveCopilotWorkingDirectory(process.env.COPILOT_WORKING_DIRECTORY),
-      sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
-      sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
-    });
-  }
 
-  throw new AgentRuntimeError(
-    500,
-    "unsupported_sdk_provider",
-    "Unsupported AGENT_SDK_PROVIDER. Supported providers: mock, copilot.",
-    {
-      provider,
-    },
-  );
+  assertCopilotNodeVersion();
+  const githubToken = process.env.COPILOT_GITHUB_TOKEN;
+  if (!githubToken) {
+    throw new AgentRuntimeError(
+      500,
+      "copilot_token_missing",
+      "COPILOT_GITHUB_TOKEN is required when BOT_MODE=standard.",
+    );
+  }
+  return new CopilotCliSdkProvider({
+    githubToken,
+    model: process.env.COPILOT_MODEL ?? "claude-sonnet-4.6",
+    workingDirectory: resolveCopilotWorkingDirectory(process.env.COPILOT_WORKING_DIRECTORY),
+    sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
+    sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
+  });
 }
 
 function resolveGatewayBaseUrl(): string {
   return process.env.AGENT_GATEWAY_BASE_URL ?? "http://host.docker.internal:3800";
+}
+
+function resolveBotMode(): "mock" | "standard" {
+  return process.env.BOT_MODE === "mock" ? "mock" : "standard";
 }
 
 function assertCopilotNodeVersion(): void {
@@ -248,7 +242,7 @@ function assertCopilotNodeVersion(): void {
   throw new AgentRuntimeError(
     500,
     "copilot_node_version_unsupported",
-    "AGENT_SDK_PROVIDER=copilot requires Node.js >= 22 (node:sqlite support).",
+    "BOT_MODE=standard requires Node.js >= 22 (node:sqlite support).",
     {
       node_version: process.versions.node,
     },

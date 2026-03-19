@@ -25,23 +25,25 @@ const commands = [
     .setDescription("このスレッドのセッションを終了します"),
   new SlashCommandBuilder()
     .setName("exit")
-    .setDescription("全セッションを終了し、モックシステム全体を終了します"),
+    .setDescription("全セッションを終了し、Botシステム全体を終了します"),
   new SlashCommandBuilder()
     .setName("reboot")
-    .setDescription("全セッションを終了し、モックシステム全体を再起動します"),
+    .setDescription("全セッションを終了し、Botシステム全体を再起動します"),
   new SlashCommandBuilder()
     .setName("list")
     .setDescription("自分のセッション一覧を表示します"),
 ].map((builder) => builder.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(token);
+const botMode = process.env.BOT_MODE === "mock" ? "mock" : "standard";
+const logPrefix = `[bot:${botMode}]`;
 
 if (guildId) {
   await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
     body: commands,
   });
-  console.log(`[mockup] Registered commands for guild ${guildId}.`);
+  console.log(`${logPrefix} Registered commands for guild ${guildId}.`);
 } else {
   await rest.put(Routes.applicationCommands(clientId), { body: commands });
-  console.log("[mockup] Registered global commands.");
+  console.log(`${logPrefix} Registered global commands.`);
 }

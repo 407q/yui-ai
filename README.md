@@ -103,12 +103,12 @@ yarn api:smoke
 
 ### P8 初回（Copilot SDK provider）
 
-- `AGENT_SDK_PROVIDER=copilot` を追加
+- `BOT_MODE=standard` で Copilot provider を利用
 - Node.js 22 以上が必要（`node:sqlite`）
 - `COPILOT_GITHUB_TOKEN` 必須（未設定時は Agent 起動エラー）
 - `COPILOT_MODEL`（既定: `claude-sonnet-4.6`）
 - `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
-- mock provider は継続利用可能（`agent:smoke` 回帰維持）
+- `BOT_MODE=mock` では mock provider を利用（`agent:smoke` 回帰維持）
 
 ## P7 システム統合（Bot主導）
 
@@ -126,7 +126,7 @@ yarn api:smoke
 ## 次フェーズ（実装計画）
 
 - P8: Copilot SDK 実装
-  - `AGENT_SDK_PROVIDER=copilot` を追加し、実 SDK 実行へ切り替え可能にする
+  - `BOT_MODE` による provider 切替で、実 SDK 実行へ切り替え可能にする
 - P9: 運用品質
   - 監査ログ、冪等、バックアップ、監視復旧運用を整備
 

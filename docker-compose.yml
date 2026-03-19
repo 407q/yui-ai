@@ -30,13 +30,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      BOT_MODE: ${BOT_MODE:-standard}
       AGENT_BIND_HOST: 0.0.0.0
       AGENT_PORT: "3801"
       STATE_STORE_DSN: ${STATE_STORE_DSN:?STATE_STORE_DSN is required}
       MEMORY_STORE_DSN: ${MEMORY_STORE_DSN:?MEMORY_STORE_DSN is required}
       AGENT_GATEWAY_BASE_URL: ${AGENT_GATEWAY_BASE_URL:-http://host.docker.internal:3800}
       AGENT_MCP_TIMEOUT_SEC: ${AGENT_MCP_TIMEOUT_SEC:-30}
-      AGENT_SDK_PROVIDER: ${AGENT_SDK_PROVIDER:-mock}
       COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
       COPILOT_MODEL: ${COPILOT_MODEL:-gpt-5.3-codex}
       COPILOT_WORKING_DIRECTORY: ${COPILOT_WORKING_DIRECTORY:-/app}

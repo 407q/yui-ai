@@ -76,44 +76,47 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 if (!DISCORD_BOT_TOKEN) {
   throw new Error("DISCORD_BOT_TOKEN is required.");
 }
-const SYSTEM_ALERT_CHANNEL_ID = process.env.MOCK_SYSTEM_ALERT_CHANNEL_ID;
+const BOT_MODE = process.env.BOT_MODE === "mock" ? "mock" : "standard";
+const IS_MOCK_MODE = BOT_MODE === "mock";
+const LOG_PREFIX = `[bot:${BOT_MODE}]`;
+const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
+
+const SYSTEM_ALERT_CHANNEL_ID = process.env.BOT_SYSTEM_ALERT_CHANNEL_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
 const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
 const GATEWAY_API_PORT = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
 const ORCHESTRATOR_MONITOR_INTERVAL_SEC = parsePositiveInt(
-  process.env.MOCK_ORCHESTRATOR_MONITOR_INTERVAL_SEC,
+  process.env.BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC,
   15,
 );
 const ORCHESTRATOR_FAILURE_THRESHOLD = parsePositiveInt(
-  process.env.MOCK_ORCHESTRATOR_FAILURE_THRESHOLD,
+  process.env.BOT_ORCHESTRATOR_FAILURE_THRESHOLD,
   3,
 );
 const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
-  process.env.MOCK_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
+  process.env.BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
   240,
 );
 const ORCHESTRATOR_COMPOSE_BUILD =
-  process.env.MOCK_ORCHESTRATOR_COMPOSE_BUILD !== "false";
-const ORCHESTRATOR_ENABLED = process.env.MOCK_ORCHESTRATOR_ENABLED !== "false";
-const BOT_MODE = process.env.BOT_MODE === "mock" ? "mock" : "standard";
-const IS_MOCK_MODE = BOT_MODE === "mock";
+  process.env.BOT_ORCHESTRATOR_COMPOSE_BUILD !== "false";
+const ORCHESTRATOR_ENABLED = process.env.BOT_ORCHESTRATOR_ENABLED !== "false";
 
-const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.MOCK_IDLE_TIMEOUT_SEC, 600);
+const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.BOT_IDLE_TIMEOUT_SEC, 600);
 const APPROVAL_TIMEOUT_SEC = parsePositiveInt(
-  process.env.MOCK_APPROVAL_TIMEOUT_SEC,
+  process.env.BOT_APPROVAL_TIMEOUT_SEC,
   120,
 );
 const AGENT_STATUS_TIMEOUT_SEC = parsePositiveInt(
-  process.env.MOCK_AGENT_STATUS_TIMEOUT_SEC,
+  process.env.BOT_AGENT_STATUS_TIMEOUT_SEC,
   180,
 );
 const AGENT_POLL_INTERVAL_MS = parsePositiveInt(
-  process.env.MOCK_AGENT_POLL_INTERVAL_MS,
+  process.env.BOT_AGENT_POLL_INTERVAL_MS,
   800,
 );
 const AGENT_APPROVAL_RETRY_MAX = parsePositiveInt(
-  process.env.MOCK_AGENT_APPROVAL_RETRY_MAX,
+  process.env.BOT_AGENT_APPROVAL_RETRY_MAX,
   3,
 );
 const TYPING_PULSE_MS = 7000;
@@ -350,7 +353,7 @@ async function addReviewedReaction(message: Message): Promise<void> {
   try {
     await message.react("👀");
   } catch (error) {
-    console.error("[mockup] failed to add reviewed reaction", error);
+    console.error(`${LOG_PREFIX} failed to add reviewed reaction`, error);
   }
 }
 
@@ -495,7 +498,7 @@ async function sendSystemAlert(content: string): Promise<void> {
 
     await channel.send(content);
   } catch (error) {
-    console.error("[mockup] system alert failed", error);
+    console.error(`${LOG_PREFIX} system alert failed`, error);
   }
 }
 
@@ -586,12 +589,12 @@ async function gracefulTerminateFromInfrastructureFailure(
   try {
     await shutdownInfrastructure({ stopCompose: ORCHESTRATOR_ENABLED });
   } catch (error) {
-    console.error("[mockup] graceful infrastructure shutdown failed", error);
+    console.error(`${LOG_PREFIX} graceful infrastructure shutdown failed`, error);
   }
   try {
     await setOfflineImmediately();
   } catch (error) {
-    console.error("[mockup] failed to set offline during graceful shutdown", error);
+    console.error(`${LOG_PREFIX} failed to set offline during graceful shutdown`, error);
   }
 
   setTimeout(() => {
@@ -601,8 +604,8 @@ async function gracefulTerminateFromInfrastructureFailure(
 
 async function reportRuntimeError(context: string, error: unknown): Promise<void> {
   const summary = summarizeError(error);
-  console.error(`[mockup] ${context}`, error);
-  await sendSystemAlert(`🚨 [mockup-error] ${context}\n${summary}`);
+  console.error(`${LOG_PREFIX} ${context}`, error);
+  await sendSystemAlert(`🚨 [${ALERT_TAG}:error] ${context}\n${summary}`);
 }
 
 function startTypingLoop(threadId: Snowflake): () => void {
@@ -626,11 +629,11 @@ function startTypingLoop(threadId: Snowflake): () => void {
     await pulse();
     interval = setInterval(() => {
       void pulse().catch((error: unknown) => {
-        console.error("[mockup] typing pulse failed", error);
+        console.error(`${LOG_PREFIX} typing pulse failed`, error);
       });
     }, TYPING_PULSE_MS);
   })().catch((error: unknown) => {
-    console.error("[mockup] typing loop setup failed", error);
+    console.error(`${LOG_PREFIX} typing loop setup failed`, error);
   });
 
   return () => {
@@ -669,7 +672,7 @@ async function handleIdleTimeout(sessionId: string): Promise<void> {
   try {
     await syncCancelWithGateway(session, session.ownerUserId);
   } catch (error) {
-    console.error("[mockup] idle timeout cancel sync failed", error);
+    console.error(`${LOG_PREFIX} idle timeout cancel sync failed`, error);
   }
 
   setSessionStatus(
@@ -695,7 +698,7 @@ function buildStatusEmbed(session: MockSession): EmbedBuilder {
   const createdAt = `<t:${Math.floor(session.createdAt.getTime() / 1000)}:F>`;
 
   return new EmbedBuilder()
-    .setTitle("Mock Session Status")
+    .setTitle("Session Status")
     .setColor(0x5b8def)
     .addFields(
       { name: "status", value: `\`${session.status}\``, inline: true },
@@ -729,7 +732,7 @@ function buildListEmbed(userId: Snowflake): EmbedBuilder {
           .join("\n");
 
   return new EmbedBuilder()
-    .setTitle("My Sessions (Mock)")
+    .setTitle("My Sessions")
     .setColor(0x46c37b)
     .setDescription(description);
 }
@@ -774,7 +777,7 @@ async function requestApproval(
   touchSession(session);
 
   const approvalEmbed = new EmbedBuilder()
-    .setTitle("Tool Approval Request (Mock)")
+    .setTitle("Tool Approval Request")
     .setDescription("以下の操作を実行してよいか確認してください。")
     .setColor(0xffb020)
     .addFields(
@@ -816,7 +819,7 @@ async function requestApproval(
           decision: "timeout",
         },
       ).catch((error: unknown) => {
-        console.error("[mockup] approval timeout sync failed", error);
+        console.error(`${LOG_PREFIX} approval timeout sync failed`, error);
       });
       resolve("timeout");
     }, APPROVAL_TIMEOUT_SEC * 1000);
@@ -1412,7 +1415,7 @@ async function runAgentTask(
       session.threadId,
       "❌ 実行中にエラーが発生しました。少し待ってから再試行してください。",
     );
-    console.error("[mockup] run failed", error);
+    console.error(`${LOG_PREFIX} run failed`, error);
   } finally {
     clearTyping();
     runningSessionIds.delete(session.id);
@@ -1430,7 +1433,7 @@ async function runAgentTask(
         queuedRun.attachmentNames,
         queuedRun.triggeredByUserId,
       ).catch((error: unknown) => {
-        console.error("[mockup] queued resume failed", error);
+        console.error(`${LOG_PREFIX} queued resume failed`, error);
       });
     }
   }
@@ -1480,7 +1483,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
       },
     );
   } catch (error) {
-    console.error("[mockup] approval response sync failed", error);
+    console.error(`${LOG_PREFIX} approval response sync failed`, error);
     await interaction.reply({
       content:
         "承認結果を Gateway API へ反映できませんでした。しばらく待ってから再試行してください。",
@@ -1539,7 +1542,7 @@ async function closeAllSessions(by: Snowflake): Promise<number> {
     try {
       await syncCloseWithGateway(session, by);
     } catch (error) {
-      console.error("[mockup] close sync failed during system control", error);
+      console.error(`${LOG_PREFIX} close sync failed during system control`, error);
     }
     closeSession(session, by);
     closedCount += 1;
@@ -1567,14 +1570,14 @@ async function executeSystemControl(
     `⚠️ \`/${mode}\` を受け付けました。全 ${closedCount} セッションを終了し、システムを${actionLabel}します。`,
   );
   await sendSystemAlert(
-    `⚠️ [mockup-control] /${mode} requested by <@${requestedBy}> ` +
+    `⚠️ [${ALERT_TAG}:control] /${mode} requested by <@${requestedBy}> ` +
       `(closed_sessions: ${closedCount})`,
   );
 
   try {
     await shutdownInfrastructure();
   } catch (error) {
-    console.error("[mockup] infrastructure shutdown failed", error);
+    console.error(`${LOG_PREFIX} infrastructure shutdown failed`, error);
   }
 
   if (mode === "exit") {
@@ -1722,7 +1725,7 @@ async function handleSlashCommand(
     try {
       await refreshSessionFromGateway(session);
     } catch (error) {
-      console.error("[mockup] status sync failed", error);
+      console.error(`${LOG_PREFIX} status sync failed`, error);
     }
     await interaction.reply({
       embeds: [buildStatusEmbed(session)],
@@ -1735,7 +1738,7 @@ async function handleSlashCommand(
     try {
       await syncCancelWithGateway(session, interaction.user.id);
     } catch (error) {
-      console.error("[mockup] cancel sync failed", error);
+      console.error(`${LOG_PREFIX} cancel sync failed`, error);
       await interaction.reply({
         content:
           "Gateway API へのキャンセル反映に失敗しました。しばらく待ってから再試行してください。",
@@ -1753,7 +1756,7 @@ async function handleSlashCommand(
     try {
       await syncCloseWithGateway(session, interaction.user.id);
     } catch (error) {
-      console.error("[mockup] close sync failed", error);
+      console.error(`${LOG_PREFIX} close sync failed`, error);
       await interaction.reply({
         content:
           "Gateway API へのクローズ反映に失敗しました。しばらく待ってから再試行してください。",
@@ -1835,14 +1838,14 @@ client.once(Events.ClientReady, (readyClient) => {
       try {
         await bootInfrastructure();
       } catch (error) {
-        console.error("[mockup] orchestrator boot failed", error);
+        console.error(`${LOG_PREFIX} orchestrator boot failed`, error);
         await gracefulTerminateFromInfrastructureFailure(
           `boot failed: ${summarizeError(error)}`,
         );
       }
     }
   })().catch((error: unknown) => {
-    console.error("[mockup] ready handler failed", error);
+    console.error(`${LOG_PREFIX} ready handler failed`, error);
   });
 });
 
@@ -1897,7 +1900,7 @@ process.once("SIGTERM", () => {
     await shutdownInfrastructure();
     process.exit(0);
   })().catch((error: unknown) => {
-    console.error("[mockup] SIGTERM shutdown failed", error);
+    console.error(`${LOG_PREFIX} SIGTERM shutdown failed`, error);
     process.exit(1);
   });
 });
@@ -1907,7 +1910,7 @@ process.once("SIGINT", () => {
     await shutdownInfrastructure();
     process.exit(0);
   })().catch((error: unknown) => {
-    console.error("[mockup] SIGINT shutdown failed", error);
+    console.error(`${LOG_PREFIX} SIGINT shutdown failed`, error);
     process.exit(1);
   });
 });

@@ -120,7 +120,7 @@ async function main(): Promise<void> {
 }
 
 function resolveSessionIdleTimeoutSec(): number {
-  const raw = process.env.SESSION_IDLE_TIMEOUT_SEC ?? process.env.MOCK_IDLE_TIMEOUT_SEC;
+  const raw = process.env.SESSION_IDLE_TIMEOUT_SEC ?? process.env.BOT_IDLE_TIMEOUT_SEC;
   return parsePositiveInt(raw, 600);
 }
 

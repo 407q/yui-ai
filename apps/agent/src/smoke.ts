@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { buildAgentServer } from "./server.js";
 
 async function main(): Promise<void> {
+  process.env.BOT_MODE ??= "mock";
   const mcpServer = createMockMcpServer();
   await new Promise<void>((resolve, reject) => {
     mcpServer.listen(0, "127.0.0.1", () => resolve());
