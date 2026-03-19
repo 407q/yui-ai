@@ -91,6 +91,9 @@ yarn dev
 
 `yarn dev` 起動時に Bot 内 Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を実行し、`agent/postgres/gateway-api` の監視と段階復旧を行います。
 
+- 起動中に失敗した場合は起動処理を中断し、Gateway API/compose を停止して graceful に終了
+- 稼働中の障害時は `対象再起動 -> 全体再起動 -> 失敗時は全体終了` の順で試行
+
 Gateway API を別プロセスで手動起動したい場合は、以下で Orchestrator を無効化してください。
 
 ```bash

@@ -8,6 +8,7 @@ interface SupervisorHarness {
   commands: string[];
   alerts: string[];
   logs: string[];
+  fatalReasons: string[];
   starts: number;
   stops: number;
   nextProbe: () => RuntimeHealthSnapshot;
@@ -15,7 +16,10 @@ interface SupervisorHarness {
 
 async function main(): Promise<void> {
   await runBootScenario();
-  await runRecoveryScenario();
+  await runBootFailureRollbackScenario();
+  await runTargetedRecoveryScenario();
+  await runFullRestartRecoveryScenario();
+  await runFatalRecoveryScenario();
   console.log("[orchestrator:smoke] runtime supervisor checks passed.");
 }
 
@@ -26,21 +30,74 @@ async function runBootScenario(): Promise<void> {
   await supervisor.boot();
   await supervisor.shutdown();
 
-  assert(
-    harness.commands.some(
-      (command) => command === "docker compose up -d --build",
-    ),
+  assertIncludes(
+    harness.commands,
+    "docker compose up -d --build",
     "boot should call compose up",
   );
-  assert(
-    harness.commands.some((command) => command === "yarn db:migrate:local"),
+  assertIncludes(
+    harness.commands,
+    "yarn db:migrate:local",
     "boot should call db migrate",
   );
   assert(harness.starts >= 1, "boot should start gateway-api");
   assert(harness.stops >= 1, "shutdown should stop gateway-api");
 }
 
-async function runRecoveryScenario(): Promise<void> {
+async function runBootFailureRollbackScenario(): Promise<void> {
+  const harness = createHarness([unhealthySnapshot()]);
+  const supervisor = createSupervisor(harness, 2);
+
+  let failed = false;
+  try {
+    await supervisor.boot();
+  } catch {
+    failed = true;
+  }
+
+  assert(failed, "boot should fail when initial health check fails");
+  assertIncludes(
+    harness.commands,
+    "docker compose down --remove-orphans",
+    "boot failure should roll back compose",
+  );
+  assert(harness.starts >= 1, "boot failure scenario should start gateway-api once");
+  assert(harness.stops >= 1, "boot failure scenario should stop gateway-api");
+}
+
+async function runTargetedRecoveryScenario(): Promise<void> {
+  const harness = createHarness([
+    healthySnapshot(),
+    unhealthySnapshot(),
+    unhealthySnapshot(),
+    healthySnapshot(),
+  ]);
+  const supervisor = createSupervisor(harness, 2);
+
+  await supervisor.boot();
+  await supervisor.runMonitorCycleNow();
+  await supervisor.runMonitorCycleNow();
+  await supervisor.shutdown();
+
+  assertIncludes(
+    harness.commands,
+    "docker compose restart agent postgres",
+    "targeted recovery should restart compose services",
+  );
+  const migrateCount = harness.commands.filter(
+    (command) => command === "yarn db:migrate:local",
+  ).length;
+  assert(
+    migrateCount >= 2,
+    "targeted recovery should run db migrate after service restart",
+  );
+  assert(
+    harness.alerts.some((message) => message.includes("recovered after targeted restart")),
+    "targeted recovery should emit recovered alert",
+  );
+}
+
+async function runFullRestartRecoveryScenario(): Promise<void> {
   const harness = createHarness([
     healthySnapshot(),
     unhealthySnapshot(),
@@ -55,20 +112,45 @@ async function runRecoveryScenario(): Promise<void> {
   await supervisor.runMonitorCycleNow();
   await supervisor.shutdown();
 
-  assert(
-    harness.commands.includes("docker compose restart agent postgres"),
-    "recovery should restart compose services",
+  assertIncludes(
+    harness.commands,
+    "docker compose down --remove-orphans",
+    "full recovery should include compose down",
   );
-  const migrateCount = harness.commands.filter(
-    (command) => command === "yarn db:migrate:local",
+  const composeUpCount = harness.commands.filter(
+    (command) => command === "docker compose up -d --build",
   ).length;
+  assert(composeUpCount >= 2, "full recovery should compose up again");
   assert(
-    migrateCount >= 2,
-    "recovery should run db migrate again after compose restart",
+    harness.alerts.some((message) => message.includes("recovered after full restart")),
+    "full recovery should emit recovered alert",
+  );
+}
+
+async function runFatalRecoveryScenario(): Promise<void> {
+  const harness = createHarness([
+    healthySnapshot(),
+    unhealthySnapshot(),
+    unhealthySnapshot(),
+    unhealthySnapshot(),
+    unhealthySnapshot(),
+  ]);
+  const supervisor = createSupervisor(harness, 2);
+
+  await supervisor.boot();
+  await supervisor.runMonitorCycleNow();
+  await supervisor.runMonitorCycleNow();
+  await supervisor.shutdown();
+
+  assert(harness.fatalReasons.length === 1, "fatal recovery should invoke onFatal once");
+  const fatalReason = harness.fatalReasons[0] ?? "";
+  assert(
+    fatalReason.includes("recovery failed after full restart"),
+    "fatal reason should mention full restart failure",
   );
   assert(
-    harness.alerts.some((message) => message.includes("recovered")),
-    "recovery scenario should emit recovered alert",
+    harness.alerts.some((message) => message.includes("recovery failed after full restart")),
+    "fatal recovery should emit failure alert",
   );
 }
 
@@ -80,6 +162,7 @@ function createHarness(initialProbes: RuntimeHealthSnapshot[]): SupervisorHarnes
     commands: [],
     alerts: [],
     logs: [],
+    fatalReasons: [],
     starts: 0,
     stops: 0,
     nextProbe: () => {
@@ -110,6 +193,9 @@ function createSupervisor(
     },
     onAlert: async (message) => {
       harness.alerts.push(message);
+    },
+    onFatal: async (reason) => {
+      harness.fatalReasons.push(reason);
     },
     hooks: {
       execCommand: async (input: ExecCommandInput): Promise<ExecCommandOutput> => {
@@ -178,6 +264,10 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw new Error(`[orchestrator:smoke] assertion failed: ${message}`);
   }
+}
+
+function assertIncludes(haystack: string[], expected: string, message: string): void {
+  assert(haystack.includes(expected), `${message} (missing: ${expected})`);
 }
 
 main().catch((error) => {

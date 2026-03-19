@@ -45,6 +45,7 @@ export interface RuntimeSupervisorOptions {
   monitoringEnabled?: boolean;
   onLog?: (message: string) => void;
   onAlert?: (message: string) => Promise<void>;
+  onFatal?: (reason: string) => Promise<void>;
   hooks?: RuntimeSupervisorHooks;
 }
 
@@ -53,12 +54,17 @@ interface CommandSpec {
   args: string[];
 }
 
+export interface RuntimeSupervisorShutdownOptions {
+  stopCompose?: boolean;
+}
+
 export class RuntimeSupervisor {
   private gatewayApp: FastifyInstance | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   private monitorInFlight = false;
   private consecutiveFailures = 0;
   private booted = false;
+  private fatalTriggered = false;
 
   constructor(private readonly options: RuntimeSupervisorOptions) {}
 
@@ -69,17 +75,7 @@ export class RuntimeSupervisor {
 
     try {
       this.log("boot: compose up");
-      await this.runCommand(
-        this.options.composeBuild
-          ? {
-              command: "docker",
-              args: ["compose", "up", "-d", "--build"],
-            }
-          : {
-              command: "yarn",
-              args: ["compose:up:local"],
-            },
-      );
+      await this.runCommand(this.composeUpCommand());
       this.log("boot: db migrate");
       await this.runCommand({
         command: "yarn",
@@ -101,18 +97,32 @@ export class RuntimeSupervisor {
       }
     } catch (error) {
       this.stopMonitorLoop();
-      await this.stopGatewayApi();
       this.booted = false;
+      await this.runBootRollback();
       throw error;
     }
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(options: RuntimeSupervisorShutdownOptions = {}): Promise<void> {
     this.stopMonitorLoop();
-    await this.stopGatewayApi();
+    await this.stopGatewayApiBestEffort("shutdown");
+    if (options.stopCompose) {
+      await this.runCommandBestEffort(
+        {
+          command: "docker",
+          args: ["compose", "down", "--remove-orphans"],
+        },
+        "shutdown: compose down",
+      );
+    }
     this.consecutiveFailures = 0;
     this.booted = false;
-    this.log("shutdown: runtime supervisor stopped");
+    this.fatalTriggered = false;
+    this.log(
+      `shutdown: runtime supervisor stopped${
+        options.stopCompose ? " (compose stopped)" : ""
+      }`,
+    );
   }
 
   async runMonitorCycleNow(): Promise<void> {
@@ -185,46 +195,167 @@ export class RuntimeSupervisor {
       `⚠️ [orchestrator] health degraded, starting recovery: ${formatHealth(lastProbe)}`,
     );
 
+    const targetedProbe = await this.tryTargetedRestart(lastProbe);
+    if (isHealthy(targetedProbe)) {
+      this.consecutiveFailures = 0;
+      await this.alert("✅ [orchestrator] recovered after targeted restart.");
+      return;
+    }
+
+    await this.alert(
+      `⚠️ [orchestrator] targeted restart failed, trying full restart: ${formatHealth(
+        targetedProbe,
+      )}`,
+    );
+    const fullRestartProbe = await this.tryFullRestart();
+    if (isHealthy(fullRestartProbe)) {
+      this.consecutiveFailures = 0;
+      await this.alert("✅ [orchestrator] recovered after full restart.");
+      return;
+    }
+
+    this.consecutiveFailures = this.options.failureThreshold;
+    const fatalReason = `🚨 [orchestrator] recovery failed after full restart: ${formatHealth(
+      fullRestartProbe,
+    )}`;
+    await this.alert(fatalReason);
+    await this.triggerFatal(
+      `${fatalReason}. runtime supervisor will stop and request graceful shutdown.`,
+    );
+  }
+
+  private async triggerFatal(reason: string): Promise<void> {
+    if (this.fatalTriggered) {
+      return;
+    }
+    this.fatalTriggered = true;
+    this.stopMonitorLoop();
+    this.booted = false;
+    if (!this.options.onFatal) {
+      return;
+    }
+    await this.options.onFatal(reason);
+  }
+
+  private async tryTargetedRestart(
+    lastProbe: RuntimeHealthSnapshot,
+  ): Promise<RuntimeHealthSnapshot> {
+    let attempted = false;
+
+    if (!lastProbe.gateway.ok) {
+      attempted = true;
+      try {
+        this.log("recovery: restarting gateway-api");
+        await this.restartGatewayApi();
+      } catch (error) {
+        this.log(
+          `recovery: gateway restart failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (!lastProbe.agent.ok || !lastProbe.compose.ok) {
+      attempted = true;
+      try {
+        this.log("recovery: restarting compose services (agent/postgres)");
+        await this.runCommand({
+          command: "docker",
+          args: ["compose", "restart", "agent", "postgres"],
+        });
+        await this.runCommand({
+          command: "yarn",
+          args: ["db:migrate:local"],
+        });
+      } catch (error) {
+        this.log(
+          `recovery: compose service restart failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (!attempted) {
+      this.log("recovery: no targeted restart candidates");
+    }
+    return this.probeRuntime();
+  }
+
+  private async tryFullRestart(): Promise<RuntimeHealthSnapshot> {
     try {
-      await this.restartGatewayApi();
+      this.log("recovery: full restart begin");
+      await this.stopGatewayApiBestEffort("recovery: full restart gateway stop");
+      await this.runCommand({
+        command: "docker",
+        args: ["compose", "down", "--remove-orphans"],
+      });
+      await this.runCommand(this.composeUpCommand());
+      await this.runCommand({
+        command: "yarn",
+        args: ["db:migrate:local"],
+      });
+      await this.startGatewayApi();
     } catch (error) {
       this.log(
-        `recovery: gateway restart failed: ${
+        `recovery: full restart failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
 
-    const gatewayProbe = await this.probeRuntime();
-    if (isHealthy(gatewayProbe)) {
-      this.consecutiveFailures = 0;
-      await this.alert("✅ [orchestrator] recovered after gateway-api restart.");
-      return;
-    }
+    return this.probeRuntime();
+  }
 
-    this.log(`recovery: gateway restart not enough: ${formatHealth(gatewayProbe)}`);
-    await this.runCommand({
-      command: "docker",
-      args: ["compose", "restart", "agent", "postgres"],
-    });
-    await this.runCommand({
-      command: "yarn",
-      args: ["db:migrate:local"],
-    });
+  private composeUpCommand(): CommandSpec {
+    return this.options.composeBuild
+      ? {
+          command: "docker",
+          args: ["compose", "up", "-d", "--build"],
+        }
+      : {
+          command: "yarn",
+          args: ["compose:up:local"],
+        };
+  }
 
-    const composeProbe = await this.probeRuntime();
-    if (isHealthy(composeProbe)) {
-      this.consecutiveFailures = 0;
-      await this.alert("✅ [orchestrator] recovered after compose restart.");
-      return;
-    }
-
-    this.consecutiveFailures = this.options.failureThreshold;
-    await this.alert(
-      `🚨 [orchestrator] recovery failed, manual intervention required: ${formatHealth(
-        composeProbe,
-      )}`,
+  private async runBootRollback(): Promise<void> {
+    await this.stopGatewayApiBestEffort("boot rollback: gateway stop");
+    await this.runCommandBestEffort(
+      {
+        command: "docker",
+        args: ["compose", "down", "--remove-orphans"],
+      },
+      "boot rollback: compose down",
     );
+  }
+
+  private async stopGatewayApiBestEffort(context: string): Promise<void> {
+    try {
+      await this.stopGatewayApi();
+    } catch (error) {
+      this.log(
+        `${context} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async runCommandBestEffort(
+    spec: CommandSpec,
+    context: string,
+  ): Promise<void> {
+    try {
+      await this.runCommand(spec);
+    } catch (error) {
+      this.log(
+        `${context} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private async restartGatewayApi(): Promise<void> {

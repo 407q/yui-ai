@@ -15,7 +15,10 @@ import {
   Message,
   type Snowflake,
 } from "discord.js";
-import { RuntimeSupervisor } from "./orchestration/supervisor.js";
+import {
+  RuntimeSupervisor,
+  type RuntimeSupervisorShutdownOptions,
+} from "./orchestration/supervisor.js";
 
 type SessionStatus =
   | "running"
@@ -130,6 +133,7 @@ const pendingApprovals = new Map<string, PendingApproval>();
 const idleTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const runningSessionIds = new Set<string>();
 let isSystemControlPending = false;
+let isGracefulShutdownInProgress = false;
 let runtimeInfrastructureStatus: RuntimeInfrastructureStatus = ORCHESTRATOR_ENABLED
   ? "booting"
   : "ready";
@@ -537,6 +541,9 @@ async function bootInfrastructure(): Promise<void> {
     onAlert: async (message) => {
       await sendSystemAlert(message);
     },
+    onFatal: async (reason) => {
+      await gracefulTerminateFromInfrastructureFailure(reason);
+    },
   });
   runtimeSupervisor = supervisor;
 
@@ -552,13 +559,42 @@ async function bootInfrastructure(): Promise<void> {
   }
 }
 
-async function shutdownInfrastructure(): Promise<void> {
+async function shutdownInfrastructure(
+  options: RuntimeSupervisorShutdownOptions = {},
+): Promise<void> {
   if (!runtimeSupervisor) {
     return;
   }
 
-  await runtimeSupervisor.shutdown();
+  const supervisor = runtimeSupervisor;
   runtimeSupervisor = null;
+  await supervisor.shutdown(options);
+}
+
+async function gracefulTerminateFromInfrastructureFailure(
+  reason: string,
+): Promise<void> {
+  if (isGracefulShutdownInProgress) {
+    return;
+  }
+  isGracefulShutdownInProgress = true;
+
+  runtimeInfrastructureStatus = "failed";
+  await sendSystemAlert(`🚨 [orchestrator] ${reason}`);
+  try {
+    await shutdownInfrastructure({ stopCompose: ORCHESTRATOR_ENABLED });
+  } catch (error) {
+    console.error("[mockup] graceful infrastructure shutdown failed", error);
+  }
+  try {
+    await setOfflineImmediately();
+  } catch (error) {
+    console.error("[mockup] failed to set offline during graceful shutdown", error);
+  }
+
+  setTimeout(() => {
+    process.exit(1);
+  }, 50);
 }
 
 async function reportRuntimeError(context: string, error: unknown): Promise<void> {
@@ -1781,8 +1817,8 @@ client.once(Events.ClientReady, (readyClient) => {
         await bootInfrastructure();
       } catch (error) {
         console.error("[mockup] orchestrator boot failed", error);
-        await sendSystemAlert(
-          `🚨 [orchestrator] boot failed: ${summarizeError(error)}`,
+        await gracefulTerminateFromInfrastructureFailure(
+          `boot failed: ${summarizeError(error)}`,
         );
       }
     }

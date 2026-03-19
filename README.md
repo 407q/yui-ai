@@ -105,6 +105,8 @@ yarn api:smoke
 - `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能
 - Copilot SDK provider は引き続き `mock`（実 SDK は P8）
 - Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
+- 起動失敗時は Orchestrator が起動処理を中断して関連コンポーネントを停止し、プロセスを graceful に終了
+- 稼働中障害時は `対象再起動 -> 全体再起動 -> 失敗時は全体終了` の順で復旧を試行
 - `yarn orchestrator:smoke` で Orchestrator の起動/復旧ロジックを検証可能
 
 ## 次フェーズ（実装計画）
