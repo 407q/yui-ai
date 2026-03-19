@@ -1602,8 +1602,9 @@ async function executeSystemControl(
       `(closed_sessions: ${closedCount})`,
   );
 
-  const shutdownOptions: RuntimeSupervisorShutdownOptions =
-    mode === "reboot" ? { stopCompose: ORCHESTRATOR_ENABLED } : {};
+  const shutdownOptions: RuntimeSupervisorShutdownOptions = {
+    stopCompose: ORCHESTRATOR_ENABLED,
+  };
   try {
     await shutdownInfrastructure(shutdownOptions);
   } catch (error) {
