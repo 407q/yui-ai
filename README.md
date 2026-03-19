@@ -104,6 +104,7 @@ yarn api:smoke
 ### P8 初回（Copilot SDK provider）
 
 - `AGENT_SDK_PROVIDER=copilot` を追加
+- Node.js 22 以上が必要（`node:sqlite`）
 - `COPILOT_GITHUB_TOKEN` 必須（未設定時は Agent 起動エラー）
 - `COPILOT_MODEL`（既定: `claude-sonnet-4.6`）
 - `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加

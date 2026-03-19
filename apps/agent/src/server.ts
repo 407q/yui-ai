@@ -207,6 +207,7 @@ function resolveSdkProvider(): CopilotSdkProvider {
     return new MockCopilotSdkProvider();
   }
   if (provider === "copilot") {
+    assertCopilotNodeVersion();
     const githubToken = process.env.COPILOT_GITHUB_TOKEN;
     if (!githubToken) {
       throw new AgentRuntimeError(
@@ -236,6 +237,22 @@ function resolveSdkProvider(): CopilotSdkProvider {
 
 function resolveGatewayBaseUrl(): string {
   return process.env.AGENT_GATEWAY_BASE_URL ?? "http://host.docker.internal:3800";
+}
+
+function assertCopilotNodeVersion(): void {
+  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "", 10);
+  if (!Number.isFinite(major) || major >= 22) {
+    return;
+  }
+
+  throw new AgentRuntimeError(
+    500,
+    "copilot_node_version_unsupported",
+    "AGENT_SDK_PROVIDER=copilot requires Node.js >= 22 (node:sqlite support).",
+    {
+      node_version: process.versions.node,
+    },
+  );
 }
 
 function resolveCopilotWorkingDirectory(raw: string | undefined): string {

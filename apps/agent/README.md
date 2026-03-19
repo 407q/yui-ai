@@ -44,6 +44,7 @@ COPILOT_SDK_LOG_LEVEL=info
 
 補足:
 
+- `AGENT_SDK_PROVIDER=copilot` では Node.js 22 以上が必要です（`node:sqlite` を利用）。
 - `COPILOT_GITHUB_TOKEN` は必須です（未設定時は起動失敗）。
 - `COPILOT_MODEL` は任意（既定: `claude-sonnet-4.6`）。
 - `COPILOT_WORKING_DIRECTORY` が存在しない場合、Agent は自動で `process.cwd()` にフォールバックします。
