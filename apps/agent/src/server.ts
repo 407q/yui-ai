@@ -300,6 +300,18 @@ function isEntrypoint(): boolean {
   return path.resolve(argvPath) === currentFilePath;
 }
 
+// Global error handlers for uncaught exceptions and unhandled promise rejections
+process.on("uncaughtException", (error) => {
+  console.error("[agent] uncaught exception:", error);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  const message = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+  console.error("[agent] unhandled rejection:", message);
+  process.exit(1);
+});
+
 if (isEntrypoint()) {
   main().catch((error) => {
     if (error instanceof Error) {

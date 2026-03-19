@@ -1,0 +1,63 @@
+yarn run v1.22.22
+$ /app/node_modules/.bin/tsx apps/agent/src/server.ts
+{"level":30,"time":1773902719184,"pid":30,"hostname":"826fbe08d891","msg":"Server listening at http://127.0.0.1:3801"}
+{"level":30,"time":1773902719185,"pid":30,"hostname":"826fbe08d891","msg":"Server listening at http://192.168.97.3:3801"}
+{"level":30,"time":1773902719185,"pid":30,"hostname":"826fbe08d891","msg":"[agent] listening on 0.0.0.0:3801"}
+{"level":30,"time":1773902721713,"pid":30,"hostname":"826fbe08d891","reqId":"req-1","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":50762},"msg":"incoming request"}
+{"level":30,"time":1773902721721,"pid":30,"hostname":"826fbe08d891","reqId":"req-1","res":{"statusCode":200},"responseTime":7.24209900200367,"msg":"request completed"}
+{"level":30,"time":1773902723731,"pid":30,"hostname":"826fbe08d891","reqId":"req-2","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":33386},"msg":"incoming request"}
+{"level":30,"time":1773902723732,"pid":30,"hostname":"826fbe08d891","reqId":"req-2","res":{"statusCode":200},"responseTime":0.23924800008535385,"msg":"request completed"}
+{"level":30,"time":1773902730423,"pid":30,"hostname":"826fbe08d891","reqId":"req-3","req":{"method":"POST","url":"/v1/tasks/run","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":50762},"msg":"incoming request"}
+{"level":30,"time":1773902730443,"pid":30,"hostname":"826fbe08d891","reqId":"req-3","res":{"statusCode":202},"responseTime":19.07957199960947,"msg":"request completed"}
+node:internal/streams/writable:491
+    err = new ERR_STREAM_DESTROYED('write');
+          ^
+
+Error [ERR_STREAM_DESTROYED]: Cannot call write after a stream was destroyed
+    at _write (node:internal/streams/writable:491:11)
+    at Writable.write (node:internal/streams/writable:510:10)
+    at /app/node_modules/vscode-jsonrpc/lib/node/ril.js:88:29
+    at new Promise (<anonymous>)
+    at WritableStreamWrapper.write (/app/node_modules/vscode-jsonrpc/lib/node/ril.js:78:16)
+    at StreamMessageWriter.doWrite (/app/node_modules/vscode-jsonrpc/lib/common/messageWriter.js:99:33)
+    at /app/node_modules/vscode-jsonrpc/lib/common/messageWriter.js:90:29 {
+  code: 'ERR_STREAM_DESTROYED'
+}
+
+Node.js v20.20.1
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.
+yarn run v1.22.22
+$ /app/node_modules/.bin/tsx apps/agent/src/server.ts
+{"level":30,"time":1773902731128,"pid":31,"hostname":"826fbe08d891","msg":"Server listening at http://127.0.0.1:3801"}
+{"level":30,"time":1773902731128,"pid":31,"hostname":"826fbe08d891","msg":"Server listening at http://192.168.97.3:3801"}
+{"level":30,"time":1773902731128,"pid":31,"hostname":"826fbe08d891","msg":"[agent] listening on 0.0.0.0:3801"}
+{"level":30,"time":1773902735786,"pid":31,"hostname":"826fbe08d891","reqId":"req-1","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":40366},"msg":"incoming request"}
+{"level":30,"time":1773902735790,"pid":31,"hostname":"826fbe08d891","reqId":"req-1","res":{"statusCode":200},"responseTime":3.2378029972314835,"msg":"request completed"}
+{"level":30,"time":1773902736788,"pid":31,"hostname":"826fbe08d891","reqId":"req-2","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":46667},"msg":"incoming request"}
+{"level":30,"time":1773902736789,"pid":31,"hostname":"826fbe08d891","reqId":"req-2","res":{"statusCode":200},"responseTime":0.8530749976634979,"msg":"request completed"}
+{"level":30,"time":1773902745945,"pid":31,"hostname":"826fbe08d891","reqId":"req-3","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":49970},"msg":"incoming request"}
+{"level":30,"time":1773902745947,"pid":31,"hostname":"826fbe08d891","reqId":"req-3","res":{"statusCode":200},"responseTime":2.5863509997725487,"msg":"request completed"}
+{"level":30,"time":1773902751782,"pid":31,"hostname":"826fbe08d891","reqId":"req-4","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":46667},"msg":"incoming request"}
+{"level":30,"time":1773902751783,"pid":31,"hostname":"826fbe08d891","reqId":"req-4","res":{"statusCode":200},"responseTime":0.8374079987406731,"msg":"request completed"}
+{"level":30,"time":1773902756099,"pid":31,"hostname":"826fbe08d891","reqId":"req-5","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":58418},"msg":"incoming request"}
+{"level":30,"time":1773902756099,"pid":31,"hostname":"826fbe08d891","reqId":"req-5","res":{"statusCode":200},"responseTime":0.18874900043010712,"msg":"request completed"}
+{"level":30,"time":1773902766253,"pid":31,"hostname":"826fbe08d891","reqId":"req-6","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":43562},"msg":"incoming request"}
+{"level":30,"time":1773902766255,"pid":31,"hostname":"826fbe08d891","reqId":"req-6","res":{"statusCode":200},"responseTime":2.4602680057287216,"msg":"request completed"}
+{"level":30,"time":1773902766783,"pid":31,"hostname":"826fbe08d891","reqId":"req-7","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":46667},"msg":"incoming request"}
+{"level":30,"time":1773902766785,"pid":31,"hostname":"826fbe08d891","reqId":"req-7","res":{"statusCode":200},"responseTime":1.4191540032625198,"msg":"request completed"}
+{"level":30,"time":1773902776424,"pid":31,"hostname":"826fbe08d891","reqId":"req-8","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":43594},"msg":"incoming request"}
+{"level":30,"time":1773902776425,"pid":31,"hostname":"826fbe08d891","reqId":"req-8","res":{"statusCode":200},"responseTime":1.0609489977359772,"msg":"request completed"}
+{"level":30,"time":1773902776919,"pid":31,"hostname":"826fbe08d891","reqId":"req-9","req":{"method":"POST","url":"/v1/tasks/task_mmx3vuru_yktf2p_0edb465d/cancel","host":"127.0.0.1:3801","remoteAddress":"192.168.97.1","remotePort":46667},"msg":"incoming request"}
+[agent] unexpected error: FastifyError [Error]: Body cannot be empty when content-type is set to 'application/json'
+    at Parser.defaultJsonParser [as fn] (/app/node_modules/fastify/lib/content-type-parser.js:313:12)
+    at IncomingMessage.onEnd (/app/node_modules/fastify/lib/content-type-parser.js:299:27)
+    at IncomingMessage.emit (node:events:524:28)
+    at endReadableNT (node:internal/streams/readable:1698:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  code: 'FST_ERR_CTP_EMPTY_JSON_BODY',
+  statusCode: 400
+}
+{"level":30,"time":1773902776927,"pid":31,"hostname":"826fbe08d891","reqId":"req-9","res":{"statusCode":500},"responseTime":7.518471002578735,"msg":"request completed"}
+{"level":30,"time":1773902786570,"pid":31,"hostname":"826fbe08d891","reqId":"req-a","req":{"method":"GET","url":"/health","host":"127.0.0.1:3801","remoteAddress":"127.0.0.1","remotePort":51106},"msg":"incoming request"}
+{"level":30,"time":1773902786571,"pid":31,"hostname":"826fbe08d891","reqId":"req-a","res":{"statusCode":200},"responseTime":0.31591400504112244,"msg":"request completed"}

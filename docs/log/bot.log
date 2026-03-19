@@ -1,0 +1,35 @@
+yarn run v1.22.22
+$ op run --env-file=.env.op -- yarn start:local
+$ node dist/apps/gateway/api/bot.js
+[mockup] Logged in as yuiꔛꕤ*｡ﾟ#2472 | idle=600s | approval=120s | agent_timeout=180s | infra=booting
+[orchestrator] boot: compose up
+[orchestrator] boot: db migrate
+[orchestrator] boot: gateway-api start
+{"level":30,"time":1773902721701,"pid":67599,"hostname":"keitodama-Air.local","msg":"Server listening at http://127.0.0.1:3800"}
+{"level":30,"time":1773902721707,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-1","req":{"method":"GET","url":"/health","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":60991},"msg":"incoming request"}
+{"level":30,"time":1773902721725,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-1","res":{"statusCode":200},"responseTime":18.057334005832672,"msg":"request completed"}
+[orchestrator] boot: infrastructure is healthy
+[orchestrator] monitor: started (interval=15s)
+{"level":30,"time":1773902730363,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-2","req":{"method":"POST","url":"/v1/discord/mentions/start","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":60991},"msg":"incoming request"}
+{"level":30,"time":1773902730403,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-2","res":{"statusCode":201},"responseTime":39.59929199516773,"msg":"request completed"}
+{"level":30,"time":1773902730407,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-3","req":{"method":"POST","url":"/v1/agent/tasks/run","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":61003},"msg":"incoming request"}
+{"level":30,"time":1773902730444,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-3","res":{"statusCode":200},"responseTime":36.54975000023842,"msg":"request completed"}
+{"level":30,"time":1773902730446,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-4","req":{"method":"GET","url":"/v1/agent/tasks/task_mmx3vuru_yktf2p_0edb465d/status","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":60991},"msg":"incoming request"}
+{"level":30,"time":1773902730455,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-4","res":{"statusCode":502},"responseTime":8.732207998633385,"msg":"request completed"}
+[mockup] run failed GatewayApiRequestError: [gateway-api] GET /v1/agent/tasks/task_mmx3vuru_yktf2p_0edb465d/status failed: 502 Bad Gateway {"error":"agent_runtime_unreachable","message":"Agent runtime is unreachable.","details":{"message":"fetch failed"}}
+    at gatewayApiRequest (file:///Volumes/nekodisk/github/yui-ai/dist/apps/gateway/api/debug/mock-bot.js:92:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async waitForAgentTaskTerminalStatus (file:///Volumes/nekodisk/github/yui-ai/dist/apps/gateway/api/debug/mock-bot.js:714:24)
+    at async runAgentTask (file:///Volumes/nekodisk/github/yui-ai/dist/apps/gateway/api/debug/mock-bot.js:841:24)
+    at async startSessionFromMention (file:///Volumes/nekodisk/github/yui-ai/dist/apps/gateway/api/debug/mock-bot.js:1071:5)
+    at async file:///Volumes/nekodisk/github/yui-ai/dist/apps/gateway/api/debug/mock-bot.js:1233:13 {
+  method: 'GET',
+  pathname: '/v1/agent/tasks/task_mmx3vuru_yktf2p_0edb465d/status',
+  statusCode: 502,
+  statusText: 'Bad Gateway',
+  responseText: '{"error":"agent_runtime_unreachable","message":"Agent runtime is unreachable.","details":{"message":"fetch failed"}}'
+}
+{"level":30,"time":1773902736786,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-5","req":{"method":"GET","url":"/health","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":60991},"msg":"incoming request"}
+{"level":30,"time":1773902736788,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-5","res":{"statusCode":200},"responseTime":1.4528750032186508,"msg":"request completed"}
+{"level":30,"time":1773902751789,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-6","req":{"method":"GET","url":"/health","host":"127.0.0.1:3800","remoteAddress":"127.0.0.1","remotePort":60991},"msg":"incoming request"}
+{"level":30,"time":1773902751800,"pid":67599,"hostname":"keitodama-Air.local","reqId":"req-6","res":{"statusCode":200},"responseTime":10.82354199886322,"msg":"request completed"}
