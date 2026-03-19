@@ -100,6 +100,14 @@ yarn api:smoke
 - `POST /v1/agent/tasks/:taskId/cancel`
 - `yarn dev:agent`, `yarn agent:smoke`
 
+### P8 初回（Copilot SDK provider）
+
+- `AGENT_SDK_PROVIDER=copilot` を追加
+- `COPILOT_GITHUB_TOKEN` 必須（未設定時は Agent 起動エラー）
+- `COPILOT_MODEL`（既定: `gpt-5.3-codex`）
+- `COPILOT_WORKING_DIRECTORY` / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
+- mock provider は継続利用可能（`agent:smoke` 回帰維持）
+
 ## P7 システム統合（Bot主導）
 
 - Discord Bot が `POST /v1/agent/tasks/run` / `GET /v1/agent/tasks/:taskId/status` / `POST /v1/agent/tasks/:taskId/cancel` を利用
@@ -107,7 +115,7 @@ yarn api:smoke
 - `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
 - `#host-read` は承認後に同一 path / operation の permission が付与され、再試行で承認ループしない
 - `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能
-- Copilot SDK provider は引き続き `mock`（実 SDK は P8）
+- P7 時点では Copilot SDK provider は `mock` を使用（P8 初回で `copilot` を追加）
 - Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
 - 起動失敗時は Orchestrator が起動処理を中断して関連コンポーネントを停止し、プロセスを graceful に終了
 - 稼働中障害時は `対象再起動 -> 全体再起動 -> 失敗時は全体終了` の順で復旧を試行

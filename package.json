@@ -47,6 +47,7 @@
     "compose:logs": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:logs:local"
   },
   "dependencies": {
+    "@github/copilot-sdk": "^0.1.32",
     "discord.js": "^14.18.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.8.2",

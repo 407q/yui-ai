@@ -7,6 +7,7 @@ import { AgentRuntimeError } from "./runtime/errors.js";
 import { GatewayMcpClient } from "./runtime/gatewayMcpClient.js";
 import { AgentRuntimeService } from "./runtime/service.js";
 import {
+  CopilotCliSdkProvider,
   MockCopilotSdkProvider,
   type CopilotSdkProvider,
 } from "./runtime/sdkProvider.js";
@@ -95,6 +96,12 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
   });
   const runtimeService = new AgentRuntimeService(sdkProvider, gatewayMcpClient);
 
+  app.addHook("onClose", async () => {
+    if (typeof sdkProvider.shutdown === "function") {
+      await sdkProvider.shutdown();
+    }
+  });
+
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AgentRuntimeError) {
       return reply.code(error.statusCode).send({
@@ -162,7 +169,10 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
 async function main(): Promise<void> {
   const host = process.env.AGENT_BIND_HOST ?? "0.0.0.0";
   const port = resolvePositiveInt(process.env.AGENT_PORT, 3801);
-  const app = buildAgentServer();
+  const sdkProvider = resolveSdkProvider();
+  const app = buildAgentServer({
+    sdkProvider,
+  });
 
   await app.listen({ host, port });
   app.log.info(`[agent] listening on ${host}:${port}`);
@@ -195,11 +205,28 @@ function resolveSdkProvider(): CopilotSdkProvider {
   if (provider === "mock") {
     return new MockCopilotSdkProvider();
   }
+  if (provider === "copilot") {
+    const githubToken = process.env.COPILOT_GITHUB_TOKEN;
+    if (!githubToken) {
+      throw new AgentRuntimeError(
+        500,
+        "copilot_token_missing",
+        "COPILOT_GITHUB_TOKEN is required when AGENT_SDK_PROVIDER=copilot.",
+      );
+    }
+    return new CopilotCliSdkProvider({
+      githubToken,
+      model: process.env.COPILOT_MODEL ?? "gpt-5.3-codex",
+      workingDirectory: process.env.COPILOT_WORKING_DIRECTORY ?? process.cwd(),
+      sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
+      sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
+    });
+  }
 
   throw new AgentRuntimeError(
     500,
     "unsupported_sdk_provider",
-    "Unsupported AGENT_SDK_PROVIDER. Supported providers: mock.",
+    "Unsupported AGENT_SDK_PROVIDER. Supported providers: mock, copilot.",
     {
       provider,
     },
@@ -221,6 +248,31 @@ function resolvePositiveInt(raw: string | undefined, fallback: number): number {
   }
 
   return parsed;
+}
+
+function resolveCopilotSdkLogLevel(
+  raw: string | undefined,
+): "none" | "error" | "warning" | "info" | "debug" | "all" {
+  if (!raw) {
+    return "info";
+  }
+
+  switch (raw.toLowerCase()) {
+    case "none":
+      return "none";
+    case "error":
+      return "error";
+    case "warning":
+      return "warning";
+    case "info":
+      return "info";
+    case "debug":
+      return "debug";
+    case "all":
+      return "all";
+    default:
+      return "info";
+  }
 }
 
 function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown, code: string): T {
