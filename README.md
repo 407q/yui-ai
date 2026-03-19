@@ -34,7 +34,7 @@ apps/
 
 - 実装場所: `apps/gateway/api`
 - 本体エントリポイント: `apps/gateway/api/src/bot.ts`（通常/Copilot 経路）
-- mock エントリポイント: `apps/gateway/api/src/debug/mock-bot.ts`（`YUI_BOT_MODE=mock` で起動）
+- mock エントリポイント: `apps/gateway/api/src/debug/mock-bot.ts`（`BOT_MODE=mock` で起動）
 - 詳細: `apps/gateway/api/README.md`
 
 ## 共通コマンド

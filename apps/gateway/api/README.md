@@ -2,7 +2,7 @@
 
 `apps/gateway/api/src/bot.ts` が標準の Bot 実装です。  
 Copilot SDK 経路での通常運用はこのエントリポイントを使用します。  
-`apps/gateway/api/src/debug/mock-bot.ts` は **mock モード専用ラッパー** として、`YUI_BOT_MODE=mock` を有効化して `bot.ts` を起動します。
+`apps/gateway/api/src/debug/mock-bot.ts` は **mock モード専用ラッパー** として、`BOT_MODE=mock` を有効化して `bot.ts` を起動します。
 
 ## 実装している UX
 

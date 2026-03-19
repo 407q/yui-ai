@@ -96,7 +96,7 @@ const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
 const ORCHESTRATOR_COMPOSE_BUILD =
   process.env.MOCK_ORCHESTRATOR_COMPOSE_BUILD !== "false";
 const ORCHESTRATOR_ENABLED = process.env.MOCK_ORCHESTRATOR_ENABLED !== "false";
-const BOT_MODE = process.env.YUI_BOT_MODE === "mock" ? "mock" : "standard";
+const BOT_MODE = process.env.BOT_MODE === "mock" ? "mock" : "standard";
 const IS_MOCK_MODE = BOT_MODE === "mock";
 
 const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.MOCK_IDLE_TIMEOUT_SEC, 600);

@@ -1,2 +1,2 @@
-process.env.YUI_BOT_MODE = "mock";
+process.env.BOT_MODE = "mock";
 await import("../bot.js");
