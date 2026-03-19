@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -217,7 +218,7 @@ function resolveSdkProvider(): CopilotSdkProvider {
     return new CopilotCliSdkProvider({
       githubToken,
       model: process.env.COPILOT_MODEL ?? "claude-sonnet-4.6",
-      workingDirectory: process.env.COPILOT_WORKING_DIRECTORY ?? process.cwd(),
+      workingDirectory: resolveCopilotWorkingDirectory(process.env.COPILOT_WORKING_DIRECTORY),
       sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
       sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
     });
@@ -235,6 +236,22 @@ function resolveSdkProvider(): CopilotSdkProvider {
 
 function resolveGatewayBaseUrl(): string {
   return process.env.AGENT_GATEWAY_BASE_URL ?? "http://host.docker.internal:3800";
+}
+
+function resolveCopilotWorkingDirectory(raw: string | undefined): string {
+  const fallback = process.cwd();
+  if (!raw || raw.trim().length === 0) {
+    return fallback;
+  }
+
+  if (existsSync(raw) && statSync(raw).isDirectory()) {
+    return raw;
+  }
+
+  console.warn(
+    `[agent] COPILOT_WORKING_DIRECTORY is invalid: ${raw}. fallback to ${fallback}`,
+  );
+  return fallback;
 }
 
 function resolvePositiveInt(raw: string | undefined, fallback: number): number {

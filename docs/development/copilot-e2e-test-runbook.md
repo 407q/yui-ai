@@ -198,6 +198,12 @@ Bot へのメンションで新規タスクを開始します。
 - `docker compose up --build -d` で agent を再作成
 - `docker compose logs -f agent` で再発有無を確認
 
+### 6.6 `spawn /usr/local/bin/node ENOENT` が出る
+
+- `COPILOT_WORKING_DIRECTORY` が無効なパスだと CLI 起動時に失敗することがあります
+- `.env.op` の `COPILOT_WORKING_DIRECTORY` を `/app` に修正
+- Agent は無効パス検出時に `process.cwd()` へフォールバックするが、設定値自体も修正する
+
 ---
 
 ## 7. 補助コマンド
