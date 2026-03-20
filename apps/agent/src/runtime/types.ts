@@ -49,6 +49,7 @@ export interface AgentRunRequest {
   session_bootstrap_mode?: "create_or_resume";
   session_lifecycle_policy?: AgentLifecyclePolicy;
   thread_context?: AgentThreadContext;
+  session_workspace_root?: string;
   attachment_mount_path?: string;
   runtime_policy?: AgentRuntimePolicy;
   tool_calls?: AgentToolCallSpec[];

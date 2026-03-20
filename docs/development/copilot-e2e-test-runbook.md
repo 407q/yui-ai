@@ -161,6 +161,8 @@ Bot へのメンションで新規タスクを開始します。
 
 `yarn api:smoke` を実行し、`agent runtime smoke run` の検証で以下を確認します。
 
+- Runtime に渡された最終 prompt に `[Attachment Runtime Context]` が含まれる
+- 同 prompt に `attachment_mount_path: /agent/session/<session_id>` が含まれる
 - Runtime に渡された最終 prompt に `[Behavior Context]` が含まれる
 - 同 prompt に `[User Prompt]` と元のユーザープロンプトが含まれる
 - `[Runtime Feedback Context]` に `previous_task_terminal_status` が含まれる

@@ -46,7 +46,7 @@ async function main(): Promise<void> {
       url: `/v1/tasks/${stagedTaskId}/attachments/stage`,
       payload: {
         session_id: stagedSessionId,
-        attachment_mount_path: `${sessionRootDir}/${stagedSessionId}/attachments`,
+        attachment_mount_path: `${sessionRootDir}/${stagedSessionId}`,
         attachments: [
           {
             name: "sample.txt",

@@ -189,7 +189,7 @@ Bot から `contextEnvelope` を受け取る場合、主に次を使用します
 
 `attachmentNames` が指定されている場合、Gateway は各ファイルに対応する
 `runtimeFeedback.attachmentSources` を必須として `POST /v1/tasks/:taskId/attachments/stage`
-を Agent Runtime へ呼び出し、`/agent/session/<session_id>/attachments` に事前配置します。  
+を Agent Runtime へ呼び出し、`/agent/session/<session_id>` に事前配置します。  
 不足がある場合は `attachment_source_missing` で run を拒否します。
 
 Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context_envelope_fallback` を記録し、通常の `prompt` でフォールバックします。

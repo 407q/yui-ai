@@ -27,20 +27,33 @@ export interface ContextEnvelopeRuntimeFeedbackInput {
   retryHint?: string;
 }
 
+export interface ContextEnvelopeAttachmentRuntimeInput {
+  sessionWorkspaceRoot: string;
+  attachmentMountPath: string;
+  stagedFiles: Array<{
+    name: string;
+    path: string;
+    bytes: number;
+  }>;
+}
+
 export interface ContextEnvelopeInput {
   prompt: string;
   attachmentNames: string[];
+  attachmentRuntime: ContextEnvelopeAttachmentRuntimeInput;
   behavior: ContextEnvelopeBehaviorInput;
   runtimeFeedback?: ContextEnvelopeRuntimeFeedbackInput;
 }
 
 const MAX_ATTACHMENT_LINES = 8;
+const MAX_STAGED_FILE_LINES = 8;
 const MAX_TOOL_ERROR_LINES = 3;
 const MAX_VALUE_LENGTH = 160;
 
 export function buildPromptWithContextEnvelope(input: ContextEnvelopeInput): string {
   const envelope = buildContextEnvelope({
     attachmentNames: input.attachmentNames,
+    attachmentRuntime: input.attachmentRuntime,
     behavior: input.behavior,
     runtimeFeedback: input.runtimeFeedback,
   });
@@ -53,6 +66,9 @@ export function buildContextEnvelope(
   const lines: string[] = [];
   lines.push("[Attachment Context]");
   lines.push(...buildAttachmentLines(input.attachmentNames));
+  lines.push("");
+  lines.push("[Attachment Runtime Context]");
+  lines.push(...buildAttachmentRuntimeLines(input.attachmentRuntime));
   lines.push("");
   lines.push("[Behavior Context]");
   lines.push(...buildBehaviorLines(input.behavior));
@@ -82,6 +98,39 @@ function buildAttachmentLines(attachmentNames: string[]): string[] {
   if (normalized.length > MAX_ATTACHMENT_LINES) {
     lines.push(`- attachments_omitted: ${normalized.length - MAX_ATTACHMENT_LINES}`);
   }
+  return lines;
+}
+
+function buildAttachmentRuntimeLines(
+  attachmentRuntime: ContextEnvelopeAttachmentRuntimeInput,
+): string[] {
+  const lines: string[] = [
+    `- session_workspace_root: ${normalizeInline(attachmentRuntime.sessionWorkspaceRoot)}`,
+    `- attachment_mount_path: ${normalizeInline(attachmentRuntime.attachmentMountPath)}`,
+    `- staged_files_count: ${attachmentRuntime.stagedFiles.length}`,
+  ];
+
+  const listed = attachmentRuntime.stagedFiles.slice(0, MAX_STAGED_FILE_LINES);
+  for (let index = 0; index < listed.length; index += 1) {
+    const staged = listed[index];
+    if (!staged) {
+      continue;
+    }
+    lines.push(
+      `- staged_file_${index + 1}: ${normalizeInline(staged.name)} => ${normalizeInline(staged.path)} (${staged.bytes} bytes)`,
+    );
+  }
+  if (attachmentRuntime.stagedFiles.length > MAX_STAGED_FILE_LINES) {
+    lines.push(
+      `- staged_files_omitted: ${attachmentRuntime.stagedFiles.length - MAX_STAGED_FILE_LINES}`,
+    );
+  }
+  lines.push(
+    "- attachment_search_priority: attachment_mount_path > session_workspace_root > do_not_use_root_copilot_session_state",
+  );
+  lines.push(
+    "- working_directory_contract: use_session_workspace_root_as_primary_cwd",
+  );
   return lines;
 }
 

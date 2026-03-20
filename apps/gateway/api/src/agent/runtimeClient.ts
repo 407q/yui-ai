@@ -28,6 +28,7 @@ export interface AgentRuntimeRunTaskInput {
     channel_id: string;
     thread_id: string;
   };
+  session_workspace_root?: string;
   attachment_mount_path?: string;
   runtime_policy: {
     tool_routing: {

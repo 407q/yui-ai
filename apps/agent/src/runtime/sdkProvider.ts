@@ -72,6 +72,7 @@ export interface CopilotCliSdkProviderOptions {
   githubToken: string;
   model: string;
   workingDirectory: string;
+  sessionRootDirectory: string;
   sendTimeoutMs: number;
   sdkLogLevel: "none" | "error" | "warning" | "info" | "debug" | "all";
 }
@@ -84,6 +85,7 @@ interface ActiveSendContext {
 
 interface SdkSessionState {
   sdkSessionId: string;
+  appSessionId: string;
   session: CopilotSession | null;
   callbacks: SdkSessionCallbacks;
   activeSend: ActiveSendContext | null;
@@ -269,6 +271,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     const sdkSessionId = toSdkSessionId(appSessionId);
     const state: SdkSessionState = {
       sdkSessionId,
+      appSessionId,
       session: null,
       callbacks,
       activeSend: null,
@@ -345,15 +348,22 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
   ): Omit<SessionConfig, "sessionId"> {
     const tools = this.buildGatewayTools(state);
     const availableTools = tools.map((tool) => tool.name);
+    const workspaceRoot = resolveSessionWorkspaceRoot(
+      state.appSessionId,
+      this.options.sessionRootDirectory,
+    );
     return {
       model: this.options.model,
       systemMessage: {
-        content: buildActiveSystemMessage(),
+        content: buildSystemMessageWithRuntimeContracts(
+          buildActiveSystemMessage(),
+          workspaceRoot,
+        ),
       },
       onPermissionRequest: this.createPermissionHandler(state),
       tools,
       availableTools,
-      workingDirectory: this.options.workingDirectory,
+      workingDirectory: workspaceRoot,
     };
   }
 
@@ -837,6 +847,31 @@ function mapToolErrorToResultType(
 
 function toSdkSessionId(sessionId: string): string {
   return `yui_sdk_${sessionId}`;
+}
+
+function resolveSessionWorkspaceRoot(
+  sessionId: string,
+  sessionRootDirectory: string,
+): string {
+  return `${sessionRootDirectory}/${sessionId}`;
+}
+
+function buildSystemMessageWithRuntimeContracts(
+  baseSystemMessage: string,
+  workspaceRoot: string,
+): string {
+  return [
+    baseSystemMessage,
+    "",
+    "<runtime_workspace_contract>",
+    `- primary_workspace_root: ${workspaceRoot}`,
+    `- attachment_mount_path: ${workspaceRoot}`,
+    "- attachment_search_priority: attachment_mount_path > primary_workspace_root > avoid_/root/.copilot/session-state",
+    "- container_tools_path_rule: use paths relative to primary_workspace_root whenever possible",
+    "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
+    "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",
+    "</runtime_workspace_contract>",
+  ].join("\n");
 }
 
 function toCopilotCustomToolName(toolName: string): string {

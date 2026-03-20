@@ -108,15 +108,13 @@ export class AgentRuntimeService {
       input.attachment_mount_path,
     );
     const expectedTaskAttachmentDir = path.resolve(
-      sessionRootDir,
-      input.session_id,
-      "attachments",
+      resolveSessionWorkspaceRootFromSessionId(input.session_id, sessionRootDir),
     );
     if (normalizedMountPath !== expectedTaskAttachmentDir) {
       throw new AgentRuntimeError(
         400,
         "invalid_attachment_mount_path",
-        "attachment_mount_path must target the session attachments directory.",
+        "attachment_mount_path must target the session workspace directory.",
         {
           attachment_mount_path: input.attachment_mount_path,
           expected_path: expectedTaskAttachmentDir,
@@ -150,7 +148,7 @@ export class AgentRuntimeService {
         throw new AgentRuntimeError(
           400,
           "invalid_attachment_name",
-          "Attachment name resolved outside attachments directory.",
+          "Attachment name resolved outside session workspace directory.",
           {
             name: attachment.name,
           },
@@ -417,6 +415,13 @@ function resolveAgentSessionRootDir(): string {
     return path.resolve(DEFAULT_SESSION_ROOT_DIR);
   }
   return path.resolve(configured);
+}
+
+function resolveSessionWorkspaceRootFromSessionId(
+  sessionId: string,
+  sessionRootDir: string = DEFAULT_SESSION_ROOT_DIR,
+): string {
+  return path.resolve(sessionRootDir, sessionId);
 }
 
 function resolveMaxAttachmentBytes(): number {

@@ -7,6 +7,7 @@ import type {
 } from "../agent/runtimeClient.js";
 import {
   buildPromptWithContextEnvelope,
+  type ContextEnvelopeAttachmentRuntimeInput,
   type ContextEnvelopeBotMode,
   type ContextEnvelopeInfrastructureStatus,
   type ContextEnvelopeTaskTerminalStatus,
@@ -99,6 +100,12 @@ export interface AgentTaskRunInput {
 export interface AgentTaskAttachment {
   name: string;
   sourceUrl: string;
+}
+
+interface AgentTaskStagedAttachmentFile {
+  name: string;
+  path: string;
+  bytes: number;
 }
 
 export interface AgentTaskStatusInput {
@@ -649,14 +656,10 @@ export class GatewayApiService {
       timestamp: now,
     });
 
-    const runtimePrompt = await this.buildRuntimePromptWithContextEnvelope(
-      input,
-      session,
-      task,
-    );
     const attachmentMountPath =
       input.attachmentMountPath ??
-      `/agent/session/${session.sessionId}/attachments`;
+      `/agent/session/${session.sessionId}`;
+    const sessionWorkspaceRoot = `/agent/session/${session.sessionId}`;
     const attachmentNames = input.attachmentNames ?? [];
     const attachmentsToStage = toAgentRuntimeAttachmentSources(
       attachmentNames,
@@ -678,6 +681,7 @@ export class GatewayApiService {
         },
       );
     }
+    let stagedFiles: AgentTaskStagedAttachmentFile[] = [];
     if (attachmentsToStage.length > 0) {
       const staged = await runtimeClient.stageTaskAttachments({
         task_id: task.taskId,
@@ -685,21 +689,32 @@ export class GatewayApiService {
         attachment_mount_path: attachmentMountPath,
         attachments: attachmentsToStage,
       });
+      stagedFiles = staged.staged_files.map((file) => ({
+        name: file.name,
+        path: file.path,
+        bytes: file.bytes,
+      }));
       await this.repository.appendTaskEvent({
         eventId: newId("event"),
         taskId: task.taskId,
         eventType: "agent.attachments.staged",
         payloadJson: {
           stagedCount: staged.staged_count,
-          stagedFiles: staged.staged_files.map((file) => ({
-            name: file.name,
-            path: file.path,
-            bytes: file.bytes,
-          })),
+          stagedFiles,
         },
         timestamp: new Date(),
       });
     }
+    const runtimePrompt = await this.buildRuntimePromptWithContextEnvelope(
+      input,
+      session,
+      task,
+      {
+        sessionWorkspaceRoot,
+        attachmentMountPath,
+        stagedFiles,
+      },
+    );
     const agentTask = await runtimeClient.runTask({
       task_id: task.taskId,
       session_id: session.sessionId,
@@ -708,6 +723,7 @@ export class GatewayApiService {
         channel_id: session.channelId,
         thread_id: session.threadId,
       },
+      session_workspace_root: sessionWorkspaceRoot,
       attachment_mount_path: attachmentMountPath,
       runtime_policy: {
         tool_routing: {
@@ -757,6 +773,7 @@ export class GatewayApiService {
     input: AgentTaskRunInput,
     session: SessionRecord,
     task: TaskRecord,
+    attachmentRuntime: ContextEnvelopeAttachmentRuntimeInput,
   ): Promise<string> {
     try {
       const behavior = input.contextEnvelope?.behavior;
@@ -773,10 +790,16 @@ export class GatewayApiService {
               retryHint: runtimeFeedbackInput.retryHint,
             }
           : undefined;
+      const attachmentRuntimeInput = attachmentRuntime ?? {
+        sessionWorkspaceRoot: `/agent/session/${session.sessionId}`,
+        attachmentMountPath: `/agent/session/${session.sessionId}`,
+        stagedFiles: [],
+      };
 
       return buildPromptWithContextEnvelope({
         prompt: input.prompt,
         attachmentNames: input.attachmentNames ?? [],
+        attachmentRuntime: attachmentRuntimeInput,
         behavior: {
           botMode: behavior?.botMode ?? "unknown",
           sessionStatus: behavior?.sessionStatus ?? session.status,

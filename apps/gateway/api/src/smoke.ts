@@ -195,6 +195,18 @@ async function main(): Promise<void> {
     );
     const runtimeAnswer = agentStatusCompleted.agentTask.result?.final_answer ?? "";
     assert(
+      runtimeAnswer.includes("[Attachment Runtime Context]"),
+      "runtime prompt should include attachment runtime context",
+    );
+    assert(
+      runtimeAnswer.includes("attachment_mount_path: /agent/session/"),
+      "runtime prompt should include session-level attachment mount path",
+    );
+    assert(
+      runtimeAnswer.includes("working_directory_contract: use_session_workspace_root_as_primary_cwd"),
+      "runtime prompt should include workspace contract",
+    );
+    assert(
       runtimeAnswer.includes("[Behavior Context]"),
       "runtime prompt should include behavior context envelope",
     );

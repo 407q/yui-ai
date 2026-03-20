@@ -45,6 +45,7 @@ const runTaskBodySchema: z.ZodType<AgentRunRequest> = z.object({
       thread_id: z.string().min(1),
     })
     .optional(),
+  session_workspace_root: z.string().optional(),
   attachment_mount_path: z.string().optional(),
   runtime_policy: z
     .object({
@@ -255,6 +256,9 @@ function resolveSdkProvider(): CopilotSdkProvider {
     githubToken,
     model: process.env.COPILOT_MODEL ?? "claude-sonnet-4.6",
     workingDirectory: resolveCopilotWorkingDirectory(process.env.COPILOT_WORKING_DIRECTORY),
+    sessionRootDirectory: resolveAgentSessionRootDirectory(
+      process.env.AGENT_SESSION_ROOT_DIR,
+    ),
     sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
     sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
   });
@@ -262,6 +266,13 @@ function resolveSdkProvider(): CopilotSdkProvider {
 
 function resolveGatewayBaseUrl(): string {
   return process.env.AGENT_GATEWAY_BASE_URL ?? "http://host.docker.internal:3800";
+}
+
+function resolveAgentSessionRootDirectory(raw: string | undefined): string {
+  if (!raw || raw.trim().length === 0) {
+    return "/agent/session";
+  }
+  return path.resolve(raw);
 }
 
 function resolveBotMode(): "mock" | "standard" {

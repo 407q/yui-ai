@@ -123,10 +123,9 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 ### 4.4 Attachment Service（`apps/gateway/attachments`）
 
 - Discord 添付を受信し、セッション単位で Agent コンテナへ配置すること
-- 配置先例: `/agent/session/<session_id>/attachments`
+- 配置先例: `/agent/session/<session_id>`
 - 添付領域内ファイルは LM が read/write 可能であること
-- コンテナ作業領域（例: `/agent/session/<session_id>/workspace`）を準備できること
-- `container.file_*` / `container.cli_exec` の入出力がこの領域で完結すること
+- `container.file_*` / `container.cli_exec` の入出力がこの領域内で完結すること
 
 ### 4.5 Approval Manager（`apps/gateway/approvals`）
 
@@ -275,7 +274,7 @@ GitHub Copilot SDK を用いた個人用 AI エージェントを Node.js で実
 ### 8.2 コンテナ内操作（承認不要）
 
 - 対象: `container.file_read/write/delete/list`, `container.cli_exec`
-- 実行範囲: `/agent/session/<session_id>/attachments` および `/agent/session/<session_id>/workspace` 配下
+- 実行範囲: `/agent/session/<session_id>` 配下
 - Python を含む CLI 実行を許可する
 - コンテナ外パス指定は `container_path_out_of_scope` で拒否する
 
