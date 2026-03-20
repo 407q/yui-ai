@@ -125,7 +125,7 @@ function resolveSessionIdleTimeoutSec(): number {
 }
 
 function resolveContainerSessionRoot(): string {
-  return process.env.CONTAINER_SESSION_ROOT ?? "/tmp/yui-ai/session";
+  return process.env.CONTAINER_SESSION_ROOT ?? "/agent/session";
 }
 
 function resolveContainerCliTimeoutSec(): number {
