@@ -170,6 +170,30 @@ yarn dev:api:local
 - `GET /v1/sessions`
 - `GET /health`
 
+#### `POST /v1/agent/tasks/run` の Context Envelope（PR-2）
+
+`/v1/agent/tasks/run` は、受信した `prompt` の前に Gateway 側で `Context Envelope` を前置して Agent Runtime へ送信します。  
+Envelope は以下の3ブロックで構成されます。
+
+- `Attachment Context`
+- `Behavior Context`
+- `Runtime Feedback Context`
+
+Bot から `contextEnvelope` を受け取る場合、主に次を使用します。
+
+- `behavior.botMode` / `behavior.sessionStatus` / `behavior.infrastructureStatus`
+- `runtimeFeedback.previousTaskTerminalStatus`
+- `runtimeFeedback.previousToolErrors`
+- `runtimeFeedback.retryHint`
+- `runtimeFeedback.attachmentSources[]`（`{ name, sourceUrl }`）
+
+`attachmentNames` が指定されている場合、Gateway は各ファイルに対応する
+`runtimeFeedback.attachmentSources` を必須として `POST /v1/tasks/:taskId/attachments/stage`
+を Agent Runtime へ呼び出し、`/agent/session/<session_id>/attachments` に事前配置します。  
+不足がある場合は `attachment_source_missing` で run を拒否します。
+
+Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context_envelope_fallback` を記録し、通常の `prompt` でフォールバックします。
+
 ### MCP で扱う主なツール（P5）
 
 - `container.file_read/write/delete/list`

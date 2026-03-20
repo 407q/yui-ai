@@ -32,11 +32,24 @@ type SessionStatus =
 type ApprovalDecision = "approved" | "rejected" | "timeout" | "canceled";
 type SystemControlMode = "exit" | "reboot";
 type RuntimeInfrastructureStatus = "booting" | "ready" | "failed";
+type ContextEnvelopeTaskTerminalStatus = "completed" | "failed" | "canceled";
+
+interface RuntimeFeedbackState {
+  previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
+  previousToolErrors: string[];
+  retryHint?: string;
+  attachmentSources: GatewayAttachmentSource[];
+}
 
 interface QueuedRun {
   prompt: string;
-  attachmentNames: string[];
+  attachments: GatewayAttachmentSource[];
   triggeredByUserId: Snowflake;
+}
+
+interface GatewayAttachmentSource {
+  name: string;
+  sourceUrl: string;
 }
 
 interface ToolApprovalRequest {
@@ -63,6 +76,7 @@ interface MockSession {
   cancelRequested: boolean;
   lastEvent: string;
   queuedRun?: QueuedRun;
+  runtimeFeedback: RuntimeFeedbackState;
 }
 
 interface PendingApproval {
@@ -260,6 +274,34 @@ interface GatewayAgentTaskStatusResponse {
   agentTask: GatewayAgentTaskSnapshot;
 }
 
+interface GatewayRunContextEnvelopePayload {
+  behavior: {
+    botMode: "standard" | "mock";
+    sessionStatus: string;
+    infrastructureStatus: "ready" | "booting" | "failed";
+    toolRoutingPolicy: "gateway_only";
+    approvalPolicy: "host_ops_require_explicit_approval";
+    responseContract: "ja, concise, ask_when_ambiguous";
+    executionContract: "no_external_mcp, no_unapproved_host_ops";
+  };
+  runtimeFeedback: {
+    previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
+    previousToolErrors: string[];
+    retryHint?: string;
+    attachmentSources: GatewayAttachmentSource[];
+  };
+}
+
+interface GatewayRunRequestPayload {
+  taskId: string;
+  sessionId: string;
+  userId: string;
+  prompt: string;
+  attachmentNames: string[];
+  contextEnvelope: GatewayRunContextEnvelopePayload;
+  toolCalls: GatewayAgentToolCall[];
+}
+
 interface GatewayThreadStatusResponse {
   session: {
     sessionId: string;
@@ -397,6 +439,106 @@ function setSessionStatus(
   session.status = status;
   session.lastEvent = lastEvent;
   session.updatedAt = new Date();
+}
+
+function createRuntimeFeedbackState(): RuntimeFeedbackState {
+  return {
+    previousToolErrors: [],
+    attachmentSources: [],
+  };
+}
+
+function toContextEnvelopeSessionStatus(status: SessionStatus): string {
+  return status;
+}
+
+function inferBotModeForContextEnvelope(): "standard" | "mock" {
+  return BOT_MODE;
+}
+
+function inferInfrastructureStatusForContextEnvelope():
+  | "ready"
+  | "booting"
+  | "failed" {
+  return runtimeInfrastructureStatus;
+}
+
+function clearRuntimeFeedback(session: MockSession): void {
+  session.runtimeFeedback.previousTaskTerminalStatus = undefined;
+  session.runtimeFeedback.previousToolErrors = [];
+  session.runtimeFeedback.retryHint = undefined;
+  session.runtimeFeedback.attachmentSources = [];
+}
+
+function updateRuntimeFeedbackFromTerminalStatus(
+  session: MockSession,
+  terminalStatus: ContextEnvelopeTaskTerminalStatus,
+  toolErrors: string[],
+): void {
+  session.runtimeFeedback.previousTaskTerminalStatus = terminalStatus;
+  session.runtimeFeedback.previousToolErrors = toolErrors.slice(0, 3);
+  session.runtimeFeedback.retryHint = undefined;
+}
+
+function updateRuntimeFeedbackRetryHint(session: MockSession, hint: string): void {
+  session.runtimeFeedback.retryHint = hint;
+}
+
+function buildAttachmentSources(attachments: Message["attachments"]): GatewayAttachmentSource[] {
+  const sources: GatewayAttachmentSource[] = [];
+  for (const attachment of attachments.values()) {
+    const name = attachment.name ?? attachment.id;
+    const sourceUrl = attachment.url;
+    if (!name || !sourceUrl) {
+      continue;
+    }
+    sources.push({
+      name,
+      sourceUrl,
+    });
+  }
+  return sources;
+}
+
+function buildRunContextEnvelopePayload(
+  session: MockSession,
+  attachmentSources: GatewayAttachmentSource[],
+): GatewayRunContextEnvelopePayload {
+  return {
+    behavior: {
+      botMode: inferBotModeForContextEnvelope(),
+      sessionStatus: toContextEnvelopeSessionStatus(session.status),
+      infrastructureStatus: inferInfrastructureStatusForContextEnvelope(),
+      toolRoutingPolicy: "gateway_only",
+      approvalPolicy: "host_ops_require_explicit_approval",
+      responseContract: "ja, concise, ask_when_ambiguous",
+      executionContract: "no_external_mcp, no_unapproved_host_ops",
+    },
+    runtimeFeedback: {
+      previousTaskTerminalStatus: session.runtimeFeedback.previousTaskTerminalStatus,
+      previousToolErrors: session.runtimeFeedback.previousToolErrors,
+      retryHint: session.runtimeFeedback.retryHint,
+      attachmentSources: [...attachmentSources],
+    },
+  };
+}
+
+function buildRunRequestPayload(
+  session: MockSession,
+  prompt: string,
+  attachments: GatewayAttachmentSource[],
+  toolCalls: GatewayAgentToolCall[],
+): GatewayRunRequestPayload {
+  const attachmentNames = attachments.map((attachment) => attachment.name);
+  return {
+    taskId: session.currentTaskId ?? "",
+    sessionId: session.gatewaySessionId ?? "",
+    userId: session.ownerUserId,
+    prompt,
+    attachmentNames,
+    contextEnvelope: buildRunContextEnvelopePayload(session, attachments),
+    toolCalls,
+  };
 }
 
 function clearIdleTimer(sessionId: string): void {
@@ -692,6 +834,11 @@ async function handleIdleTimeout(sessionId: string): Promise<void> {
   }
 
   session.cancelRequested = true;
+  updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+  updateRuntimeFeedbackRetryHint(
+    session,
+    `previous run was canceled after ${IDLE_TIMEOUT_SEC}s idle timeout`,
+  );
   session.runSequence += 1;
   if (session.pendingApprovalId) {
     settleApproval(session.pendingApprovalId, "canceled");
@@ -1178,10 +1325,11 @@ async function waitForAgentTaskTerminalStatus(
 async function runAgentTaskAttempt(
   session: MockSession,
   prompt: string,
-  attachmentNames: string[],
+  attachments: GatewayAttachmentSource[],
   toolCalls: GatewayAgentToolCall[],
   runSequence: number,
 ): Promise<GatewayAgentTaskStatusResponse> {
+  const attachmentNames = attachments.map((attachment) => attachment.name);
   await ensureGatewayTaskForRun(session, prompt, attachmentNames);
   if (!session.gatewaySessionId || !session.currentTaskId) {
     throw new Error("Gateway task is not initialized.");
@@ -1190,13 +1338,7 @@ async function runAgentTaskAttempt(
   const runAccepted = await gatewayApiRequest<GatewayAgentRunResponse>(
     "POST",
     "/v1/agent/tasks/run",
-    {
-      taskId: session.currentTaskId,
-      sessionId: session.gatewaySessionId,
-      userId: session.ownerUserId,
-      prompt,
-      toolCalls,
-    },
+    buildRunRequestPayload(session, prompt, attachments, toolCalls),
   );
   session.currentTaskId = runAccepted.task.taskId;
   session.gatewaySessionId = runAccepted.session.sessionId;
@@ -1276,12 +1418,13 @@ async function refreshSessionFromGateway(session: MockSession): Promise<void> {
 async function runAgentTask(
   session: MockSession,
   prompt: string,
-  attachmentNames: string[],
+  attachments: GatewayAttachmentSource[],
   triggeredByUserId: Snowflake,
 ): Promise<void> {
+  const attachmentNames = attachments.map((attachment) => attachment.name);
   if (runningSessionIds.has(session.id)) {
     if (session.status === "idle_paused") {
-      session.queuedRun = { prompt, attachmentNames, triggeredByUserId };
+      session.queuedRun = { prompt, attachments, triggeredByUserId };
       await sendToThread(
         session.threadId,
         "▶️ 自動再開リクエストを受け付けました。停止処理後に再開します。",
@@ -1301,6 +1444,7 @@ async function runAgentTask(
   const runSequence = session.runSequence;
   session.cancelRequested = false;
   session.queuedRun = undefined;
+  session.runtimeFeedback.attachmentSources = attachments;
   setSessionStatus(
     session,
     "running",
@@ -1367,17 +1511,23 @@ async function runAgentTask(
       terminal = await runAgentTaskAttempt(
         session,
         prompt,
-        attachmentNames,
+        attachments,
         toolCalls,
         runSequence,
       );
       clearTyping();
 
       if (terminal.agentTask.status === "canceled") {
+        updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
         throw new SessionRunCanceledError("agent runtime canceled the task");
       }
       if (terminal.agentTask.status === "failed") {
         const runtimeError = terminal.agentTask.error?.message ?? "agent runtime failed";
+        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+        updateRuntimeFeedbackRetryHint(
+          session,
+          `previous runtime failure: ${runtimeError}`,
+        );
         throw new Error(runtimeError);
       }
 
@@ -1401,6 +1551,10 @@ async function runAgentTask(
 
       if (approvalDecision === "approved") {
         attempt += 1;
+        updateRuntimeFeedbackRetryHint(
+          session,
+          "previous run stopped by approval_required; approved and retrying",
+        );
         await sendToThread(
           session.threadId,
           "✅ 承認を確認しました。Agent 実行を再開します。",
@@ -1409,11 +1563,22 @@ async function runAgentTask(
       }
 
       if (approvalDecision === "rejected") {
+        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+        updateRuntimeFeedbackRetryHint(
+          session,
+          "approval rejected in previous attempt",
+        );
         throw new Error("approval rejected");
       }
       if (approvalDecision === "timeout") {
+        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+        updateRuntimeFeedbackRetryHint(
+          session,
+          "approval timeout in previous attempt",
+        );
         throw new Error("approval timeout");
       }
+      updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
       throw new SessionRunCanceledError("run canceled while waiting approval");
     }
 
@@ -1428,15 +1593,32 @@ async function runAgentTask(
 
     const rawLmMessage = runtimeResult?.final_answer ?? prompt ?? "(empty prompt)";
     await relayLmMessage(session.threadId, rawLmMessage);
+    updateRuntimeFeedbackFromTerminalStatus(session, "completed", toolErrors);
     setSessionStatus(session, "idle_waiting", "agent run completed");
     touchSession(session);
   } catch (error) {
     clearTyping();
     if (error instanceof SessionRunCanceledError || isRunCanceled(session, runSequence)) {
+      if (
+        session.runtimeFeedback.previousTaskTerminalStatus === undefined ||
+        session.runtimeFeedback.previousTaskTerminalStatus === "completed"
+      ) {
+        updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+      }
       setSessionStatus(session, "idle_waiting", "run canceled");
       touchSession(session);
       await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
       return;
+    }
+    if (
+      session.runtimeFeedback.previousTaskTerminalStatus === undefined ||
+      session.runtimeFeedback.previousTaskTerminalStatus === "completed"
+    ) {
+      updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+      updateRuntimeFeedbackRetryHint(
+        session,
+        `previous run failed: ${summarizeError(error)}`,
+      );
     }
     setSessionStatus(session, "failed", summarizeError(error));
     touchSession(session);
@@ -1459,7 +1641,7 @@ async function runAgentTask(
       void runAgentTask(
         session,
         queuedRun.prompt,
-        queuedRun.attachmentNames,
+        queuedRun.attachments,
         queuedRun.triggeredByUserId,
       ).catch((error: unknown) => {
         console.error(`${LOG_PREFIX} queued resume failed`, error);
@@ -1539,6 +1721,8 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
 
 function cancelSession(session: MockSession, by: Snowflake): void {
   session.cancelRequested = true;
+  updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+  updateRuntimeFeedbackRetryHint(session, `canceled by <@${by}>`);
   setSessionStatus(session, "idle_waiting", `task canceled by <@${by}>`);
 
   if (session.pendingApprovalId) {
@@ -1551,6 +1735,7 @@ function cancelSession(session: MockSession, by: Snowflake): void {
 
 function closeSession(session: MockSession, by: Snowflake): void {
   session.cancelRequested = true;
+  clearRuntimeFeedback(session);
   setSessionStatus(session, "closed_by_user", `closed by <@${by}>`);
 
   if (session.pendingApprovalId) {
@@ -1643,9 +1828,8 @@ async function startSessionFromMention(message: Message): Promise<void> {
   }
 
   const prompt = extractPromptFromMention(message, client.user.id);
-  const attachmentNames = [...message.attachments.values()].map(
-    (attachment) => attachment.name ?? attachment.id,
-  );
+  const attachments = buildAttachmentSources(message.attachments);
+  const attachmentNames = attachments.map((attachment) => attachment.name);
 
   if (!prompt && attachmentNames.length === 0) {
     await message.reply(
@@ -1675,6 +1859,7 @@ async function startSessionFromMention(message: Message): Promise<void> {
     runSequence: 0,
     cancelRequested: false,
     lastEvent: "session created from mention",
+    runtimeFeedback: createRuntimeFeedbackState(),
   };
 
   sessionsById.set(session.id, session);
@@ -1682,7 +1867,7 @@ async function startSessionFromMention(message: Message): Promise<void> {
   attachSessionToUser(session);
   touchSession(session);
   await addReviewedReaction(message);
-  await runAgentTask(session, prompt, attachmentNames, message.author.id);
+  await runAgentTask(session, prompt, attachments, message.author.id);
 }
 
 async function handleSlashCommand(
@@ -1832,9 +2017,8 @@ async function handleThreadMessage(message: Message): Promise<void> {
   }
 
   const prompt = message.content.trim();
-  const attachmentNames = [...message.attachments.values()].map(
-    (attachment) => attachment.name ?? attachment.id,
-  );
+  const attachments = buildAttachmentSources(message.attachments);
+  const attachmentNames = attachments.map((attachment) => attachment.name);
 
   if (!prompt && attachmentNames.length === 0) {
     await message.reply("プロンプトか添付を指定してください。");
@@ -1847,7 +2031,7 @@ async function handleThreadMessage(message: Message): Promise<void> {
     await message.reply("▶️ セッションを自動再開します。");
   }
 
-  await runAgentTask(session, prompt, attachmentNames, message.author.id);
+  await runAgentTask(session, prompt, attachments, message.author.id);
 }
 
 async function handleClientReady(readyClient: Client<true>): Promise<void> {

@@ -52,12 +52,41 @@ const agentToolCallSchema = z.object({
   delayMs: z.number().int().min(0).max(10000).optional(),
 });
 
+const agentAttachmentSchema = z.object({
+  name: z.string().min(1),
+  sourceUrl: z.string().url(),
+});
+
+const contextEnvelopeBehaviorSchema = z.object({
+  botMode: z.enum(["standard", "mock", "unknown"]).optional(),
+  sessionStatus: z.string().min(1).optional(),
+  infrastructureStatus: z.enum(["ready", "booting", "failed", "unknown"]).optional(),
+  toolRoutingPolicy: z.enum(["gateway_only"]).optional(),
+  approvalPolicy: z.enum(["host_ops_require_explicit_approval"]).optional(),
+  responseContract: z.enum(["ja, concise, ask_when_ambiguous"]).optional(),
+  executionContract: z.enum(["no_external_mcp, no_unapproved_host_ops"]).optional(),
+});
+
+const contextEnvelopeRuntimeFeedbackSchema = z.object({
+  previousTaskTerminalStatus: z.enum(["completed", "failed", "canceled"]).optional(),
+  previousToolErrors: z.array(z.string()).optional(),
+  retryHint: z.string().optional(),
+  attachmentSources: z.array(agentAttachmentSchema).optional().default([]),
+});
+
+const contextEnvelopeSchema = z.object({
+  behavior: contextEnvelopeBehaviorSchema.optional(),
+  runtimeFeedback: contextEnvelopeRuntimeFeedbackSchema.optional(),
+});
+
 const agentRunBodySchema = z.object({
   taskId: z.string().min(1),
   sessionId: z.string().min(1),
   userId: z.string().min(1),
   prompt: z.string().min(1),
+  attachmentNames: z.array(z.string().min(1)).optional().default([]),
   attachmentMountPath: z.string().optional(),
+  contextEnvelope: contextEnvelopeSchema.optional(),
   toolCalls: z.array(agentToolCallSchema).optional().default([]),
 });
 
@@ -237,7 +266,9 @@ export async function registerGatewayRoutes(
       sessionId: body.sessionId,
       userId: body.userId,
       prompt: body.prompt,
+      attachmentNames: body.attachmentNames,
       attachmentMountPath: body.attachmentMountPath,
+      contextEnvelope: body.contextEnvelope,
       toolCalls: body.toolCalls.map((toolCall) => ({
         tool_name: toolCall.toolName,
         execution_target: toolCall.executionTarget,

@@ -100,6 +100,29 @@ async function main(): Promise<void> {
         sessionId: startBody.session.sessionId,
         userId,
         prompt: "agent runtime smoke run",
+        attachmentNames: ["sample.txt"],
+        contextEnvelope: {
+          behavior: {
+            botMode: "standard",
+            sessionStatus: "running",
+            infrastructureStatus: "ready",
+            toolRoutingPolicy: "gateway_only",
+            approvalPolicy: "host_ops_require_explicit_approval",
+            responseContract: "ja, concise, ask_when_ambiguous",
+            executionContract: "no_external_mcp, no_unapproved_host_ops",
+          },
+          runtimeFeedback: {
+            previousTaskTerminalStatus: "failed",
+            previousToolErrors: ["approval_required: host.file_read needs approval"],
+            retryHint: "approval granted; retrying",
+            attachmentSources: [
+              {
+                name: "sample.txt",
+                sourceUrl: "https://example.invalid/sample.txt",
+              },
+            ],
+          },
+        },
         toolCalls: [
           {
             toolName: "memory.upsert",
@@ -120,16 +143,31 @@ async function main(): Promise<void> {
       label: "agent/tasks/run",
       method: "POST",
       url: "/v1/agent/tasks/run",
-      payload: {
-        taskId: startBody.taskId,
-        sessionId: startBody.session.sessionId,
-        userId,
-        prompt: "agent runtime smoke run",
-        toolCalls: [
-          {
-            toolName: "memory.upsert",
+        payload: {
+          taskId: startBody.taskId,
+          sessionId: startBody.session.sessionId,
+          userId,
+          prompt: "agent runtime smoke run",
+          attachmentNames: ["sample.txt"],
+          contextEnvelope: {
+            behavior: {
+              botMode: "standard",
+            },
+            runtimeFeedback: {
+              previousTaskTerminalStatus: "failed",
+              attachmentSources: [
+                {
+                  name: "sample.txt",
+                  sourceUrl: "https://example.invalid/sample.txt",
+                },
+              ],
+            },
           },
-        ],
+          toolCalls: [
+            {
+              toolName: "memory.upsert",
+            },
+          ],
       },
       statusCode: agentRunResponse.statusCode,
       responseBody: agentRunResponseBody,
@@ -154,6 +192,27 @@ async function main(): Promise<void> {
     assert(
       agentStatusCompleted.agentTask.status === "completed",
       "agent status should become completed",
+    );
+    const runtimeAnswer = agentStatusCompleted.agentTask.result?.final_answer ?? "";
+    assert(
+      runtimeAnswer.includes("[Behavior Context]"),
+      "runtime prompt should include behavior context envelope",
+    );
+    assert(
+      runtimeAnswer.includes(
+        "[User Prompt]\nagent runtime smoke run",
+      ),
+      "runtime prompt should keep original user prompt in envelope",
+    );
+    assert(
+      runtimeAnswer.includes(
+        "previous_task_terminal_status: failed",
+      ),
+      "runtime prompt should include runtime feedback context",
+    );
+    assert(
+      runtimeAnswer.includes("[staged_attachments] sample.txt@"),
+      "runtime should receive staged attachment paths",
     );
 
     const externalTargetResult = await callMcpTool(app, reporter, {
@@ -734,6 +793,10 @@ async function waitForAgentTerminalStatus(
 ): Promise<{
   agentTask: {
     status: string;
+    result?: {
+      final_answer: string;
+      tool_results: unknown[];
+    } | null;
   };
 }> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -778,8 +841,36 @@ function createMockAgentRuntimeClient(): AgentRuntimeClient {
     }
   >();
   const knownSessions = new Set<string>();
+  const stagedAttachmentsByTaskId = new Map<
+    string,
+    {
+      sessionId: string;
+      mountPath: string;
+      files: Array<{ name: string; path: string; bytes: number }>;
+    }
+  >();
 
   return {
+    async stageTaskAttachments(input): ReturnType<AgentRuntimeClient["stageTaskAttachments"]> {
+      const files = input.attachments.map((attachment) => ({
+        name: attachment.name,
+        path: `${input.attachment_mount_path}/${attachment.name}`,
+        bytes: 128,
+      }));
+      stagedAttachmentsByTaskId.set(input.task_id, {
+        sessionId: input.session_id,
+        mountPath: input.attachment_mount_path,
+        files,
+      });
+      return {
+        task_id: input.task_id,
+        session_id: input.session_id,
+        attachment_mount_path: input.attachment_mount_path,
+        staged_count: files.length,
+        staged_files: files,
+      };
+    },
+
     async runTask(input: AgentRuntimeRunTaskInput): Promise<AgentRuntimeTaskSnapshot> {
       const now = new Date();
       const delayMs = Math.max(
@@ -811,7 +902,10 @@ function createMockAgentRuntimeClient(): AgentRuntimeClient {
         current.updated_at = doneAt.toISOString();
         current.completed_at = doneAt.toISOString();
         current.result = {
-          final_answer: `mock runtime completed: ${input.prompt}`,
+          final_answer: buildMockRuntimeAnswer(
+            input.prompt,
+            stagedAttachmentsByTaskId.get(input.task_id),
+          ),
           tool_results: [],
         };
       }, delayMs);
@@ -896,6 +990,23 @@ function toSnapshot(
     result: value.result ?? null,
     error: value.error ?? null,
   };
+}
+
+function buildMockRuntimeAnswer(
+  prompt: string,
+  staged:
+    | {
+        sessionId: string;
+        mountPath: string;
+        files: Array<{ name: string; path: string; bytes: number }>;
+      }
+    | undefined,
+): string {
+  if (!staged || staged.files.length === 0) {
+    return `mock runtime completed: ${prompt}`;
+  }
+  const listed = staged.files.map((file) => `${file.name}@${file.path}`).join(", ");
+  return `mock runtime completed: ${prompt}\n[staged_attachments] ${listed}`;
 }
 
 function assertStatusCode(

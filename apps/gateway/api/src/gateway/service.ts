@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type {
   AgentRuntimeClient,
+  AgentRuntimeAttachmentSource,
   AgentRuntimeTaskStatus,
   AgentRuntimeToolCall,
 } from "../agent/runtimeClient.js";
+import {
+  buildPromptWithContextEnvelope,
+  type ContextEnvelopeBotMode,
+  type ContextEnvelopeInfrastructureStatus,
+  type ContextEnvelopeTaskTerminalStatus,
+} from "../prompt/contextEnvelope.js";
 import { GatewayApiError } from "./errors.js";
 import type {
   GatewayRepository,
@@ -67,8 +74,31 @@ export interface AgentTaskRunInput {
   sessionId: string;
   userId: string;
   prompt: string;
+  attachmentNames?: string[];
   attachmentMountPath?: string;
+  contextEnvelope?: {
+    behavior?: {
+      botMode?: ContextEnvelopeBotMode;
+      sessionStatus?: string;
+      infrastructureStatus?: ContextEnvelopeInfrastructureStatus;
+      toolRoutingPolicy?: "gateway_only";
+      approvalPolicy?: "host_ops_require_explicit_approval";
+      responseContract?: "ja, concise, ask_when_ambiguous";
+      executionContract?: "no_external_mcp, no_unapproved_host_ops";
+    };
+    runtimeFeedback?: {
+      previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
+      previousToolErrors?: string[];
+      retryHint?: string;
+      attachmentSources?: AgentTaskAttachment[];
+    };
+  };
   toolCalls?: AgentRuntimeToolCall[];
+}
+
+export interface AgentTaskAttachment {
+  name: string;
+  sourceUrl: string;
 }
 
 export interface AgentTaskStatusInput {
@@ -619,17 +649,66 @@ export class GatewayApiService {
       timestamp: now,
     });
 
+    const runtimePrompt = await this.buildRuntimePromptWithContextEnvelope(
+      input,
+      session,
+      task,
+    );
+    const attachmentMountPath =
+      input.attachmentMountPath ??
+      `/agent/session/${session.sessionId}/attachments`;
+    const attachmentNames = input.attachmentNames ?? [];
+    const attachmentsToStage = toAgentRuntimeAttachmentSources(
+      attachmentNames,
+      input.contextEnvelope?.runtimeFeedback?.attachmentSources,
+    );
+    if (attachmentNames.length !== attachmentsToStage.length) {
+      const stagedNames = new Set(attachmentsToStage.map((attachment) => attachment.name));
+      const missingSources = attachmentNames.filter(
+        (name) => !stagedNames.has(name.trim()),
+      );
+      throw new GatewayApiError(
+        400,
+        "attachment_source_missing",
+        "Attachment source URL is required for every attachment.",
+        {
+          taskId: task.taskId,
+          attachmentNames,
+          missingSources,
+        },
+      );
+    }
+    if (attachmentsToStage.length > 0) {
+      const staged = await runtimeClient.stageTaskAttachments({
+        task_id: task.taskId,
+        session_id: session.sessionId,
+        attachment_mount_path: attachmentMountPath,
+        attachments: attachmentsToStage,
+      });
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: task.taskId,
+        eventType: "agent.attachments.staged",
+        payloadJson: {
+          stagedCount: staged.staged_count,
+          stagedFiles: staged.staged_files.map((file) => ({
+            name: file.name,
+            path: file.path,
+            bytes: file.bytes,
+          })),
+        },
+        timestamp: new Date(),
+      });
+    }
     const agentTask = await runtimeClient.runTask({
       task_id: task.taskId,
       session_id: session.sessionId,
-      prompt: input.prompt,
+      prompt: runtimePrompt,
       thread_context: {
         channel_id: session.channelId,
         thread_id: session.threadId,
       },
-      attachment_mount_path:
-        input.attachmentMountPath ??
-        `/agent/session/${session.sessionId}/attachments`,
+      attachment_mount_path: attachmentMountPath,
       runtime_policy: {
         tool_routing: {
           mode: "gateway_only",
@@ -672,6 +751,62 @@ export class GatewayApiService {
         updated_at: agentTask.updated_at,
       },
     };
+  }
+
+  private async buildRuntimePromptWithContextEnvelope(
+    input: AgentTaskRunInput,
+    session: SessionRecord,
+    task: TaskRecord,
+  ): Promise<string> {
+    try {
+      const behavior = input.contextEnvelope?.behavior;
+      const runtimeFeedbackInput = input.contextEnvelope?.runtimeFeedback;
+      const runtimeFeedback =
+        runtimeFeedbackInput &&
+        (runtimeFeedbackInput.previousTaskTerminalStatus !== undefined ||
+          (runtimeFeedbackInput.previousToolErrors?.length ?? 0) > 0 ||
+          runtimeFeedbackInput.retryHint !== undefined)
+          ? {
+              previousTaskTerminalStatus:
+                runtimeFeedbackInput.previousTaskTerminalStatus,
+              previousToolErrors: runtimeFeedbackInput.previousToolErrors ?? [],
+              retryHint: runtimeFeedbackInput.retryHint,
+            }
+          : undefined;
+
+      return buildPromptWithContextEnvelope({
+        prompt: input.prompt,
+        attachmentNames: input.attachmentNames ?? [],
+        behavior: {
+          botMode: behavior?.botMode ?? "unknown",
+          sessionStatus: behavior?.sessionStatus ?? session.status,
+          infrastructureStatus: behavior?.infrastructureStatus ?? "unknown",
+          toolRoutingPolicy: "gateway_only",
+          approvalPolicy: "host_ops_require_explicit_approval",
+          responseContract: "ja, concise, ask_when_ambiguous",
+          executionContract: "no_external_mcp, no_unapproved_host_ops",
+        },
+        runtimeFeedback,
+      });
+    } catch (error) {
+      await this.repository.appendAuditLog({
+        logId: newId("audit"),
+        correlationId: `${task.taskId}:context-envelope`,
+        actor: "gateway_api",
+        decision: "context_envelope_fallback",
+        reason: summarizeError(error),
+        raw: {
+          taskId: task.taskId,
+          sessionId: session.sessionId,
+          promptLength: input.prompt.length,
+          attachmentCount: input.attachmentNames?.length ?? 0,
+          hasBehaviorContext: input.contextEnvelope?.behavior !== undefined,
+          hasRuntimeFeedback:
+            input.contextEnvelope?.runtimeFeedback !== undefined,
+        },
+      });
+      return input.prompt;
+    }
   }
 
   async getAgentTaskStatus(input: AgentTaskStatusInput): Promise<{
@@ -972,4 +1107,55 @@ function mapDecisionToApprovalStatus(
   }
 
   return "timeout";
+}
+
+function summarizeError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function toAgentRuntimeAttachmentSources(
+  attachmentNames: string[] | undefined,
+  attachmentSources: AgentTaskAttachment[] | undefined,
+): AgentRuntimeAttachmentSource[] {
+  if (
+    !attachmentNames ||
+    attachmentNames.length === 0 ||
+    !attachmentSources ||
+    attachmentSources.length === 0
+  ) {
+    return [];
+  }
+
+  const sourceMap = new Map<string, string>();
+  for (const source of attachmentSources) {
+    const name = source.name.trim();
+    const sourceUrl = source.sourceUrl.trim();
+    if (!name || !sourceUrl) {
+      continue;
+    }
+    sourceMap.set(name, sourceUrl);
+  }
+
+  const result: AgentRuntimeAttachmentSource[] = [];
+  for (const name of attachmentNames) {
+    const source = sourceMap.get(name.trim());
+    if (!source) {
+      continue;
+    }
+    result.push({
+      name,
+      source_url: source,
+    });
+  }
+  return result;
 }

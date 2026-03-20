@@ -36,6 +36,11 @@ export interface AgentToolCallSpec {
   delay_ms?: number;
 }
 
+export interface AgentAttachmentSource {
+  name: string;
+  source_url: string;
+}
+
 export interface AgentRunRequest {
   task_id: string;
   session_id: string;
@@ -47,6 +52,27 @@ export interface AgentRunRequest {
   attachment_mount_path?: string;
   runtime_policy?: AgentRuntimePolicy;
   tool_calls?: AgentToolCallSpec[];
+}
+
+export interface AgentStagedAttachmentFile {
+  name: string;
+  path: string;
+  bytes: number;
+}
+
+export interface AgentStageAttachmentsRequest {
+  task_id: string;
+  session_id: string;
+  attachment_mount_path: string;
+  attachments: AgentAttachmentSource[];
+}
+
+export interface AgentStageAttachmentsResponse {
+  task_id: string;
+  session_id: string;
+  attachment_mount_path: string;
+  staged_count: number;
+  staged_files: AgentStagedAttachmentFile[];
 }
 
 export interface AgentTaskStatusResponse {

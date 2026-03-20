@@ -1,6 +1,12 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import type {
+  AgentAttachmentSource,
   AgentRunAcceptedResponse,
   AgentRunRequest,
+  AgentStagedAttachmentFile,
+  AgentStageAttachmentsRequest,
+  AgentStageAttachmentsResponse,
   AgentTaskStatus,
   AgentTaskStatusResponse,
   PermissionRequestInput,
@@ -41,6 +47,11 @@ interface TaskExecutionState {
   } | null;
   abortController: AbortController;
 }
+
+const DEFAULT_SESSION_ROOT_DIR = "/agent/session";
+const DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 20;
+const MAX_ATTACHMENT_BASENAME_LENGTH = 120;
 
 export class AgentRuntimeService {
   private readonly sessions = new Map<string, SessionState>();
@@ -87,6 +98,81 @@ export class AgentRuntimeService {
     void this.executeTask(state, input);
 
     return this.toAcceptedResponse(state);
+  }
+
+  async stageTaskAttachments(
+    input: AgentStageAttachmentsRequest,
+  ): Promise<AgentStageAttachmentsResponse> {
+    const sessionRootDir = resolveAgentSessionRootDir();
+    const normalizedMountPath = normalizeAttachmentMountPath(
+      input.attachment_mount_path,
+    );
+    const expectedTaskAttachmentDir = path.resolve(
+      sessionRootDir,
+      input.session_id,
+      "attachments",
+    );
+    if (normalizedMountPath !== expectedTaskAttachmentDir) {
+      throw new AgentRuntimeError(
+        400,
+        "invalid_attachment_mount_path",
+        "attachment_mount_path must target the session attachments directory.",
+        {
+          attachment_mount_path: input.attachment_mount_path,
+          expected_path: expectedTaskAttachmentDir,
+        },
+      );
+    }
+
+    if (input.attachments.length > MAX_ATTACHMENT_COUNT) {
+      throw new AgentRuntimeError(
+        400,
+        "too_many_attachments",
+        "Too many attachments to stage.",
+        {
+          max_attachments: MAX_ATTACHMENT_COUNT,
+          received: input.attachments.length,
+        },
+      );
+    }
+
+    await fs.mkdir(expectedTaskAttachmentDir, { recursive: true });
+    const maxAttachmentBytes = resolveMaxAttachmentBytes();
+    const stagedFiles: AgentStagedAttachmentFile[] = [];
+    const stagedFileNames = new Set<string>();
+    for (const attachment of input.attachments) {
+      const fileName = makeUniqueAttachmentFileName(
+        sanitizeAttachmentFileName(attachment.name),
+        stagedFileNames,
+      );
+      const targetPath = path.resolve(expectedTaskAttachmentDir, fileName);
+      if (!isPathInsideDirectory(targetPath, expectedTaskAttachmentDir)) {
+        throw new AgentRuntimeError(
+          400,
+          "invalid_attachment_name",
+          "Attachment name resolved outside attachments directory.",
+          {
+            name: attachment.name,
+          },
+        );
+      }
+
+      const downloaded = await downloadAttachmentBinary(attachment, maxAttachmentBytes);
+      await fs.writeFile(targetPath, downloaded.buffer);
+      stagedFiles.push({
+        name: fileName,
+        path: targetPath,
+        bytes: downloaded.bytes,
+      });
+    }
+
+    return {
+      task_id: input.task_id,
+      session_id: input.session_id,
+      attachment_mount_path: expectedTaskAttachmentDir,
+      staged_count: stagedFiles.length,
+      staged_files: stagedFiles,
+    };
   }
 
   getTaskStatus(taskId: string): AgentTaskStatusResponse {
@@ -322,5 +408,221 @@ function toTaskError(error: unknown): {
   return {
     code: "task_execution_failed",
     message: String(error),
+  };
+}
+
+function resolveAgentSessionRootDir(): string {
+  const configured = process.env.AGENT_SESSION_ROOT_DIR;
+  if (!configured || configured.trim().length === 0) {
+    return path.resolve(DEFAULT_SESSION_ROOT_DIR);
+  }
+  return path.resolve(configured);
+}
+
+function resolveMaxAttachmentBytes(): number {
+  const configured = process.env.AGENT_ATTACHMENT_MAX_BYTES;
+  if (!configured) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  const parsed = Number.parseInt(configured, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  return parsed;
+}
+
+function normalizeAttachmentMountPath(attachmentMountPath: string): string {
+  if (!attachmentMountPath || attachmentMountPath.trim().length === 0) {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_mount_path",
+      "attachment_mount_path is required.",
+    );
+  }
+  return path.resolve(attachmentMountPath);
+}
+
+function isPathInsideDirectory(targetPath: string, baseDirectory: string): boolean {
+  const relative = path.relative(baseDirectory, targetPath);
+  if (relative === "") {
+    return true;
+  }
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function sanitizeAttachmentFileName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_name",
+      "Attachment name is empty.",
+    );
+  }
+
+  const parsed = path.parse(trimmed);
+  const safeBase = parsed.name
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, MAX_ATTACHMENT_BASENAME_LENGTH);
+  const extension = parsed.ext
+    .replace(/[^a-zA-Z0-9.]+/g, "")
+    .slice(0, 20);
+
+  const base = safeBase.length > 0 ? safeBase : "attachment";
+  const fileName = `${base}${extension}`;
+  if (fileName === "." || fileName === "..") {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_name",
+      "Attachment name is invalid.",
+      {
+        name,
+      },
+    );
+  }
+  return fileName;
+}
+
+function makeUniqueAttachmentFileName(
+  fileName: string,
+  usedNames: Set<string>,
+): string {
+  if (!usedNames.has(fileName)) {
+    usedNames.add(fileName);
+    return fileName;
+  }
+
+  const parsed = path.parse(fileName);
+  let serial = 2;
+  while (serial <= 1000) {
+    const candidate = `${parsed.name}_${serial}${parsed.ext}`;
+    if (!usedNames.has(candidate)) {
+      usedNames.add(candidate);
+      return candidate;
+    }
+    serial += 1;
+  }
+  throw new AgentRuntimeError(
+    400,
+    "duplicate_attachment_name_overflow",
+    "Failed to allocate unique attachment name.",
+    {
+      name: fileName,
+    },
+  );
+}
+
+async function downloadAttachmentBinary(
+  attachment: AgentAttachmentSource,
+  maxBytes: number,
+): Promise<{ buffer: Buffer; bytes: number }> {
+  const sourceUrl = attachment.source_url.trim();
+  if (!sourceUrl) {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_source",
+      "Attachment source URL is empty.",
+      {
+        name: attachment.name,
+      },
+    );
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(sourceUrl);
+  } catch {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_source",
+      "Attachment source URL is invalid.",
+      {
+        name: attachment.name,
+        source_url: sourceUrl,
+      },
+    );
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new AgentRuntimeError(
+      400,
+      "invalid_attachment_source_protocol",
+      "Attachment source URL must use http or https.",
+      {
+        name: attachment.name,
+        source_url: sourceUrl,
+      },
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(parsedUrl);
+  } catch (error) {
+    throw new AgentRuntimeError(
+      502,
+      "attachment_download_failed",
+      "Failed to download attachment from source URL.",
+      {
+        name: attachment.name,
+        source_url: sourceUrl,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+
+  if (!response.ok) {
+    throw new AgentRuntimeError(
+      502,
+      "attachment_download_failed",
+      "Attachment source returned non-success status.",
+      {
+        name: attachment.name,
+        source_url: sourceUrl,
+        status: response.status,
+        status_text: response.statusText,
+      },
+    );
+  }
+
+  const contentLengthHeader = response.headers.get("content-length");
+  if (contentLengthHeader) {
+    const contentLength = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new AgentRuntimeError(
+        400,
+        "attachment_too_large",
+        "Attachment exceeds maximum allowed size.",
+        {
+          name: attachment.name,
+          source_url: sourceUrl,
+          max_bytes: maxBytes,
+          content_length: contentLength,
+        },
+      );
+    }
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  if (buffer.byteLength > maxBytes) {
+    throw new AgentRuntimeError(
+      400,
+      "attachment_too_large",
+      "Attachment exceeds maximum allowed size.",
+      {
+        name: attachment.name,
+        source_url: sourceUrl,
+        max_bytes: maxBytes,
+        bytes: buffer.byteLength,
+      },
+    );
+  }
+
+  return {
+    buffer,
+    bytes: buffer.byteLength,
   };
 }

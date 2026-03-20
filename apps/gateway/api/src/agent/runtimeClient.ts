@@ -15,6 +15,11 @@ export interface AgentRuntimeToolCall {
   delay_ms?: number;
 }
 
+export interface AgentRuntimeAttachmentSource {
+  name: string;
+  source_url: string;
+}
+
 export interface AgentRuntimeRunTaskInput {
   task_id: string;
   session_id: string;
@@ -31,6 +36,25 @@ export interface AgentRuntimeRunTaskInput {
     };
   };
   tool_calls?: AgentRuntimeToolCall[];
+}
+
+export interface AgentRuntimeStageAttachmentsInput {
+  task_id: string;
+  session_id: string;
+  attachment_mount_path: string;
+  attachments: AgentRuntimeAttachmentSource[];
+}
+
+export interface AgentRuntimeStageAttachmentsResponse {
+  task_id: string;
+  session_id: string;
+  attachment_mount_path: string;
+  staged_count: number;
+  staged_files: Array<{
+    name: string;
+    path: string;
+    bytes: number;
+  }>;
 }
 
 export interface AgentRuntimeTaskSnapshot {
@@ -54,6 +78,9 @@ export interface AgentRuntimeTaskSnapshot {
 }
 
 export interface AgentRuntimeClient {
+  stageTaskAttachments(
+    input: AgentRuntimeStageAttachmentsInput,
+  ): Promise<AgentRuntimeStageAttachmentsResponse>;
   runTask(input: AgentRuntimeRunTaskInput): Promise<AgentRuntimeTaskSnapshot>;
   getTaskStatus(taskId: string): Promise<AgentRuntimeTaskSnapshot>;
   cancelTask(taskId: string): Promise<AgentRuntimeTaskSnapshot>;
@@ -66,6 +93,21 @@ export interface HttpAgentRuntimeClientOptions {
 
 export class HttpAgentRuntimeClient implements AgentRuntimeClient {
   constructor(private readonly options: HttpAgentRuntimeClientOptions) {}
+
+  async stageTaskAttachments(
+    input: AgentRuntimeStageAttachmentsInput,
+  ): Promise<AgentRuntimeStageAttachmentsResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/tasks/${encodeURIComponent(input.task_id)}/attachments/stage`,
+      {
+        session_id: input.session_id,
+        attachment_mount_path: input.attachment_mount_path,
+        attachments: input.attachments,
+      },
+    );
+    return response as AgentRuntimeStageAttachmentsResponse;
+  }
 
   async runTask(input: AgentRuntimeRunTaskInput): Promise<AgentRuntimeTaskSnapshot> {
     const response = await this.request("POST", "/v1/tasks/run", input);

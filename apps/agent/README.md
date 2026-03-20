@@ -13,6 +13,7 @@ P8 初回実装として SDK provider は `BOT_MODE` で切り替わります。
 - `GET /health`
 - `GET /ready`
 - `POST /v1/tasks/run`
+- `POST /v1/tasks/:taskId/attachments/stage`
 - `GET /v1/tasks/:taskId`
 - `POST /v1/tasks/:taskId/cancel`
 
@@ -22,6 +23,14 @@ P8 初回実装として SDK provider は `BOT_MODE` で切り替わります。
 - task body execution: `sendAndWait` 1回
 - tool callback: Gateway MCP (`/v1/mcp/tool-call`) へ委譲
 - `execution_target != gateway_adapter` は Gateway 側で拒否
+
+`POST /v1/tasks/:taskId/attachments/stage` は、Gateway から渡された添付 URL を
+`attachment_mount_path`（既定: `/agent/session/<session_id>/attachments`）へ保存します。
+
+- 許可プロトコル: `http` / `https`
+- サイズ上限: `AGENT_ATTACHMENT_MAX_BYTES`（既定 25MB）
+- 保存先ルート: `AGENT_SESSION_ROOT_DIR`（既定 `/agent/session`）
+- `attachment_mount_path` は `<session_root>/<session_id>/attachments` のみ許可
 
 ## SDK Provider 設定
 

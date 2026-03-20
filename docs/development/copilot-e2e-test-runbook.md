@@ -90,6 +90,7 @@ Bot へのメンションで新規タスクを開始します。
 - スレッドが作成される
 - タスクが `running -> completed` へ遷移
 - 返信にエラーがなく完了する
+- `Context Envelope` が付与されても run が回帰しない
 
 ### 4.2 Resume 確認
 
@@ -156,6 +157,14 @@ Bot へのメンションで新規タスクを開始します。
 - セッションが close される
 - 後続メッセージは新規セッション開始として扱われる
 
+### 4.7 Context Envelope 確認（PR-2）
+
+`yarn api:smoke` を実行し、`agent runtime smoke run` の検証で以下を確認します。
+
+- Runtime に渡された最終 prompt に `[Behavior Context]` が含まれる
+- 同 prompt に `[User Prompt]` と元のユーザープロンプトが含まれる
+- `[Runtime Feedback Context]` に `previous_task_terminal_status` が含まれる
+
 ---
 
 ## 5. 成功判定
@@ -165,6 +174,8 @@ Bot へのメンションで新規タスクを開始します。
 - run(create/resume) が完走
 - approval required -> approve -> 再実行が成立
 - `/status` `/cancel` `/close` が機能
+- Context Envelope（Attachment/Behavior/Runtime Feedback）注入が確認できる
+- 添付ファイルが Agent 側 `attachment_mount_path` に stage される
 - system alert に重大エラー通知が出ていない
 
 ---

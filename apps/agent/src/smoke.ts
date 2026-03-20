@@ -1,10 +1,18 @@
 import "dotenv/config";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { buildAgentServer } from "./server.js";
 
 async function main(): Promise<void> {
   process.env.BOT_MODE ??= "mock";
+  const sessionRootDir = path.resolve(
+    process.cwd(),
+    ".tmp",
+    "agent-smoke-session-root",
+  );
+  process.env.AGENT_SESSION_ROOT_DIR = sessionRootDir;
   const mcpServer = createMockMcpServer();
   await new Promise<void>((resolve, reject) => {
     mcpServer.listen(0, "127.0.0.1", () => resolve());
@@ -30,6 +38,33 @@ async function main(): Promise<void> {
       url: "/health",
     });
     assertStatusCode(healthResponse.statusCode, 200, "health");
+
+    const stagedSessionId = `sess_${randomUUID()}`;
+    const stagedTaskId = `task_${randomUUID()}`;
+    const stageResponse = await app.inject({
+      method: "POST",
+      url: `/v1/tasks/${stagedTaskId}/attachments/stage`,
+      payload: {
+        session_id: stagedSessionId,
+        attachment_mount_path: `${sessionRootDir}/${stagedSessionId}/attachments`,
+        attachments: [
+          {
+            name: "sample.txt",
+            source_url: `http://127.0.0.1:${address.port}/fixtures/sample.txt`,
+          },
+        ],
+      },
+    });
+    assertStatusCode(stageResponse.statusCode, 200, "attachments/stage");
+    const stageBody = stageResponse.json() as {
+      staged_count: number;
+      staged_files: Array<{ path: string }>;
+    };
+    assert(stageBody.staged_count === 1, "attachments/stage should stage one file");
+    const stagedPath = stageBody.staged_files[0]?.path;
+    assert(typeof stagedPath === "string", "attachments/stage should return file path");
+    const stagedText = await fs.readFile(stagedPath, "utf8");
+    assert(stagedText === "sample fixture content", "staged file content should match source");
 
     const sessionId = `sess_${randomUUID()}`;
     const taskId1 = `task_${randomUUID()}`;
@@ -141,6 +176,7 @@ async function main(): Promise<void> {
     console.log("[agent:smoke] agent runtime checks passed.");
   } finally {
     await app.close();
+    await fs.rm(sessionRootDir, { recursive: true, force: true });
     await new Promise<void>((resolve, reject) => {
       mcpServer.close((error) => {
         if (error) {
@@ -156,6 +192,13 @@ async function main(): Promise<void> {
 function createMockMcpServer(): http.Server {
   return http.createServer((request, response) => {
     if (!request.url || request.method !== "POST") {
+      if (request.url === "/fixtures/sample.txt" && request.method === "GET") {
+        response.writeHead(200, {
+          "content-type": "text/plain; charset=utf-8",
+        });
+        response.end("sample fixture content");
+        return;
+      }
       writeJson(response, 404, {
         error: "not_found",
       });

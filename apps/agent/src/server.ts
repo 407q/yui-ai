@@ -12,7 +12,10 @@ import {
   MockCopilotSdkProvider,
   type CopilotSdkProvider,
 } from "./runtime/sdkProvider.js";
-import type { AgentRunRequest } from "./runtime/types.js";
+import type {
+  AgentRunRequest,
+  AgentStageAttachmentsRequest,
+} from "./runtime/types.js";
 
 const runTaskBodySchema: z.ZodType<AgentRunRequest> = z.object({
   task_id: z.string().min(1),
@@ -73,6 +76,22 @@ const runTaskBodySchema: z.ZodType<AgentRunRequest> = z.object({
 
 const taskParamsSchema = z.object({
   taskId: z.string().min(1),
+});
+
+const stageAttachmentsBodySchema: z.ZodType<Omit<
+  AgentStageAttachmentsRequest,
+  "task_id"
+>> = z.object({
+  session_id: z.string().min(1),
+  attachment_mount_path: z.string().min(1),
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        source_url: z.string().url(),
+      }),
+    )
+    .max(20),
 });
 
 interface BuildAgentServerOptions {
@@ -152,6 +171,22 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
     );
     const accepted = await runtimeService.runTask(payload);
     return reply.code(202).send(accepted);
+  });
+
+  app.post("/v1/tasks/:taskId/attachments/stage", async (request, reply) => {
+    const params = parseOrThrow(taskParamsSchema, request.params, "invalid_task_params");
+    const payload = parseOrThrow(
+      stageAttachmentsBodySchema,
+      request.body,
+      "invalid_stage_attachments_request",
+    );
+    const staged = await runtimeService.stageTaskAttachments({
+      task_id: params.taskId,
+      session_id: payload.session_id,
+      attachment_mount_path: payload.attachment_mount_path,
+      attachments: payload.attachments,
+    });
+    return reply.code(200).send(staged);
   });
 
   app.get("/v1/tasks/:taskId", async (request) => {
