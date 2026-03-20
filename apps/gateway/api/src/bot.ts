@@ -134,6 +134,12 @@ const AGENT_APPROVAL_RETRY_MAX = parsePositiveInt(
   3,
 );
 const TYPING_PULSE_MS = 7000;
+const BOT_OPERATION_LOG_ENABLED = process.env.BOT_OPERATION_LOG_ENABLED !== "false";
+const BOT_OPERATION_LOG_MAX_FIELD_CHARS = parsePositiveInt(
+  process.env.BOT_OPERATION_LOG_MAX_FIELD_CHARS,
+  320,
+);
+const BOT_OPERATION_LOG_MESSAGE_LIMIT = 1800;
 
 function createDiscordClient(): Client {
   return new Client({
@@ -359,12 +365,337 @@ async function gatewayApiRequest<T>(
   return (await response.json()) as T;
 }
 
+function truncateOperationLogValue(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function toOperationLogJson(value: unknown, maxChars: number): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    serialized = String(value);
+  }
+  return truncateOperationLogValue(serialized, maxChars);
+}
+
+function sanitizeOperationLogLine(line: string): string {
+  return truncateOperationLogValue(
+    line.replace(/```/g, "'''").replace(/\r?\n/g, "\\n"),
+    BOT_OPERATION_LOG_MAX_FIELD_CHARS * 2,
+  );
+}
+
+function buildOperationLogBlocks(title: string, lines: string[]): string[] {
+  const normalizedTitle = sanitizeOperationLogLine(title);
+  const normalizedLines = lines.map((line) => sanitizeOperationLogLine(line));
+  if (normalizedLines.length === 0) {
+    return [`\`\`\`text\n[oplog] ${normalizedTitle}\n\`\`\``];
+  }
+
+  const blocks: string[] = [];
+  let chunk: string[] = [];
+  let chunkIndex = 1;
+  for (const line of normalizedLines) {
+    const header =
+      chunkIndex === 1
+        ? `[oplog] ${normalizedTitle}`
+        : `[oplog] ${normalizedTitle} (part ${chunkIndex})`;
+    const nextLines = chunk.length === 0 ? [header, line] : [...chunk, line];
+    const candidate = `\`\`\`text\n${nextLines.join("\n")}\n\`\`\``;
+    if (candidate.length <= BOT_OPERATION_LOG_MESSAGE_LIMIT) {
+      chunk = nextLines;
+      continue;
+    }
+
+    if (chunk.length === 0) {
+      blocks.push(
+        `\`\`\`text\n${header}\n${truncateOperationLogValue(line, BOT_OPERATION_LOG_MESSAGE_LIMIT - 32)}\n\`\`\``,
+      );
+      chunkIndex += 1;
+      continue;
+    }
+
+    blocks.push(`\`\`\`text\n${chunk.join("\n")}\n\`\`\``);
+    chunkIndex += 1;
+    const continuedHeader = `[oplog] ${normalizedTitle} (part ${chunkIndex})`;
+    chunk = [continuedHeader, line];
+  }
+
+  if (chunk.length > 0) {
+    blocks.push(`\`\`\`text\n${chunk.join("\n")}\n\`\`\``);
+  }
+  return blocks;
+}
+
+async function sendOperationLog(
+  threadId: Snowflake,
+  title: string,
+  lines: string[],
+): Promise<void> {
+  if (!BOT_OPERATION_LOG_ENABLED) {
+    return;
+  }
+  try {
+    const conciseLines = summarizeOperationLog(title, lines);
+    if (conciseLines.length === 0) {
+      return;
+    }
+    const blocks = buildOperationLogBlocks("actions", conciseLines);
+    for (const block of blocks) {
+      await sendToThread(threadId, block);
+    }
+  } catch (error) {
+    console.error(`${LOG_PREFIX} operation log send failed`, error);
+  }
+}
+
+function summarizeOperationLog(title: string, lines: string[]): string[] {
+  switch (title) {
+    case "gateway.mentions.start":
+      return [];
+    case "gateway.mentions.started":
+      return [];
+    case "gateway.threads.message":
+      return [];
+    case "gateway.threads.message.accepted":
+      return [];
+    case "run.start":
+      return [];
+    case "gateway.agent.run.request":
+      return [];
+    case "gateway.agent.run.accepted":
+      return [];
+    case "gateway.agent.status.terminal": {
+      const terminalStatus = extractOperationLogValue(lines, "- terminal_status=");
+      if (terminalStatus === "completed") {
+        return [];
+      }
+      if (terminalStatus === "failed") {
+        return ["❌ Agent 実行が失敗"];
+      }
+      if (terminalStatus === "canceled") {
+        return [];
+      }
+      return [];
+    }
+    case "run.approval.required":
+      return [];
+    case "run.approval.approved":
+      return [];
+    case "run.approval.rejected":
+      return [];
+    case "run.approval.timeout":
+      return [];
+    case "approval.request.gateway":
+      return [];
+    case "approval.requested":
+      return [];
+    case "approval.button.clicked":
+      return [];
+    case "approval.button.settled":
+    case "approval.settle":
+      return [];
+    case "gateway.cancel.request":
+      return ["🛑 キャンセルを要求"];
+    case "gateway.cancel.agent_task":
+      return ["🛑 Agent タスクをキャンセル"];
+    case "gateway.cancel.thread":
+      return ["🧵 スレッドタスクをキャンセル"];
+    case "gateway.close.request":
+      return [];
+    case "gateway.close.agent_task_cancel":
+      return [];
+    case "gateway.close.thread":
+      return [];
+    case "run.final_answer":
+      return [];
+    case "run.error":
+      return ["❌ 実行エラーを検出"];
+    case "run.tool_results":
+      return summarizeToolOperationLines(lines);
+    default:
+      return [];
+  }
+}
+
+function extractOperationLogValue(lines: string[], prefix: string): string | null {
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.startsWith(prefix)) {
+      return line.slice(prefix.length).trim();
+    }
+  }
+  return null;
+}
+
+function summarizeToolOperationLines(lines: string[]): string[] {
+  const operations = parseToolOperationSummaries(lines);
+  if (operations.length === 0) {
+    return [];
+  }
+
+  return operations
+    .filter((operation) => !isSuppressedToolOperation(operation))
+    .slice(0, 8)
+    .map((operation) => {
+      const statusEmoji = operation.status === "ok" ? "✅" : "❌";
+      const toolEmoji = resolveToolEmoji(operation.toolName);
+      const detail = resolveToolDetail(operation.toolName, operation.arguments);
+      return detail
+        ? `${toolEmoji} ${operation.toolName} ${detail} ${statusEmoji}`
+        : `${toolEmoji} ${operation.toolName} ${statusEmoji}`;
+    });
+}
+
+interface ToolOperationSummary {
+  status: "ok" | "error";
+  toolName: string;
+  arguments: Record<string, unknown> | null;
+  errorCode: string | null;
+}
+
+function parseToolOperationSummaries(lines: string[]): ToolOperationSummary[] {
+  const operations: ToolOperationSummary[] = [];
+  let current: ToolOperationSummary | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const summaryMatch = line.match(
+      /^- \[\d+\] status=(ok|error) call_id=[^ ]+ tool=([^ ]+) target=[^ ]+$/,
+    );
+    if (summaryMatch) {
+      const status = summaryMatch[1];
+      const toolName = summaryMatch[2];
+      if (!status || !toolName) {
+        current = null;
+        continue;
+      }
+      current = {
+        status: status as "ok" | "error",
+        toolName,
+        arguments: null,
+        errorCode: null,
+      };
+      operations.push({
+        status: current.status,
+        toolName: current.toolName,
+        arguments: current.arguments,
+        errorCode: current.errorCode,
+      });
+      continue;
+    }
+
+    if (current && line.startsWith("arguments=")) {
+      current.arguments = parseOperationLogJson(line.slice("arguments=".length));
+      continue;
+    }
+    if (current && line.startsWith("error=")) {
+      const errorValue = line.slice("error=".length).trim();
+      const errorCode = errorValue.split(":", 1)[0]?.trim() ?? null;
+      current.errorCode = errorCode && errorCode.length > 0 ? errorCode : null;
+      continue;
+    }
+  }
+
+  return operations;
+}
+
+function isSuppressedToolOperation(operation: ToolOperationSummary): boolean {
+  if (operation.status !== "error") {
+    return false;
+  }
+  if (operation.errorCode === "approval_required") {
+    return false;
+  }
+  return operation.errorCode === "approval_rejected" || operation.errorCode === "approval_timeout";
+}
+
+function parseOperationLogJson(input: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(input);
+    return asRecord(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function resolveToolEmoji(toolName: string): string {
+  if (toolName.endsWith("file_read")) {
+    return "📄";
+  }
+  if (toolName.endsWith("file_write")) {
+    return "✍️";
+  }
+  if (toolName.endsWith("file_delete")) {
+    return "🗑️";
+  }
+  if (toolName.endsWith("file_list")) {
+    return "📂";
+  }
+  if (toolName.endsWith("cli_exec")) {
+    return "💻";
+  }
+  if (toolName === "host.http_request") {
+    return "🌐";
+  }
+  if (toolName.startsWith("memory.")) {
+    return "🧠";
+  }
+  return "🛠️";
+}
+
+function resolveToolDetail(
+  toolName: string,
+  args: Record<string, unknown> | null,
+): string | null {
+  if (!args) {
+    return null;
+  }
+  if (toolName.endsWith("file_read") || toolName.endsWith("file_write") || toolName.endsWith("file_delete") || toolName.endsWith("file_list")) {
+    return readString(args, "path");
+  }
+  if (toolName.endsWith("cli_exec")) {
+    return readString(args, "command");
+  }
+  if (toolName === "host.http_request") {
+    return readString(args, "url");
+  }
+  if (toolName.startsWith("memory.")) {
+    const namespace = readString(args, "namespace");
+    const key = readString(args, "key");
+    if (namespace && key) {
+      return `${namespace}/${key}`;
+    }
+    return namespace;
+  }
+  return null;
+}
+
 async function ensureGatewayTaskForRun(
   session: MockSession,
   prompt: string,
   attachmentNames: string[],
 ): Promise<void> {
   if (!session.gatewaySessionId) {
+    await sendOperationLog(session.threadId, "gateway.mentions.start", [
+      `- thread_id=${session.threadId}`,
+      `- prompt_length=${prompt.length}`,
+      `- attachments=${attachmentNames.length > 0 ? attachmentNames.join(", ") : "none"}`,
+      `- request=${toOperationLogJson(
+        {
+          userId: session.ownerUserId,
+          channelId: session.channelId,
+          threadId: session.threadId,
+          prompt,
+          attachmentNames,
+        },
+        BOT_OPERATION_LOG_MAX_FIELD_CHARS,
+      )}`,
+    ]);
     const started = await gatewayApiRequest<GatewayStartResponse>(
       "POST",
       "/v1/discord/mentions/start",
@@ -378,9 +709,27 @@ async function ensureGatewayTaskForRun(
     );
     session.gatewaySessionId = started.session.sessionId;
     session.currentTaskId = started.taskId;
+    await sendOperationLog(session.threadId, "gateway.mentions.started", [
+      `- session_id=${started.session.sessionId}`,
+      `- task_id=${started.taskId}`,
+      `- status=${started.session.status}`,
+    ]);
     return;
   }
 
+  await sendOperationLog(session.threadId, "gateway.threads.message", [
+    `- thread_id=${session.threadId}`,
+    `- prompt_length=${prompt.length}`,
+    `- attachments=${attachmentNames.length > 0 ? attachmentNames.join(", ") : "none"}`,
+    `- request=${toOperationLogJson(
+      {
+        userId: session.ownerUserId,
+        prompt,
+        attachmentNames,
+      },
+      BOT_OPERATION_LOG_MAX_FIELD_CHARS,
+    )}`,
+  ]);
   const task = await gatewayApiRequest<GatewayThreadMessageResponse>(
     "POST",
     `/v1/threads/${session.threadId}/messages`,
@@ -391,6 +740,12 @@ async function ensureGatewayTaskForRun(
     },
   );
   session.currentTaskId = task.taskId;
+  await sendOperationLog(session.threadId, "gateway.threads.message.accepted", [
+    `- session_id=${task.session.sessionId}`,
+    `- task_id=${task.taskId}`,
+    `- status=${task.session.status}`,
+    `- resumed_from_idle=${task.resumedFromIdle}`,
+  ]);
 }
 
 async function addReviewedReaction(message: Message): Promise<void> {
@@ -1281,12 +1636,96 @@ function readString(
   return typeof value === "string" ? value : null;
 }
 
+function readRecord(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): Record<string, unknown> | null {
+  return asRecord(record?.[key]);
+}
+
+function toToolResultStatus(value: unknown): "ok" | "error" | null {
+  if (value === "ok" || value === "error") {
+    return value;
+  }
+  return null;
+}
+
+function buildToolResultOperationLogLines(toolResults: unknown[]): string[] {
+  if (toolResults.length === 0) {
+    return ["- tool_results: none"];
+  }
+
+  const lines: string[] = [`- tool_results_count: ${toolResults.length}`];
+  for (let index = 0; index < toolResults.length; index += 1) {
+    const resultRecord = asRecord(toolResults[index]);
+    if (!resultRecord) {
+      lines.push(`- [${index + 1}] status=unknown raw=${toOperationLogJson(toolResults[index], BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`);
+      continue;
+    }
+
+    const status = toToolResultStatus(resultRecord.status);
+    const callId = readString(resultRecord, "call_id") ?? `call_${index + 1}`;
+    const toolName = readString(resultRecord, "tool_name") ?? "unknown_tool";
+    const executionTarget =
+      readString(resultRecord, "execution_target") ?? "gateway_adapter";
+    const reason = readString(resultRecord, "reason") ?? "-";
+    const argumentsPayload = readRecord(resultRecord, "arguments") ?? {};
+    lines.push(
+      `- [${index + 1}] status=${status ?? "unknown"} call_id=${callId} tool=${toolName} target=${executionTarget}`,
+    );
+    lines.push(
+      `  reason=${truncateOperationLogValue(reason, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    );
+    lines.push(
+      `  arguments=${toOperationLogJson(argumentsPayload, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    );
+
+    if (status === "ok") {
+      const resultPayload = readRecord(resultRecord, "result") ?? {};
+      lines.push(
+        `  result=${toOperationLogJson(resultPayload, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+      );
+      continue;
+    }
+
+    const errorCode = readString(resultRecord, "error_code") ?? "unknown_error";
+    const message = readString(resultRecord, "message") ?? "unknown error";
+    const details = readRecord(resultRecord, "details");
+    lines.push(
+      `  error=${errorCode}: ${truncateOperationLogValue(message, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    );
+    if (details) {
+      lines.push(
+        `  details=${toOperationLogJson(details, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+      );
+    }
+  }
+  return lines;
+}
+
+function buildGatewayApiErrorLogLines(error: unknown): string[] {
+  if (error instanceof GatewayApiRequestError) {
+    return [
+      `- type=gateway_api_error`,
+      `- method=${error.method}`,
+      `- path=${error.pathname}`,
+      `- status=${error.statusCode} ${error.statusText}`,
+      `- response=${truncateOperationLogValue(error.responseText, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    ];
+  }
+  return [
+    "- type=runtime_error",
+    `- message=${truncateOperationLogValue(summarizeError(error), BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+  ];
+}
+
 async function waitForAgentTaskTerminalStatus(
   session: MockSession,
   taskId: string,
   runSequence: number,
 ): Promise<GatewayAgentTaskStatusResponse> {
   const deadline = Date.now() + AGENT_STATUS_TIMEOUT_SEC * 1000;
+  let pollCount = 0;
   while (Date.now() <= deadline) {
     if (isRunCanceled(session, runSequence)) {
       throw new SessionRunCanceledError(
@@ -1305,12 +1744,21 @@ async function waitForAgentTaskTerminalStatus(
       mapGatewaySessionStatus(status.session.status),
       `agent task ${status.agentTask.status}`,
     );
+    pollCount += 1;
 
     if (
       status.agentTask.status === "completed" ||
       status.agentTask.status === "failed" ||
       status.agentTask.status === "canceled"
     ) {
+      await sendOperationLog(session.threadId, "gateway.agent.status.terminal", [
+        `- task_id=${status.task.taskId}`,
+        `- session_id=${status.session.sessionId}`,
+        `- polls=${pollCount}`,
+        `- terminal_status=${status.agentTask.status}`,
+        `- send_and_wait_count=${status.agentTask.send_and_wait_count}`,
+        `- completed_at=${status.agentTask.completed_at ?? "null"}`,
+      ]);
       return status;
     }
 
@@ -1335,10 +1783,20 @@ async function runAgentTaskAttempt(
     throw new Error("Gateway task is not initialized.");
   }
 
+  const runPayload = buildRunRequestPayload(session, prompt, attachments, toolCalls);
+  await sendOperationLog(session.threadId, "gateway.agent.run.request", [
+    `- run_sequence=${runSequence}`,
+    `- session_id=${runPayload.sessionId}`,
+    `- task_id=${runPayload.taskId}`,
+    `- prompt_length=${prompt.length}`,
+    `- attachments=${attachmentNames.length > 0 ? attachmentNames.join(", ") : "none"}`,
+    `- tool_calls=${toolCalls.length}`,
+    `- request=${toOperationLogJson(runPayload, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+  ]);
   const runAccepted = await gatewayApiRequest<GatewayAgentRunResponse>(
     "POST",
     "/v1/agent/tasks/run",
-    buildRunRequestPayload(session, prompt, attachments, toolCalls),
+    runPayload,
   );
   session.currentTaskId = runAccepted.task.taskId;
   session.gatewaySessionId = runAccepted.session.sessionId;
@@ -1347,6 +1805,14 @@ async function runAgentTaskAttempt(
     mapGatewaySessionStatus(runAccepted.session.status),
     "agent run accepted",
   );
+  await sendOperationLog(session.threadId, "gateway.agent.run.accepted", [
+    `- task_id=${runAccepted.task.taskId}`,
+    `- session_id=${runAccepted.session.sessionId}`,
+    `- session_status=${runAccepted.session.status}`,
+    `- agent_status=${runAccepted.agentTask.status}`,
+    `- bootstrap_mode=${runAccepted.agentTask.bootstrap_mode}`,
+    `- send_and_wait_count=${runAccepted.agentTask.send_and_wait_count}`,
+  ]);
 
   return waitForAgentTaskTerminalStatus(session, runAccepted.task.taskId, runSequence);
 }
@@ -1355,6 +1821,11 @@ async function syncCancelWithGateway(
   session: MockSession,
   userId: Snowflake,
 ): Promise<void> {
+  await sendOperationLog(session.threadId, "gateway.cancel.request", [
+    `- session_id=${session.gatewaySessionId ?? "unknown"}`,
+    `- task_id=${session.currentTaskId ?? "none"}`,
+    `- user_id=${userId}`,
+  ]);
   if (session.currentTaskId) {
     try {
       await gatewayApiRequest(
@@ -1362,22 +1833,40 @@ async function syncCancelWithGateway(
         `/v1/agent/tasks/${encodeURIComponent(session.currentTaskId)}/cancel`,
         { userId },
       );
+      await sendOperationLog(session.threadId, "gateway.cancel.agent_task", [
+        `- task_id=${session.currentTaskId}`,
+        "- status=accepted",
+      ]);
     } catch (error) {
       if (!isIgnorableTaskCancelError(error)) {
         throw error;
       }
+      await sendOperationLog(session.threadId, "gateway.cancel.agent_task", [
+        `- task_id=${session.currentTaskId}`,
+        "- status=ignored",
+        ...buildGatewayApiErrorLogLines(error),
+      ]);
     }
   }
 
   await gatewayApiRequest("POST", `/v1/threads/${session.threadId}/cancel`, {
     userId,
   });
+  await sendOperationLog(session.threadId, "gateway.cancel.thread", [
+    `- thread_id=${session.threadId}`,
+    "- status=accepted",
+  ]);
 }
 
 async function syncCloseWithGateway(
   session: MockSession,
   userId: Snowflake,
 ): Promise<void> {
+  await sendOperationLog(session.threadId, "gateway.close.request", [
+    `- session_id=${session.gatewaySessionId ?? "unknown"}`,
+    `- task_id=${session.currentTaskId ?? "none"}`,
+    `- user_id=${userId}`,
+  ]);
   if (session.currentTaskId) {
     try {
       await gatewayApiRequest(
@@ -1385,16 +1874,29 @@ async function syncCloseWithGateway(
         `/v1/agent/tasks/${encodeURIComponent(session.currentTaskId)}/cancel`,
         { userId },
       );
+      await sendOperationLog(session.threadId, "gateway.close.agent_task_cancel", [
+        `- task_id=${session.currentTaskId}`,
+        "- status=accepted",
+      ]);
     } catch (error) {
       if (!isIgnorableTaskCancelError(error)) {
         throw error;
       }
+      await sendOperationLog(session.threadId, "gateway.close.agent_task_cancel", [
+        `- task_id=${session.currentTaskId}`,
+        "- status=ignored",
+        ...buildGatewayApiErrorLogLines(error),
+      ]);
     }
   }
 
   await gatewayApiRequest("POST", `/v1/threads/${session.threadId}/close`, {
     userId,
   });
+  await sendOperationLog(session.threadId, "gateway.close.thread", [
+    `- thread_id=${session.threadId}`,
+    "- status=accepted",
+  ]);
 }
 
 async function refreshSessionFromGateway(session: MockSession): Promise<void> {
@@ -1451,6 +1953,14 @@ async function runAgentTask(
     `task started by <@${triggeredByUserId}>`,
   );
   touchSession(session);
+  await sendOperationLog(session.threadId, "run.start", [
+    `- run_sequence=${runSequence}`,
+    `- triggered_by=${triggeredByUserId}`,
+    `- prompt_length=${prompt.length}`,
+    `- attachments=${attachmentNames.length > 0 ? attachmentNames.join(", ") : "none"}`,
+    `- bot_mode=${BOT_MODE}`,
+    `- infrastructure=${getInfrastructureStatusMessage()}`,
+  ]);
   let stopTyping: (() => void) | undefined;
   const startTyping = (): void => {
     if (stopTyping) {
@@ -1497,6 +2007,12 @@ async function runAgentTask(
           session.threadId,
           `🧪 ツール実行デモを開始します: ${formatToolCallSummary(toolCalls)}`,
         );
+        await sendOperationLog(session.threadId, "run.mock.tool_calls", [
+          ...toolCalls.map(
+            (toolCall, index) =>
+              `- [${index + 1}] ${toolCall.toolName} target=${toolCall.executionTarget ?? "gateway_adapter"} args=${toOperationLogJson(toolCall.arguments, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+          ),
+        ]);
       }
     }
 
@@ -1583,6 +2099,10 @@ async function runAgentTask(
     }
 
     const runtimeResult = terminal?.agentTask.result;
+    const toolResultLines = buildToolResultOperationLogLines(
+      runtimeResult?.tool_results ?? [],
+    );
+    await sendOperationLog(session.threadId, "run.tool_results", toolResultLines);
     const toolErrors = summarizeToolErrors(runtimeResult?.tool_results ?? []);
     if (toolErrors.length > 0) {
       await sendToThread(
@@ -1592,12 +2112,17 @@ async function runAgentTask(
     }
 
     const rawLmMessage = runtimeResult?.final_answer ?? prompt ?? "(empty prompt)";
+    await sendOperationLog(session.threadId, "run.final_answer", [
+      `- length=${rawLmMessage.length}`,
+      `- preview=${truncateOperationLogValue(rawLmMessage, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    ]);
     await relayLmMessage(session.threadId, rawLmMessage);
     updateRuntimeFeedbackFromTerminalStatus(session, "completed", toolErrors);
     setSessionStatus(session, "idle_waiting", "agent run completed");
     touchSession(session);
   } catch (error) {
     clearTyping();
+    await sendOperationLog(session.threadId, "run.error", buildGatewayApiErrorLogLines(error));
     if (error instanceof SessionRunCanceledError || isRunCanceled(session, runSequence)) {
       if (
         session.runtimeFeedback.previousTaskTerminalStatus === undefined ||
@@ -1746,6 +2271,10 @@ function closeSession(session: MockSession, by: Snowflake): void {
   clearIdleTimer(session.id);
 }
 
+function formatSessionControlMessage(command: "/close" | "/exit" | "/reboot"): string {
+  return `⚠️ \`${command}\` を受け付けました。セッションを終了します。`;
+}
+
 async function closeAllSessions(by: Snowflake): Promise<number> {
   let closedCount = 0;
   for (const session of sessionsById.values()) {
@@ -1778,10 +2307,7 @@ async function executeSystemControl(
   isSystemControlPending = true;
   const closedCount = await closeAllSessions(requestedBy);
 
-  const actionLabel = mode === "reboot" ? "再起動" : "終了";
-  await notify(
-    `⚠️ \`/${mode}\` を受け付けました。全 ${closedCount} セッションを終了し、システムを${actionLabel}します。`,
-  );
+  await notify(formatSessionControlMessage(`/${mode}`));
   await sendSystemAlert(
     `⚠️ [${ALERT_TAG}:control] /${mode} requested by <@${requestedBy}> ` +
       `(closed_sessions: ${closedCount})`,
@@ -1976,7 +2502,7 @@ async function handleSlashCommand(
     }
 
     closeSession(session, interaction.user.id);
-    await interaction.reply({ content: "🔒 セッションを終了しました。" });
+    await interaction.reply({ content: formatSessionControlMessage("/close") });
   } else {
     await interaction.reply({
       content: "未対応のコマンドです。",

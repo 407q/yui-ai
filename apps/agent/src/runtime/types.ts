@@ -119,6 +119,10 @@ export interface ToolCallRequestPayload {
 export interface ToolCallSuccessResult {
   task_id: string;
   call_id: string;
+  tool_name?: string;
+  execution_target?: string;
+  reason?: string;
+  arguments?: Record<string, unknown>;
   status: "ok";
   result: Record<string, unknown>;
 }
@@ -126,6 +130,10 @@ export interface ToolCallSuccessResult {
 export interface ToolCallErrorResult {
   task_id: string;
   call_id: string;
+  tool_name?: string;
+  execution_target?: string;
+  reason?: string;
+  arguments?: Record<string, unknown>;
   status: "error";
   error_code: string;
   message: string;

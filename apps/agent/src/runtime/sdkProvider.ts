@@ -565,6 +565,10 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       const failedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
         call_id: `call_${randomUUID()}`,
+        tool_name: input.toolName,
+        execution_target: executionTarget,
+        reason,
+        arguments: input.arguments,
         status: "error",
         error_code: "permission_request_failed",
         message,
@@ -581,6 +585,10 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       const deniedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
         call_id: `call_${randomUUID()}`,
+        tool_name: input.toolName,
+        execution_target: executionTarget,
+        reason,
+        arguments: input.arguments,
         status: "error",
         error_code: "permission_denied",
         message: permission.reason,
@@ -610,6 +618,10 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       const failedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
         call_id: callId,
+        tool_name: input.toolName,
+        execution_target: executionTarget,
+        reason,
+        arguments: input.arguments,
         status: "error",
         error_code: "tool_execution_failed",
         message,
@@ -621,10 +633,26 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         error: message,
       };
     }
-    activeSend.runtimeToolResults.push(toolResult);
+    const enrichedToolResult: ToolCallResult =
+      toolResult.status === "ok"
+        ? {
+            ...toolResult,
+            tool_name: input.toolName,
+            execution_target: executionTarget,
+            reason,
+            arguments: input.arguments,
+          }
+        : {
+            ...toolResult,
+            tool_name: input.toolName,
+            execution_target: executionTarget,
+            reason,
+            arguments: input.arguments,
+          };
+    activeSend.runtimeToolResults.push(enrichedToolResult);
 
-    if (toolResult.status === "ok") {
-      const text = safeJsonStringify(toolResult.result);
+    if (enrichedToolResult.status === "ok") {
+      const text = safeJsonStringify(enrichedToolResult.result);
       return {
         resultType: "success",
         textResultForLlm: text,
@@ -633,9 +661,9 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     }
 
     return {
-      resultType: mapToolErrorToResultType(toolResult.error_code),
-      textResultForLlm: `${toolResult.error_code}: ${toolResult.message}`,
-      error: toolResult.message,
+      resultType: mapToolErrorToResultType(enrichedToolResult.error_code),
+      textResultForLlm: `${enrichedToolResult.error_code}: ${enrichedToolResult.message}`,
+      error: enrichedToolResult.message,
     };
   }
 
@@ -748,6 +776,10 @@ async function executeDeclaredToolCalls(
       toolResults.push({
         task_id: input.task_id,
         call_id: `call_${randomUUID()}`,
+        tool_name: toolCall.tool_name,
+        execution_target: executionTarget,
+        reason: toolCall.reason,
+        arguments: toolCall.arguments,
         status: "error",
         error_code: "permission_denied",
         message: permission.reason,
@@ -765,7 +797,13 @@ async function executeDeclaredToolCalls(
       arguments: toolCall.arguments,
       reason: toolCall.reason,
     });
-    toolResults.push(result);
+    toolResults.push({
+      ...result,
+      tool_name: toolCall.tool_name,
+      execution_target: executionTarget,
+      reason: toolCall.reason,
+      arguments: toolCall.arguments,
+    });
   }
 
   return toolResults;

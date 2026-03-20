@@ -51,6 +51,13 @@ cp .env.example .env
 - `BOT_ORCHESTRATOR_FAILURE_THRESHOLD`（任意。既定: `3`）
 - `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC`（任意。既定: `240`）
 - `BOT_ORCHESTRATOR_COMPOSE_BUILD`（任意。既定: `true`）
+- `BOT_OPERATION_LOG_ENABLED`（任意。既定: `true`）
+- `BOT_OPERATION_LOG_MAX_FIELD_CHARS`（任意。既定: `320`）
+
+`BOT_OPERATION_LOG_ENABLED=true` の場合、Bot は実行中の操作を
+「何をしたか」だけ（例: ファイル読込 / CLI 実行 / ツール呼び出し）で
+絵文字付きの ` ```text ` コードブロックとしてスレッドへ出力します。  
+無効化したい場合は `BOT_OPERATION_LOG_ENABLED=false` を設定してください。
 
 ## 実行
 
