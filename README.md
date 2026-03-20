@@ -91,6 +91,7 @@ yarn api:smoke
 
 - `POST /v1/mcp/tool-call`
 - `container.*` / `host.*` / `memory.*` を Gateway で実行
+- `container.file_deliver` でコンテナ内ファイルを base64 返却し、Bot が Discord 添付として送信可能
 - `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加
 
 ## P6 Agent Runtime（API/コマンド追加）
@@ -118,6 +119,7 @@ yarn api:smoke
 - `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
 - `#host-read` は承認後に同一 path / operation の permission が付与され、再試行で承認ループしない
 - `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能
+- 例: `#tool: container.file_deliver {"path":"workspace/report.txt","maxBytes":1048576}`
 - P7 時点では Copilot SDK provider は `mock` を使用（P8 初回で `copilot` を追加）
 - Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
 - 起動失敗時は Orchestrator が起動処理を中断して関連コンポーネントを停止し、プロセスを graceful に終了

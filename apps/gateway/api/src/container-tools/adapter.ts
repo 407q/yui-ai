@@ -21,6 +21,17 @@ export interface ContainerCliInput {
   timeoutSec?: number;
 }
 
+export interface ContainerFileStat {
+  path: string;
+  bytes: number;
+}
+
+export interface ContainerFileBase64Read {
+  path: string;
+  bytes: number;
+  contentBase64: string;
+}
+
 export class ContainerToolAdapter {
   constructor(private readonly options: ContainerToolAdapterOptions) {}
 
@@ -88,6 +99,94 @@ export class ContainerToolAdapter {
       return normalized;
     }
     return null;
+  }
+
+  private async statFileInAgentContainer(
+    sessionId: string,
+    requestedPath: string,
+  ): Promise<ContainerFileStat> {
+    const containerPath = this.resolveContainerPath(sessionId, requestedPath);
+    if (!containerPath) {
+      return Promise.reject(new Error("container_path_out_of_scope"));
+    }
+    const script = [
+      "set -eu",
+      `TARGET_PATH=${shellQuote(containerPath)}`,
+      'if [ ! -e "$TARGET_PATH" ]; then',
+      "  echo '__YUI_STAT__:not_found'",
+      "  exit 0",
+      "fi",
+      'if [ ! -f "$TARGET_PATH" ]; then',
+      "  echo '__YUI_STAT__:not_file'",
+      "  exit 0",
+      "fi",
+      'BYTES=$(wc -c < "$TARGET_PATH")',
+      "echo \"__YUI_STAT__:ok:$BYTES\"",
+    ].join("\n");
+    const executed = await execCommand({
+      command: "docker",
+      args: ["exec", "-i", this.options.containerName, "sh", "-lc", script],
+      cwd: this.options.dockerProjectRoot,
+      timeoutSec: this.options.dockerCliTimeoutSec,
+    });
+    if (executed.exitCode !== 0) {
+      throw new Error(executed.stderr || executed.stdout || "container_file_stat_failed");
+    }
+    const marker = executed.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("__YUI_STAT__:"));
+    if (!marker) {
+      throw new Error("container_file_stat_failed");
+    }
+    if (marker === "__YUI_STAT__:not_found") {
+      throw new Error("container_path_not_found");
+    }
+    if (marker === "__YUI_STAT__:not_file") {
+      throw new Error("container_path_not_file");
+    }
+    const match = marker.match(/^__YUI_STAT__:ok:(\d+)$/);
+    if (!match || !match[1]) {
+      throw new Error("container_file_stat_failed");
+    }
+    const bytes = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(bytes) || bytes < 0) {
+      throw new Error("container_file_stat_failed");
+    }
+    return {
+      path: containerPath,
+      bytes,
+    };
+  }
+
+  private async readFileBase64InAgentContainer(
+    sessionId: string,
+    requestedPath: string,
+    maxBytes: number,
+  ): Promise<ContainerFileBase64Read> {
+    const stat = await this.statFileInAgentContainer(sessionId, requestedPath);
+    if (stat.bytes > maxBytes) {
+      throw new Error("container_file_too_large");
+    }
+    const script = [
+      "set -eu",
+      `TARGET_PATH=${shellQuote(stat.path)}`,
+      'base64 < "$TARGET_PATH"',
+    ].join("\n");
+    const executed = await execCommand({
+      command: "docker",
+      args: ["exec", "-i", this.options.containerName, "sh", "-lc", script],
+      cwd: this.options.dockerProjectRoot,
+      timeoutSec: this.options.dockerCliTimeoutSec,
+    });
+    if (executed.exitCode !== 0) {
+      throw new Error(executed.stderr || executed.stdout || "container_file_read_failed");
+    }
+    return {
+      path: stat.path,
+      bytes: stat.bytes,
+      contentBase64: executed.stdout.replace(/\s+/g, ""),
+    };
   }
 
   private async executeInAgentContainer(
@@ -291,6 +390,52 @@ export class ContainerToolAdapter {
     }
     const content = await fs.readFile(scopedPath, "utf8");
     return { path: scopedPath, content };
+  }
+
+  async fileStat(sessionId: string, requestedPath: string): Promise<ContainerFileStat> {
+    if (this.isDockerExecMode()) {
+      return this.statFileInAgentContainer(sessionId, requestedPath);
+    }
+    const scopedPath = this.resolveScopedPath(sessionId, requestedPath);
+    if (!scopedPath) {
+      return Promise.reject(new Error("container_path_out_of_scope"));
+    }
+    let stats;
+    try {
+      stats = await fs.stat(scopedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error("container_path_not_found");
+      }
+      throw error;
+    }
+    if (!stats.isFile()) {
+      throw new Error("container_path_not_file");
+    }
+    return {
+      path: scopedPath,
+      bytes: stats.size,
+    };
+  }
+
+  async fileReadBase64(
+    sessionId: string,
+    requestedPath: string,
+    maxBytes: number,
+  ): Promise<ContainerFileBase64Read> {
+    if (this.isDockerExecMode()) {
+      return this.readFileBase64InAgentContainer(sessionId, requestedPath, maxBytes);
+    }
+    const stat = await this.fileStat(sessionId, requestedPath);
+    if (stat.bytes > maxBytes) {
+      throw new Error("container_file_too_large");
+    }
+    const buffer = await fs.readFile(stat.path);
+    return {
+      path: stat.path,
+      bytes: buffer.byteLength,
+      contentBase64: buffer.toString("base64"),
+    };
   }
 
   async fileWrite(

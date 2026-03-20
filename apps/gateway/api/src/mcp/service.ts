@@ -23,6 +23,11 @@ const containerFileListSchema = z.object({
   path: z.string().optional().default("."),
 });
 
+const containerFileDeliverSchema = z.object({
+  path: z.string().min(1),
+  maxBytes: z.number().int().min(1).max(8 * 1024 * 1024).optional().default(2 * 1024 * 1024),
+});
+
 const cliExecSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional().default([]),
@@ -256,6 +261,22 @@ export class McpToolService {
       case "container.file_list": {
         const args = parseToolArgs(containerFileListSchema, input.arguments);
         return this.containerAdapter.fileList(input.sessionId, args.path);
+      }
+      case "container.file_deliver": {
+        const args = parseToolArgs(containerFileDeliverSchema, input.arguments);
+        const file = await this.containerAdapter.fileReadBase64(
+          input.sessionId,
+          args.path,
+          args.maxBytes,
+        );
+        return {
+          path: file.path,
+          bytes: file.bytes,
+          content_base64: file.contentBase64,
+          mime_type: resolveMimeTypeFromPath(file.path),
+          file_name: path.basename(file.path),
+          max_bytes: args.maxBytes,
+        };
       }
       case "container.cli_exec": {
         const args = parseToolArgs(cliExecSchema, input.arguments);
@@ -523,6 +544,24 @@ function toMcpToolError(error: unknown): McpToolError {
       "Container path is outside allowed session scope.",
     );
   }
+  if (error instanceof Error && error.message === "container_path_not_found") {
+    return new McpToolError(
+      "container_path_not_found",
+      "Container path was not found.",
+    );
+  }
+  if (error instanceof Error && error.message === "container_path_not_file") {
+    return new McpToolError(
+      "container_path_not_file",
+      "Container path is not a regular file.",
+    );
+  }
+  if (error instanceof Error && error.message === "container_file_too_large") {
+    return new McpToolError(
+      "container_file_too_large",
+      "Container file exceeds maxBytes limit.",
+    );
+  }
 
   if (error instanceof Error) {
     return new McpToolError("tool_execution_failed", error.message);
@@ -539,4 +578,34 @@ function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 8)}_${randomUUID().slice(0, 8)}`;
+}
+
+function resolveMimeTypeFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".txt":
+    case ".md":
+    case ".log":
+    case ".json":
+    case ".yml":
+    case ".yaml":
+    case ".xml":
+    case ".csv":
+      return "text/plain";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".pdf":
+      return "application/pdf";
+    case ".zip":
+      return "application/zip";
+    default:
+      return "application/octet-stream";
+  }
 }

@@ -61,6 +61,8 @@ COPILOT_SDK_LOG_LEVEL=info
 - Gateway API からの `runtime_policy.tool_routing.mode=hybrid_container_builtin_gateway_host` では、
   コンテナ内の built-in file/search tools（`read_file`, `edit_file`, `str_replace_editor`, `grep`, `glob`, `view`）を許可し、
   host 操作・memory 操作は従来どおり Gateway custom tool 経由で実行します。
+- Gateway custom tool に `container.file_deliver` を追加し、`/agent/session/<session_id>` 配下ファイルを
+  base64 payload として返却できるようにしました（最終的な Discord 送信は Bot 側で実施）。
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
 
 ## Persona / Policy 設定（PR-1）

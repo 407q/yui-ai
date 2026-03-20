@@ -53,6 +53,8 @@ cp .env.example .env
 - `BOT_ORCHESTRATOR_COMPOSE_BUILD`（任意。既定: `true`）
 - `BOT_OPERATION_LOG_ENABLED`（任意。既定: `true`）
 - `BOT_OPERATION_LOG_MAX_FIELD_CHARS`（任意。既定: `320`）
+- `BOT_DELIVERED_FILE_MAX_BYTES`（任意。既定: `2097152`）
+- `BOT_DELIVERED_FILE_MAX_COUNT`（任意。既定: `3`）
 - `CONTAINER_SESSION_ROOT`（任意。既定: `/agent/session`）
 - `CONTAINER_TOOL_EXECUTION_MODE`（任意。既定: `docker_exec`）
 - `AGENT_CONTAINER_NAME`（任意。既定: `yui-ai-agent`）
@@ -221,6 +223,7 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 ### MCP で扱う主なツール（P5）
 
 - `container.file_read/write/delete/list`
+- `container.file_deliver`
 - `container.cli_exec`
 - `host.file_read/write/delete/list`
 - `host.cli_exec`
@@ -250,3 +253,7 @@ yarn api:smoke
 - 1行につき1つのツール指定（複数行可）
 - 形式: `#tool: <tool_name> <JSON object>`
 - Host 系は従来どおり `#host-read: <path>` も利用可能（承認 UI が必要）
+- 例: `#tool: container.file_deliver {"path":"workspace/report.txt","maxBytes":1048576}`
+
+`container.file_deliver` が `tool_results` に成功で含まれると、Bot は base64 payload をデコードして
+Discord 添付として自動送信します（`BOT_DELIVERED_FILE_MAX_BYTES` / `BOT_DELIVERED_FILE_MAX_COUNT` で制限）。

@@ -1,7 +1,9 @@
 import "dotenv/config";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   AnyThreadChannel,
   ButtonBuilder,
   ButtonInteraction,
@@ -50,6 +52,14 @@ interface QueuedRun {
 interface GatewayAttachmentSource {
   name: string;
   sourceUrl: string;
+}
+
+interface DeliveredContainerFile {
+  path: string;
+  fileName: string;
+  bytes: number;
+  mimeType: string;
+  contentBase64: string;
 }
 
 interface ToolApprovalRequest {
@@ -140,6 +150,14 @@ const BOT_OPERATION_LOG_MAX_FIELD_CHARS = parsePositiveInt(
   320,
 );
 const BOT_OPERATION_LOG_MESSAGE_LIMIT = 1800;
+const BOT_DELIVERED_FILE_MAX_BYTES = parsePositiveInt(
+  process.env.BOT_DELIVERED_FILE_MAX_BYTES,
+  2 * 1024 * 1024,
+);
+const BOT_DELIVERED_FILE_MAX_COUNT = parsePositiveInt(
+  process.env.BOT_DELIVERED_FILE_MAX_COUNT,
+  3,
+);
 
 function createDiscordClient(): Client {
   return new Client({
@@ -644,6 +662,9 @@ function resolveToolEmoji(toolName: string): string {
   if (toolName.endsWith("file_read")) {
     return "📄";
   }
+  if (toolName === "container.file_deliver") {
+    return "📦";
+  }
   if (toolName.endsWith("file_write")) {
     return "✍️";
   }
@@ -694,6 +715,9 @@ function resolveToolDetail(
     return readString(args, "command");
   }
   if (toolName.endsWith("file_read") || toolName.endsWith("file_write") || toolName.endsWith("file_delete") || toolName.endsWith("file_list")) {
+    return readString(args, "path");
+  }
+  if (toolName === "container.file_deliver") {
     return readString(args, "path");
   }
   if (toolName.endsWith("cli_exec")) {
@@ -1261,6 +1285,46 @@ async function relayLmMessage(threadId: Snowflake, rawMessage: string): Promise<
   await sendToThread(threadId, rawMessage);
 }
 
+function toDeliveredAttachment(file: DeliveredContainerFile): AttachmentBuilder | null {
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(file.contentBase64, "base64");
+  } catch {
+    return null;
+  }
+  if (
+    buffer.byteLength !== file.bytes ||
+    buffer.byteLength <= 0 ||
+    buffer.byteLength > BOT_DELIVERED_FILE_MAX_BYTES
+  ) {
+    return null;
+  }
+  const description = `${file.path} (${file.mimeType})`;
+  return new AttachmentBuilder(buffer, {
+    name: file.fileName,
+    description: truncateOperationLogValue(description, 100),
+  });
+}
+
+async function sendDeliveredFilesToThread(
+  threadId: Snowflake,
+  deliveredFiles: DeliveredContainerFile[],
+): Promise<void> {
+  if (deliveredFiles.length === 0) {
+    return;
+  }
+  const files = deliveredFiles
+    .map((file) => toDeliveredAttachment(file))
+    .filter((file): file is AttachmentBuilder => file !== null);
+  if (files.length === 0) {
+    return;
+  }
+  await sendToThread(threadId, {
+    content: "📦 コンテナからファイルを送信しました。",
+    files,
+  });
+}
+
 function buildStatusEmbed(session: MockSession): EmbedBuilder {
   const idleDeadline = `<t:${Math.floor(session.idleDeadlineAt.getTime() / 1000)}:R>`;
   const updatedAt = `<t:${Math.floor(session.updatedAt.getTime() / 1000)}:F>`;
@@ -1583,6 +1647,44 @@ function summarizeToolErrors(toolResults: unknown[]): string[] {
   return summaries;
 }
 
+function extractDeliveredFilesFromToolResults(toolResults: unknown[]): DeliveredContainerFile[] {
+  const delivered: DeliveredContainerFile[] = [];
+  for (const result of toolResults) {
+    const record = asRecord(result);
+    if (!record || record.status !== "ok") {
+      continue;
+    }
+    const toolName = readString(record, "tool_name");
+    if (toolName !== "container.file_deliver") {
+      continue;
+    }
+    const payload = readRecord(record, "result");
+    if (!payload) {
+      continue;
+    }
+    const pathValue = readString(payload, "path");
+    const fileName = readString(payload, "file_name");
+    const mimeType =
+      readString(payload, "mime_type") ?? "application/octet-stream";
+    const contentBase64 = readString(payload, "content_base64");
+    const bytes = readNumber(payload, "bytes");
+    if (!pathValue || !fileName || !contentBase64 || bytes === null) {
+      continue;
+    }
+    if (bytes <= 0 || bytes > BOT_DELIVERED_FILE_MAX_BYTES) {
+      continue;
+    }
+    delivered.push({
+      path: pathValue,
+      fileName,
+      bytes,
+      mimeType,
+      contentBase64,
+    });
+  }
+  return delivered.slice(0, BOT_DELIVERED_FILE_MAX_COUNT);
+}
+
 function inferApprovalOperationFromToolCall(
   toolCall: GatewayAgentToolCall | undefined,
 ): string | null {
@@ -1672,6 +1774,14 @@ function readString(
 ): string | null {
   const value = record?.[key];
   return typeof value === "string" ? value : null;
+}
+
+function readNumber(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): number | null {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function readRecord(
@@ -2141,6 +2251,12 @@ async function runAgentTask(
       runtimeResult?.tool_results ?? [],
     );
     await sendOperationLog(session.threadId, "run.tool_results", toolResultLines);
+    const deliveredFiles = extractDeliveredFilesFromToolResults(
+      runtimeResult?.tool_results ?? [],
+    );
+    if (deliveredFiles.length > 0) {
+      await sendDeliveredFilesToThread(session.threadId, deliveredFiles);
+    }
     const toolErrors = summarizeToolErrors(runtimeResult?.tool_results ?? []);
     if (toolErrors.length > 0) {
       await sendToThread(

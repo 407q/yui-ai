@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -275,6 +276,67 @@ async function main(): Promise<void> {
       (containerReadResult.result as { content: string }).content ===
         "container smoke content",
       "container file content should match written value",
+    );
+
+    const containerDeliverResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "container.file_deliver",
+      execution_target: "gateway_adapter",
+      arguments: {
+        path: "workspace/note.txt",
+        maxBytes: 1024 * 1024,
+      },
+      reason: "deliver container file",
+    });
+    assert(
+      containerDeliverResult.status === "ok",
+      "container.file_deliver should succeed",
+    );
+    const deliverPayload = containerDeliverResult.result as {
+      path: string;
+      file_name: string;
+      bytes: number;
+      content_base64: string;
+    };
+    assert(
+      deliverPayload.path.endsWith("/workspace/note.txt"),
+      "container.file_deliver should return resolved path",
+    );
+    assert(
+      deliverPayload.file_name === "note.txt",
+      "container.file_deliver should return file_name",
+    );
+    assert(
+      deliverPayload.bytes === Buffer.byteLength("container smoke content", "utf8"),
+      "container.file_deliver should return byte size",
+    );
+    assert(
+      Buffer.from(deliverPayload.content_base64, "base64").toString("utf8") ===
+        "container smoke content",
+      "container.file_deliver should return base64 content",
+    );
+
+    const containerDeliverTooLargeResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "container.file_deliver",
+      execution_target: "gateway_adapter",
+      arguments: {
+        path: "workspace/note.txt",
+        maxBytes: 4,
+      },
+      reason: "deliver too large should fail",
+    });
+    assert(
+      containerDeliverTooLargeResult.status === "error",
+      "container.file_deliver too large should fail",
+    );
+    assert(
+      containerDeliverTooLargeResult.error_code === "container_file_too_large",
+      "container.file_deliver too large should return container_file_too_large",
     );
 
     const canonicalAliasReadResult = await callMcpTool(app, reporter, {

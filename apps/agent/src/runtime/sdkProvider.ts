@@ -135,6 +135,11 @@ const containerFileListSchema = z.object({
   path: z.string().optional().default("."),
 });
 
+const containerFileDeliverSchema = z.object({
+  path: z.string().min(1),
+  maxBytes: z.number().int().min(1).max(8 * 1024 * 1024).optional().default(2 * 1024 * 1024),
+});
+
 const cliExecSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional().default([]),
@@ -608,6 +613,13 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         "List files in the container session workspace via Gateway MCP. Start here when exploring project files and attachments.",
         containerFileListSchema,
         "list files in container workspace",
+      ),
+      this.defineGatewayTool(
+        state,
+        "container.file_deliver",
+        "Read a file from the container session workspace and return it as base64 payload for user delivery. Use for requested file exports from /agent/session/<session_id>.",
+        containerFileDeliverSchema,
+        "deliver container file to user",
       ),
       this.defineGatewayTool(
         state,
