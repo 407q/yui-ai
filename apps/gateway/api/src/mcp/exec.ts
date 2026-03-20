@@ -5,6 +5,7 @@ export interface ExecCommandInput {
   args: string[];
   cwd: string;
   timeoutSec: number;
+  stdin?: string;
 }
 
 export interface ExecCommandOutput {
@@ -20,7 +21,7 @@ export async function execCommand(
   return new Promise<ExecCommandOutput>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
     });
 
@@ -43,6 +44,14 @@ export async function execCommand(
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
     });
+
+    child.stdin.on("error", () => {
+      // Ignore broken pipe errors when the process exits before consuming stdin.
+    });
+    if (typeof input.stdin === "string") {
+      child.stdin.write(input.stdin);
+    }
+    child.stdin.end();
 
     child.on("error", (error) => {
       if (settled) {

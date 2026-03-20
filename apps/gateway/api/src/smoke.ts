@@ -24,6 +24,7 @@ async function main(): Promise<void> {
     logger: false,
     pool,
     agentRuntimeClient,
+    containerExecutionMode: "host",
   });
   const reporter = new SmokeReporter();
 
@@ -106,7 +107,7 @@ async function main(): Promise<void> {
             botMode: "standard",
             sessionStatus: "running",
             infrastructureStatus: "ready",
-            toolRoutingPolicy: "gateway_only",
+            toolRoutingPolicy: "hybrid_container_builtin_gateway_host",
             approvalPolicy: "host_ops_require_explicit_approval",
             responseContract: "ja, concise, ask_when_ambiguous",
             executionContract: "no_external_mcp, no_unapproved_host_ops",

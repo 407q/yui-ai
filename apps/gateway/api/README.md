@@ -53,11 +53,28 @@ cp .env.example .env
 - `BOT_ORCHESTRATOR_COMPOSE_BUILD`（任意。既定: `true`）
 - `BOT_OPERATION_LOG_ENABLED`（任意。既定: `true`）
 - `BOT_OPERATION_LOG_MAX_FIELD_CHARS`（任意。既定: `320`）
+- `CONTAINER_SESSION_ROOT`（任意。既定: `/agent/session`）
+- `CONTAINER_TOOL_EXECUTION_MODE`（任意。既定: `docker_exec`）
+- `AGENT_CONTAINER_NAME`（任意。既定: `yui-ai-agent`）
+- `CONTAINER_DOCKER_CLI_TIMEOUT_SEC`（任意。既定: `60`）
+- `DOCKER_PROJECT_ROOT`（任意。既定: `.`）
 
 `BOT_OPERATION_LOG_ENABLED=true` の場合、Bot は実行中の操作を
 「何をしたか」だけ（例: ファイル読込 / CLI 実行 / ツール呼び出し）で
 絵文字付きの ` ```text ` コードブロックとしてスレッドへ出力します。  
 無効化したい場合は `BOT_OPERATION_LOG_ENABLED=false` を設定してください。
+
+`container.*` ツールは既定で `docker exec` 経由で Agent コンテナ内を操作し、
+`/agent/session/<session_id>` を実体として扱います。
+必要に応じて `CONTAINER_TOOL_EXECUTION_MODE=host` に切り替えると、Gateway ホスト上の
+`CONTAINER_SESSION_ROOT` を直接操作します（開発・検証用途）。
+
+Agent Runtime への `runtime_policy.tool_routing.mode` は
+`hybrid_container_builtin_gateway_host` を使用し、以下を満たします。
+
+- コンテナ内ファイル探索/編集は Copilot built-in tools（allowlist）を許可
+- host 操作・memory 操作・承認フローは Gateway custom tools を継続利用
+- 境界制御は System Message 依存ではなく、`availableTools` 制約と SDK hooks で機械的に強制
 
 ## 実行
 

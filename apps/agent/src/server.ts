@@ -50,14 +50,16 @@ const runTaskBodySchema: z.ZodType<AgentRunRequest> = z.object({
   runtime_policy: z
     .object({
       tool_routing: z.object({
-        mode: z.enum(["gateway_only"]).default("gateway_only"),
+        mode: z
+          .enum(["gateway_only", "hybrid_container_builtin_gateway_host"])
+          .default("hybrid_container_builtin_gateway_host"),
         allow_external_mcp: z.boolean().default(false),
       }),
     })
     .optional()
     .default({
       tool_routing: {
-        mode: "gateway_only",
+        mode: "hybrid_container_builtin_gateway_host",
         allow_external_mcp: false,
       },
     }),

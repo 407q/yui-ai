@@ -4,6 +4,7 @@ import {
   defineTool,
   type AssistantMessageEvent,
   type CopilotSession,
+  type SessionEvent,
   type PermissionHandler as CopilotPermissionHandler,
   type PermissionRequest as CopilotPermissionRequest,
   type PermissionRequestResult as CopilotPermissionRequestResult,
@@ -29,6 +30,7 @@ export interface SdkSessionCallbacks {
   onPermissionRequest: (
     input: PermissionRequestInput,
   ) => Promise<PermissionRequestResult>;
+  __toolRoutingMode?: ToolRoutingMode;
 }
 
 export interface CreateSdkSessionInput {
@@ -81,6 +83,7 @@ interface ActiveSendContext {
   input: SendAndWaitInput;
   runtimeToolResults: ToolCallResult[];
   declaredToolMap: Map<string, AgentToolCallSpec>;
+  builtinToolByCallId: Map<string, BuiltInToolInvocation>;
 }
 
 interface SdkSessionState {
@@ -89,12 +92,30 @@ interface SdkSessionState {
   session: CopilotSession | null;
   callbacks: SdkSessionCallbacks;
   activeSend: ActiveSendContext | null;
+  routingMode: ToolRoutingMode;
+  workspaceRoot: string;
+  disposeSessionEventSubscription?: (() => void) | null;
 }
 
 interface GatewayToolCallInput {
   toolName: string;
   arguments: Record<string, unknown>;
   defaultReason: string;
+}
+
+type ToolRoutingMode = "gateway_only" | "hybrid_container_builtin_gateway_host";
+
+interface BuiltInToolInvocation {
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+interface BuiltInToolResultInput {
+  activeSend: ActiveSendContext;
+  callId: string;
+  toolName: string;
+  argumentsPayload: Record<string, unknown>;
+  toolResult: ToolResultObject;
 }
 
 const containerFileReadSchema = z.object({
@@ -155,6 +176,29 @@ const memoryDeleteSchema = z.object({
   key: z.string().min(1),
 });
 
+const HYBRID_BUILTIN_TOOL_ALLOWLIST = [
+  "read_file",
+  "edit_file",
+  "str_replace_editor",
+  "grep",
+  "glob",
+  "view",
+] as const;
+
+const GATEWAY_ONLY_BUILTIN_BLOCKLIST: ReadonlySet<string> = new Set([
+  "read_file",
+  "edit_file",
+  "str_replace_editor",
+  "grep",
+  "glob",
+  "view",
+  "bash",
+  "list_dir",
+  "write",
+  "read",
+  "shell",
+]);
+
 export class CopilotCliSdkProvider implements CopilotSdkProvider {
   private readonly client: CopilotClient;
   private readonly sessionsByAppSessionId = new Map<string, SdkSessionState>();
@@ -212,6 +256,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       input,
       runtimeToolResults: [],
       declaredToolMap: mapDeclaredToolCalls(input.tool_calls),
+      builtinToolByCallId: new Map(),
     };
     state.activeSend = activeSend;
     state.callbacks = input.callbacks;
@@ -220,6 +265,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       if (!state.session) {
         state.session = await this.openCopilotSession(state, "resume");
       }
+      this.attachSessionEventBridge(state);
 
       const assistantMessage = await this.sendAndWaitWithAbort(
         state.session,
@@ -260,21 +306,39 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     callbacks: SdkSessionCallbacks,
     preferredOpenMode: "create" | "resume",
   ): Promise<SdkSessionState> {
+    const resolvedRoutingMode = resolveToolRoutingModeFromCallbacks(callbacks);
     const existing = this.sessionsByAppSessionId.get(appSessionId);
     if (existing) {
       existing.callbacks = callbacks;
+      if (existing.routingMode !== resolvedRoutingMode) {
+        existing.disposeSessionEventSubscription?.();
+        existing.disposeSessionEventSubscription = null;
+        if (existing.session) {
+          await existing.session.disconnect();
+          existing.session = null;
+        }
+      }
+      existing.routingMode = resolvedRoutingMode;
       return existing;
     }
 
     await this.ensureStarted();
 
     const sdkSessionId = toSdkSessionId(appSessionId);
+    const routingMode = resolvedRoutingMode;
+    const workspaceRoot = resolveSessionWorkspaceRoot(
+      appSessionId,
+      this.options.sessionRootDirectory,
+    );
     const state: SdkSessionState = {
       sdkSessionId,
       appSessionId,
       session: null,
       callbacks,
       activeSend: null,
+      routingMode,
+      workspaceRoot,
+      disposeSessionEventSubscription: null,
     };
     state.session = await this.openCopilotSession(state, preferredOpenMode);
 
@@ -347,24 +411,33 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     state: SdkSessionState,
   ): Omit<SessionConfig, "sessionId"> {
     const tools = this.buildGatewayTools(state);
-    const availableTools = tools.map((tool) => tool.name);
-    const workspaceRoot = resolveSessionWorkspaceRoot(
-      state.appSessionId,
-      this.options.sessionRootDirectory,
-    );
+    const availableTools = this.buildAvailableTools(state, tools);
     return {
       model: this.options.model,
       systemMessage: {
         content: buildSystemMessageWithRuntimeContracts(
           buildActiveSystemMessage(),
-          workspaceRoot,
+          state.workspaceRoot,
+          state.routingMode,
         ),
       },
       onPermissionRequest: this.createPermissionHandler(state),
+      hooks: this.createSessionHooks(state),
       tools,
       availableTools,
-      workingDirectory: workspaceRoot,
+      workingDirectory: state.workspaceRoot,
     };
+  }
+
+  private buildAvailableTools(
+    state: SdkSessionState,
+    tools: CopilotTool<any>[],
+  ): string[] {
+    const customToolNames = tools.map((tool) => tool.name);
+    if (state.routingMode === "hybrid_container_builtin_gateway_host") {
+      return [...customToolNames, ...HYBRID_BUILTIN_TOOL_ALLOWLIST];
+    }
+    return customToolNames;
   }
 
   private createPermissionHandler(
@@ -380,21 +453,130 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         };
       }
 
-      if (request.kind !== "custom-tool") {
-        return {
-          kind: "denied-by-rules",
-          rules: [
-            {
-              policy: "gateway_only",
-              denied_kind: request.kind,
-            },
-          ],
-        };
+      const routingMode = state.routingMode;
+      if (routingMode === "gateway_only") {
+        if (request.kind !== "custom-tool") {
+          return {
+            kind: "denied-by-rules",
+            rules: [
+              {
+                policy: "gateway_only",
+                denied_kind: request.kind,
+              },
+            ],
+          };
+        }
+        // Permission for custom tools is enforced in executeGatewayToolCall()
+        // so that it stays aligned with Runtime callback behavior.
+        return { kind: "approved" };
       }
-      // Permission for custom tools is enforced in executeGatewayToolCall()
-      // so that it stays aligned with Runtime callback behavior.
-      return { kind: "approved" };
+
+      if (request.kind === "custom-tool") {
+        return { kind: "approved" };
+      }
+      if (
+        request.kind === "read" ||
+        request.kind === "write" ||
+        request.kind === "shell"
+      ) {
+        return { kind: "approved" };
+      }
+      return {
+        kind: "denied-by-rules",
+        rules: [
+          {
+            policy: "hybrid_container_builtin_gateway_host",
+            denied_kind: request.kind,
+          },
+        ],
+      };
     };
+  }
+
+  private createSessionHooks(
+    state: SdkSessionState,
+  ): NonNullable<SessionConfig["hooks"]> {
+    return {
+      onPreToolUse: async (input: {
+        toolName: string;
+        toolArgs: unknown;
+      }) => {
+        if (state.routingMode === "gateway_only") {
+          if (GATEWAY_ONLY_BUILTIN_BLOCKLIST.has(input.toolName)) {
+            return {
+              permissionDecision: "deny",
+              permissionDecisionReason:
+                "gateway_only mode forbids built-in tools. Use gateway custom tools.",
+            };
+          }
+          return {
+            permissionDecision: "allow",
+          };
+        }
+
+        if (isHybridBuiltInTool(input.toolName)) {
+          const args = toRecord(input.toolArgs);
+          const pathTarget = extractBuiltInPathTarget(input.toolName, args);
+          if (!pathTarget) {
+            return {
+              permissionDecision: "deny",
+              permissionDecisionReason:
+                "hybrid mode requires explicit file path arguments for built-in tools.",
+            };
+          }
+          if (!isPathAllowedForWorkspace(pathTarget, state.workspaceRoot)) {
+            return {
+              permissionDecision: "deny",
+              permissionDecisionReason:
+                "hybrid mode built-in tools are limited to the session workspace.",
+            };
+          }
+        }
+        return {
+          permissionDecision: "allow",
+        };
+      },
+      onPostToolUse: async (input: {
+        toolName: string;
+        toolArgs: unknown;
+        toolResult: ToolResultObject;
+      }) => {
+        const activeSend = state.activeSend;
+        if (!activeSend) {
+          return;
+        }
+        if (!isHybridBuiltInTool(input.toolName)) {
+          return;
+        }
+        const args = toRecord(input.toolArgs);
+        const callId = findBuiltInToolCallId(activeSend.builtinToolByCallId, input.toolName, args);
+        if (!callId) {
+          return;
+        }
+        const logged = buildBuiltInToolResult({
+          activeSend,
+          callId,
+          toolName: input.toolName,
+          argumentsPayload: args,
+          toolResult: input.toolResult,
+        });
+        if (logged) {
+          activeSend.runtimeToolResults.push(logged);
+        }
+      },
+    };
+  }
+
+  private attachSessionEventBridge(state: SdkSessionState): void {
+    if (!state.session) {
+      return;
+    }
+    if (state.disposeSessionEventSubscription) {
+      return;
+    }
+    state.disposeSessionEventSubscription = state.session.on((event) => {
+      onSessionEvent(state, event);
+    });
   }
 
   private buildGatewayTools(state: SdkSessionState): CopilotTool<any>[] {
@@ -870,6 +1052,7 @@ function mapToolErrorToResultType(
 ): "failure" | "rejected" | "denied" {
   if (
     errorCode === "permission_denied" ||
+    errorCode === "builtin_permission_denied" ||
     errorCode === "approval_rejected" ||
     errorCode === "approval_timeout" ||
     errorCode === "path_not_approved_for_session" ||
@@ -877,7 +1060,10 @@ function mapToolErrorToResultType(
   ) {
     return "denied";
   }
-  if (errorCode === "invalid_tool_arguments") {
+  if (
+    errorCode === "invalid_tool_arguments" ||
+    errorCode === "builtin_invalid_arguments"
+  ) {
     return "rejected";
   }
   return "failure";
@@ -897,7 +1083,12 @@ function resolveSessionWorkspaceRoot(
 function buildSystemMessageWithRuntimeContracts(
   baseSystemMessage: string,
   workspaceRoot: string,
+  routingMode: ToolRoutingMode,
 ): string {
+  const routingContract =
+    routingMode === "hybrid_container_builtin_gateway_host"
+      ? "- tool_routing_mode: hybrid_container_builtin_gateway_host (container built-ins allowed, host operations via gateway tools)"
+      : "- tool_routing_mode: gateway_only (all operations via gateway tools)";
   return [
     baseSystemMessage,
     "",
@@ -908,6 +1099,7 @@ function buildSystemMessageWithRuntimeContracts(
     "- workspace_default_rule: treat file operations and cli tasks as container workspace operations by default",
     "- container_tools_path_rule: use paths relative to primary_workspace_root whenever possible",
     "- host_tool_usage_rule: use host.* tools only when user explicitly requests host access and approval allows it",
+    routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
     "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",
     "</runtime_workspace_contract>",
@@ -958,5 +1150,249 @@ function toErrorMessage(error: unknown): string {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+function resolveToolRoutingModeFromCallbacks(
+  callbacks: SdkSessionCallbacks,
+): ToolRoutingMode {
+  const mode = callbacks.__toolRoutingMode ?? "gateway_only";
+  if (
+    mode === "gateway_only" ||
+    mode === "hybrid_container_builtin_gateway_host"
+  ) {
+    return mode;
+  }
+  return "gateway_only";
+}
+
+function isHybridBuiltInTool(toolName: string): boolean {
+  return HYBRID_BUILTIN_TOOL_ALLOWLIST.includes(
+    toolName as (typeof HYBRID_BUILTIN_TOOL_ALLOWLIST)[number],
+  );
+}
+
+function extractBuiltInPathTarget(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (
+    toolName === "read_file" ||
+    toolName === "edit_file" ||
+    toolName === "str_replace_editor" ||
+    toolName === "view"
+  ) {
+    return (
+      readStringFromRecord(args, "path") ??
+      readStringFromRecord(args, "file_path") ??
+      readStringFromRecord(args, "filePath") ??
+      readStringFromRecord(args, "target_file") ??
+      readStringFromRecord(args, "targetFile") ??
+      readStringFromRecord(args, "file")
+    );
+  }
+  if (toolName === "grep" || toolName === "glob") {
+    return readStringFromRecord(args, "path") ?? ".";
+  }
+  return null;
+}
+
+function isPathAllowedForWorkspace(pathValue: string, workspaceRoot: string): boolean {
+  if (pathValue.trim().length === 0) {
+    return false;
+  }
+  const candidatePath = pathValue.trim();
+  const normalizedWorkspace = normalizePosixPath(workspaceRoot);
+  if (candidatePath === ".") {
+    return true;
+  }
+  const normalizedTarget = candidatePath.startsWith("/")
+    ? normalizePosixPath(candidatePath)
+    : normalizePosixPath(`${normalizedWorkspace}/${candidatePath}`);
+  return (
+    normalizedTarget === normalizedWorkspace ||
+    normalizedTarget.startsWith(`${normalizedWorkspace}/`)
+  );
+}
+
+function normalizePosixPath(value: string): string {
+  const replaced = value.replace(/\\/g, "/");
+  const parts = replaced.split("/");
+  const normalized: string[] = [];
+  for (const part of parts) {
+    if (part.length === 0 || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      normalized.pop();
+      continue;
+    }
+    normalized.push(part);
+  }
+  return `/${normalized.join("/")}`;
+}
+
+function readStringFromRecord(
+  record: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+function readNumberFromRecord(
+  record: Record<string, unknown>,
+  key: string,
+): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function findBuiltInToolCallId(
+  pending: Map<string, BuiltInToolInvocation>,
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  for (const [callId, invocation] of pending.entries()) {
+    if (invocation.toolName !== toolName) {
+      continue;
+    }
+    if (safeJsonStringify(invocation.arguments) !== safeJsonStringify(args)) {
+      continue;
+    }
+    pending.delete(callId);
+    return callId;
+  }
+  if (pending.size > 0) {
+    const bestEffort = pending.entries().next().value as
+      | [string, BuiltInToolInvocation]
+      | undefined;
+    if (bestEffort && bestEffort[1].toolName === toolName) {
+      pending.delete(bestEffort[0]);
+      return bestEffort[0];
+    }
+  }
+  return null;
+}
+
+function buildBuiltInToolResult(input: BuiltInToolResultInput): ToolCallResult | null {
+  const { activeSend, callId, toolName, argumentsPayload, toolResult } = input;
+  if (toolResult.resultType === "success") {
+    return {
+      task_id: activeSend.input.task_id,
+      call_id: callId,
+      tool_name: toolName,
+      execution_target: "builtin_container",
+      reason: `builtin_${toolName}`,
+      arguments: argumentsPayload,
+      status: "ok",
+      result: normalizeBuiltinToolResultToRecord(
+        toolName,
+        argumentsPayload,
+        toolResult,
+      ),
+    };
+  }
+
+  const errorCode =
+    toolResult.resultType === "denied"
+      ? "builtin_permission_denied"
+      : toolResult.resultType === "rejected"
+        ? "builtin_invalid_arguments"
+        : "builtin_execution_failed";
+  return {
+    task_id: activeSend.input.task_id,
+    call_id: callId,
+    tool_name: toolName,
+    execution_target: "builtin_container",
+    reason: `builtin_${toolName}`,
+    arguments: argumentsPayload,
+    status: "error",
+    error_code: errorCode,
+    message:
+      toolResult.error ??
+      toolResult.textResultForLlm ??
+      "Built-in tool execution failed.",
+  };
+}
+
+function normalizeBuiltinToolResultToRecord(
+  toolName: string,
+  argumentsPayload: Record<string, unknown>,
+  toolResult: ToolResultObject,
+): Record<string, unknown> {
+  if (toolName === "read_file" || toolName === "view") {
+    const payload: Record<string, unknown> = {
+      path:
+        readStringFromRecord(argumentsPayload, "path") ??
+        readStringFromRecord(argumentsPayload, "file_path") ??
+        readStringFromRecord(argumentsPayload, "filePath") ??
+        readStringFromRecord(argumentsPayload, "target_file") ??
+        readStringFromRecord(argumentsPayload, "targetFile"),
+      content: toolResult.textResultForLlm,
+    };
+    const bytes = Buffer.byteLength(toolResult.textResultForLlm, "utf8");
+    payload.bytes = bytes;
+    return payload;
+  }
+  if (toolName === "grep") {
+    return {
+      path: readStringFromRecord(argumentsPayload, "path") ?? ".",
+      query:
+        readStringFromRecord(argumentsPayload, "pattern") ??
+        readStringFromRecord(argumentsPayload, "query") ??
+        "",
+      content: toolResult.textResultForLlm,
+    };
+  }
+  if (toolName === "glob") {
+    return {
+      path: readStringFromRecord(argumentsPayload, "path") ?? ".",
+      pattern: readStringFromRecord(argumentsPayload, "pattern") ?? "",
+      content: toolResult.textResultForLlm,
+    };
+  }
+  if (toolName === "edit_file" || toolName === "str_replace_editor") {
+    return {
+      path:
+        readStringFromRecord(argumentsPayload, "path") ??
+        readStringFromRecord(argumentsPayload, "file_path") ??
+        readStringFromRecord(argumentsPayload, "filePath") ??
+        readStringFromRecord(argumentsPayload, "target_file") ??
+        readStringFromRecord(argumentsPayload, "targetFile"),
+      content: toolResult.textResultForLlm,
+    };
+  }
+  if (toolName === "bash") {
+    return {
+      command: readStringFromRecord(argumentsPayload, "command") ?? "",
+      exit_code: readNumberFromRecord(argumentsPayload, "exit_code"),
+      content: toolResult.textResultForLlm,
+    };
+  }
+  return {
+    content: toolResult.textResultForLlm,
+  };
+}
+
+function onSessionEvent(state: SdkSessionState, event: SessionEvent): void {
+  const activeSend = state.activeSend;
+  if (!activeSend) {
+    return;
+  }
+  if (state.routingMode !== "hybrid_container_builtin_gateway_host") {
+    return;
+  }
+  if (event.type !== "tool.execution_start") {
+    return;
+  }
+  const toolName = event.data.toolName;
+  if (!isHybridBuiltInTool(toolName)) {
+    return;
+  }
+  const args = toRecord(event.data.arguments);
+  activeSend.builtinToolByCallId.set(event.data.toolCallId, {
+    toolName,
+    arguments: args,
   });
 }

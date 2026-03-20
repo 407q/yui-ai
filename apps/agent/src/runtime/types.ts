@@ -13,7 +13,7 @@ export interface AgentThreadContext {
 }
 
 export interface AgentToolRoutingPolicy {
-  mode: "gateway_only";
+  mode: "gateway_only" | "hybrid_container_builtin_gateway_host";
   allow_external_mcp: boolean;
 }
 

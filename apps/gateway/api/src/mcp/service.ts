@@ -67,6 +67,10 @@ const memoryDeleteSchema = z.object({
 export interface McpToolServiceOptions {
   containerSessionRoot: string;
   containerCliTimeoutSec: number;
+  containerExecutionMode: "host" | "docker_exec";
+  agentContainerName: string;
+  containerDockerCliTimeoutSec: number;
+  dockerProjectRoot: string;
   hostCliTimeoutSec: number;
   hostHttpTimeoutSec: number;
   hostCliAllowlist: string[];
@@ -83,6 +87,10 @@ export class McpToolService {
     this.containerAdapter = new ContainerToolAdapter({
       sessionRoot: options.containerSessionRoot,
       cliTimeoutSec: options.containerCliTimeoutSec,
+      executionMode: options.containerExecutionMode,
+      containerName: options.agentContainerName,
+      dockerCliTimeoutSec: options.containerDockerCliTimeoutSec,
+      dockerProjectRoot: options.dockerProjectRoot,
     });
     this.hostAdapter = new HostToolAdapter({
       cliTimeoutSec: options.hostCliTimeoutSec,

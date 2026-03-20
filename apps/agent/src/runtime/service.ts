@@ -233,6 +233,8 @@ export class AgentRuntimeService {
           request: PermissionRequestInput,
         ): Promise<PermissionRequestResult> =>
           this.handlePermissionRequest(input, request),
+        __toolRoutingMode:
+          input.runtime_policy?.tool_routing?.mode ?? "gateway_only",
       };
 
       let sdkSession: SdkSessionHandle;
@@ -287,7 +289,9 @@ export class AgentRuntimeService {
     const mode = input.runtime_policy?.tool_routing?.mode ?? "gateway_only";
     const allowExternal =
       input.runtime_policy?.tool_routing?.allow_external_mcp ?? false;
-    if (mode !== "gateway_only" || allowExternal) {
+    const modeAllowed =
+      mode === "gateway_only" || mode === "hybrid_container_builtin_gateway_host";
+    if (!modeAllowed || allowExternal) {
       return {
         decision: "deny",
         reason: "external_mcp_disabled",
@@ -366,11 +370,13 @@ function assertGatewayOnlyRouting(input: AgentRunRequest): void {
   const allowExternal =
     input.runtime_policy?.tool_routing?.allow_external_mcp ?? false;
 
-  if (mode !== "gateway_only" || allowExternal) {
+  const modeAllowed =
+    mode === "gateway_only" || mode === "hybrid_container_builtin_gateway_host";
+  if (!modeAllowed || allowExternal) {
     throw new AgentRuntimeError(
       400,
       "external_mcp_disabled",
-      "Only gateway_only routing without external MCP is supported.",
+      "Only gateway_only or hybrid_container_builtin_gateway_host routing without external MCP is supported.",
       {
         mode,
         allow_external_mcp: allowExternal,

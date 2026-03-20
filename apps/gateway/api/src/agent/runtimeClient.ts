@@ -32,7 +32,7 @@ export interface AgentRuntimeRunTaskInput {
   attachment_mount_path?: string;
   runtime_policy: {
     tool_routing: {
-      mode: "gateway_only";
+      mode: "gateway_only" | "hybrid_container_builtin_gateway_host";
       allow_external_mcp: boolean;
     };
   };

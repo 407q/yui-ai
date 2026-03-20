@@ -82,7 +82,9 @@ export interface AgentTaskRunInput {
       botMode?: ContextEnvelopeBotMode;
       sessionStatus?: string;
       infrastructureStatus?: ContextEnvelopeInfrastructureStatus;
-      toolRoutingPolicy?: "gateway_only";
+      toolRoutingPolicy?:
+        | "gateway_only"
+        | "hybrid_container_builtin_gateway_host";
       approvalPolicy?: "host_ops_require_explicit_approval";
       responseContract?: "ja, concise, ask_when_ambiguous";
       executionContract?: "no_external_mcp, no_unapproved_host_ops";
@@ -727,7 +729,7 @@ export class GatewayApiService {
       attachment_mount_path: attachmentMountPath,
       runtime_policy: {
         tool_routing: {
-          mode: "gateway_only",
+          mode: "hybrid_container_builtin_gateway_host",
           allow_external_mcp: false,
         },
       },
@@ -804,7 +806,9 @@ export class GatewayApiService {
           botMode: behavior?.botMode ?? "unknown",
           sessionStatus: behavior?.sessionStatus ?? session.status,
           infrastructureStatus: behavior?.infrastructureStatus ?? "unknown",
-          toolRoutingPolicy: "gateway_only",
+          toolRoutingPolicy:
+            behavior?.toolRoutingPolicy ??
+            "hybrid_container_builtin_gateway_host",
           approvalPolicy: "host_ops_require_explicit_approval",
           responseContract: "ja, concise, ask_when_ambiguous",
           executionContract: "no_external_mcp, no_unapproved_host_ops",

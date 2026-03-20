@@ -109,6 +109,7 @@ yarn api:smoke
 - `COPILOT_MODEL`（既定: `claude-sonnet-4.6`）
 - `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
 - `BOT_MODE=mock` では mock provider を利用（`agent:smoke` 回帰維持）
+- runtime policy は `hybrid_container_builtin_gateway_host` を標準化し、コンテナ内 built-in tools と host Gateway tools を分離
 
 ## P7 システム統合（Bot主導）
 

@@ -61,7 +61,9 @@ const contextEnvelopeBehaviorSchema = z.object({
   botMode: z.enum(["standard", "mock", "unknown"]).optional(),
   sessionStatus: z.string().min(1).optional(),
   infrastructureStatus: z.enum(["ready", "booting", "failed", "unknown"]).optional(),
-  toolRoutingPolicy: z.enum(["gateway_only"]).optional(),
+  toolRoutingPolicy: z
+    .enum(["gateway_only", "hybrid_container_builtin_gateway_host"])
+    .optional(),
   approvalPolicy: z.enum(["host_ops_require_explicit_approval"]).optional(),
   responseContract: z.enum(["ja, concise, ask_when_ambiguous"]).optional(),
   executionContract: z.enum(["no_external_mcp, no_unapproved_host_ops"]).optional(),

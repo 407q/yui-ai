@@ -58,6 +58,10 @@ COPILOT_SDK_LOG_LEVEL=info
 - `COPILOT_MODEL` は任意（既定: `claude-sonnet-4.6`）。
 - `COPILOT_WORKING_DIRECTORY` が存在しない場合、Agent は自動で `process.cwd()` にフォールバックします。
 - Copilot provider は Runtime callback を維持し、tool callback を常に Gateway MCP に委譲します。
+- Gateway API からの `runtime_policy.tool_routing.mode=hybrid_container_builtin_gateway_host` では、
+  コンテナ内の built-in file/search tools（`read_file`, `edit_file`, `str_replace_editor`, `grep`, `glob`, `view`）を許可し、
+  host 操作・memory 操作は従来どおり Gateway custom tool 経由で実行します。
+- 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
 
 ## Persona / Policy 設定（PR-1）
 

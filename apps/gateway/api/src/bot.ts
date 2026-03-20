@@ -285,7 +285,9 @@ interface GatewayRunContextEnvelopePayload {
     botMode: "standard" | "mock";
     sessionStatus: string;
     infrastructureStatus: "ready" | "booting" | "failed";
-    toolRoutingPolicy: "gateway_only";
+    toolRoutingPolicy:
+      | "gateway_only"
+      | "hybrid_container_builtin_gateway_host";
     approvalPolicy: "host_ops_require_explicit_approval";
     responseContract: "ja, concise, ask_when_ambiguous";
     executionContract: "no_external_mcp, no_unapproved_host_ops";
@@ -624,6 +626,21 @@ function parseOperationLogJson(input: string): Record<string, unknown> | null {
 }
 
 function resolveToolEmoji(toolName: string): string {
+  if (toolName === "read_file" || toolName === "view") {
+    return "📄";
+  }
+  if (toolName === "edit_file" || toolName === "str_replace_editor") {
+    return "✍️";
+  }
+  if (toolName === "glob") {
+    return "📂";
+  }
+  if (toolName === "grep") {
+    return "🔎";
+  }
+  if (toolName === "bash") {
+    return "💻";
+  }
   if (toolName.endsWith("file_read")) {
     return "📄";
   }
@@ -654,6 +671,27 @@ function resolveToolDetail(
 ): string | null {
   if (!args) {
     return null;
+  }
+  if (
+    toolName === "read_file" ||
+    toolName === "edit_file" ||
+    toolName === "str_replace_editor" ||
+    toolName === "view"
+  ) {
+    return (
+      readString(args, "path") ??
+      readString(args, "file_path") ??
+      readString(args, "filePath") ??
+      readString(args, "target_file") ??
+      readString(args, "targetFile") ??
+      readString(args, "file")
+    );
+  }
+  if (toolName === "grep" || toolName === "glob") {
+    return readString(args, "path") ?? ".";
+  }
+  if (toolName === "bash") {
+    return readString(args, "command");
   }
   if (toolName.endsWith("file_read") || toolName.endsWith("file_write") || toolName.endsWith("file_delete") || toolName.endsWith("file_list")) {
     return readString(args, "path");
@@ -864,7 +902,7 @@ function buildRunContextEnvelopePayload(
       botMode: inferBotModeForContextEnvelope(),
       sessionStatus: toContextEnvelopeSessionStatus(session.status),
       infrastructureStatus: inferInfrastructureStatusForContextEnvelope(),
-      toolRoutingPolicy: "gateway_only",
+      toolRoutingPolicy: "hybrid_container_builtin_gateway_host",
       approvalPolicy: "host_ops_require_explicit_approval",
       responseContract: "ja, concise, ask_when_ambiguous",
       executionContract: "no_external_mcp, no_unapproved_host_ops",

@@ -25,6 +25,10 @@ interface BuildGatewayApiServerOptions {
   sessionIdleTimeoutSec?: number;
   containerSessionRoot?: string;
   containerCliTimeoutSec?: number;
+  containerExecutionMode?: "host" | "docker_exec";
+  agentContainerName?: string;
+  containerDockerCliTimeoutSec?: number;
+  dockerProjectRoot?: string;
   hostCliTimeoutSec?: number;
   hostHttpTimeoutSec?: number;
   hostCliAllowlist?: string[];
@@ -59,6 +63,12 @@ export function buildGatewayApiServer(
       options.containerSessionRoot ?? resolveContainerSessionRoot(),
     containerCliTimeoutSec:
       options.containerCliTimeoutSec ?? resolveContainerCliTimeoutSec(),
+    containerExecutionMode:
+      options.containerExecutionMode ?? resolveContainerExecutionMode(),
+    agentContainerName: options.agentContainerName ?? resolveAgentContainerName(),
+    containerDockerCliTimeoutSec:
+      options.containerDockerCliTimeoutSec ?? resolveContainerDockerCliTimeoutSec(),
+    dockerProjectRoot: options.dockerProjectRoot ?? resolveDockerProjectRoot(),
     hostCliTimeoutSec: options.hostCliTimeoutSec ?? resolveHostCliTimeoutSec(),
     hostHttpTimeoutSec:
       options.hostHttpTimeoutSec ?? resolveHostHttpTimeoutSec(),
@@ -130,6 +140,26 @@ function resolveContainerSessionRoot(): string {
 
 function resolveContainerCliTimeoutSec(): number {
   return parsePositiveInt(process.env.CONTAINER_CLI_TIMEOUT_SEC, 60);
+}
+
+function resolveContainerExecutionMode(): "host" | "docker_exec" {
+  const raw = process.env.CONTAINER_TOOL_EXECUTION_MODE;
+  if (raw === "host" || raw === "docker_exec") {
+    return raw;
+  }
+  return "docker_exec";
+}
+
+function resolveAgentContainerName(): string {
+  return process.env.AGENT_CONTAINER_NAME ?? "yui-ai-agent";
+}
+
+function resolveContainerDockerCliTimeoutSec(): number {
+  return parsePositiveInt(process.env.CONTAINER_DOCKER_CLI_TIMEOUT_SEC, 60);
+}
+
+function resolveDockerProjectRoot(): string {
+  return process.env.DOCKER_PROJECT_ROOT ?? process.cwd();
 }
 
 function resolveHostCliTimeoutSec(): number {

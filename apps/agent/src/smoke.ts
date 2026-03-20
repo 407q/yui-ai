@@ -77,7 +77,7 @@ async function main(): Promise<void> {
         prompt: "P6 smoke create-session run",
         runtime_policy: {
           tool_routing: {
-            mode: "gateway_only",
+            mode: "hybrid_container_builtin_gateway_host",
             allow_external_mcp: false,
           },
         },
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
         prompt: "P6 smoke resume-session run",
         runtime_policy: {
           tool_routing: {
-            mode: "gateway_only",
+            mode: "hybrid_container_builtin_gateway_host",
             allow_external_mcp: false,
           },
         },
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
         prompt: "P6 smoke cancel run",
         runtime_policy: {
           tool_routing: {
-            mode: "gateway_only",
+            mode: "hybrid_container_builtin_gateway_host",
             allow_external_mcp: false,
           },
         },
