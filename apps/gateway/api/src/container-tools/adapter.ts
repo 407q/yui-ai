@@ -2,6 +2,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execCommand } from "../mcp/exec.js";
 
+const CANONICAL_CONTAINER_SESSION_ROOT = "/agent/session";
+
 export interface ContainerToolAdapterOptions {
   sessionRoot: string;
   cliTimeoutSec: number;
@@ -22,10 +24,33 @@ export class ContainerToolAdapter {
     return path.resolve(this.options.sessionRoot, sessionId);
   }
 
+  private resolveCanonicalSessionAliasPath(
+    sessionId: string,
+    requestedPath: string,
+  ): string | null {
+    if (!path.isAbsolute(requestedPath)) {
+      return null;
+    }
+    const requestedAbsolutePath = path.resolve(requestedPath);
+    const canonicalSessionRoot = path.resolve(
+      CANONICAL_CONTAINER_SESSION_ROOT,
+      sessionId,
+    );
+    if (requestedAbsolutePath === canonicalSessionRoot) {
+      return this.getSessionRoot(sessionId);
+    }
+    if (!requestedAbsolutePath.startsWith(`${canonicalSessionRoot}${path.sep}`)) {
+      return null;
+    }
+    const relative = path.relative(canonicalSessionRoot, requestedAbsolutePath);
+    return path.resolve(this.getSessionRoot(sessionId), relative);
+  }
+
   resolveScopedPath(sessionId: string, requestedPath: string): string | null {
     const sessionRoot = this.getSessionRoot(sessionId);
     const resolved = path.isAbsolute(requestedPath)
-      ? path.resolve(requestedPath)
+      ? this.resolveCanonicalSessionAliasPath(sessionId, requestedPath) ??
+        path.resolve(requestedPath)
       : path.resolve(sessionRoot, requestedPath);
     if (resolved === sessionRoot) {
       return resolved;

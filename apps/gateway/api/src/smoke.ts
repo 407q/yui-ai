@@ -276,6 +276,27 @@ async function main(): Promise<void> {
       "container file content should match written value",
     );
 
+    const canonicalAliasReadResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "container.file_read",
+      execution_target: "gateway_adapter",
+      arguments: {
+        path: `/agent/session/${startBody.session.sessionId}/workspace/note.txt`,
+      },
+      reason: "read via canonical session alias path",
+    });
+    assert(
+      canonicalAliasReadResult.status === "ok",
+      "canonical /agent/session alias path should resolve to scoped container root",
+    );
+    assert(
+      (canonicalAliasReadResult.result as { content: string }).content ===
+        "container smoke content",
+      "canonical alias read should return file content",
+    );
+
     const outOfScopeReadResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
@@ -291,6 +312,26 @@ async function main(): Promise<void> {
     assert(
       outOfScopeReadResult.error_code === "container_path_out_of_scope",
       "out-of-scope read should return container_path_out_of_scope",
+    );
+
+    const foreignSessionAliasReadResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "container.file_read",
+      execution_target: "gateway_adapter",
+      arguments: {
+        path: `/agent/session/${randomUUID()}/workspace/note.txt`,
+      },
+      reason: "reject foreign session alias path",
+    });
+    assert(
+      foreignSessionAliasReadResult.status === "error",
+      "foreign /agent/session alias path should fail",
+    );
+    assert(
+      foreignSessionAliasReadResult.error_code === "container_path_out_of_scope",
+      "foreign session alias read should return container_path_out_of_scope",
     );
 
     const hostReadBeforeApproval = await callMcpTool(app, reporter, {
