@@ -11,6 +11,7 @@ import {
   ChatInputCommandInteraction,
   Channel,
   Client,
+  type MessageEditOptions,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
@@ -87,6 +88,8 @@ interface MockSession {
   lastEvent: string;
   queuedRun?: QueuedRun;
   runtimeFeedback: RuntimeFeedbackState;
+  lastTaskEventTimestamp?: string;
+  lastToolEventTimestamp?: string;
 }
 
 interface PendingApproval {
@@ -177,6 +180,7 @@ const sessionIdsByUserId = new Map<Snowflake, Set<string>>();
 const pendingApprovals = new Map<string, PendingApproval>();
 const idleTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const runningSessionIds = new Set<string>();
+const toolProgressMessageByCallId = new Map<string, ToolProgressMessageState>();
 let isSystemControlPending = false;
 let isGracefulShutdownInProgress = false;
 let runtimeInfrastructureStatus: RuntimeInfrastructureStatus = ORCHESTRATOR_ENABLED
@@ -267,6 +271,18 @@ interface GatewayAgentTaskSnapshot {
     final_answer: string;
     tool_results: unknown[];
   } | null;
+  tool_events?: Array<{
+    call_id: string;
+    tool_name: string;
+    execution_target: string;
+    phase: "start" | "result";
+    status?: "ok" | "error";
+    error_code?: string;
+    message?: string;
+    arguments?: Record<string, unknown>;
+    reason?: string;
+    timestamp: string;
+  }> | null;
   error?: {
     code: string;
     message: string;
@@ -296,6 +312,7 @@ interface GatewayAgentTaskStatusResponse {
     status: string;
   };
   agentTask: GatewayAgentTaskSnapshot;
+  taskEvents?: GatewayTaskEvent[];
 }
 
 interface GatewayRunContextEnvelopePayload {
@@ -341,6 +358,23 @@ interface GatewayThreadStatusResponse {
     approvalId: string;
     status: string;
   } | null;
+}
+
+interface GatewayTaskEvent {
+  eventId: string;
+  taskId: string;
+  eventType: string;
+  payloadJson: Record<string, unknown>;
+  timestamp: string;
+}
+
+interface ToolProgressMessageState {
+  threadId: Snowflake;
+  callId: string;
+  toolName: string;
+  detail: string | null;
+  status: "pending" | "ok" | "error";
+  messageId: Snowflake;
 }
 
 class GatewayApiRequestError extends Error {
@@ -535,8 +569,6 @@ function summarizeOperationLog(title: string, lines: string[]): string[] {
       return [];
     case "run.error":
       return ["❌ 実行エラーを検出"];
-    case "run.tool_results":
-      return summarizeToolOperationLines(lines);
     default:
       return [];
   }
@@ -550,97 +582,6 @@ function extractOperationLogValue(lines: string[], prefix: string): string | nul
     }
   }
   return null;
-}
-
-function summarizeToolOperationLines(lines: string[]): string[] {
-  const operations = parseToolOperationSummaries(lines);
-  if (operations.length === 0) {
-    return [];
-  }
-
-  return operations
-    .filter((operation) => !isSuppressedToolOperation(operation))
-    .slice(0, 8)
-    .map((operation) => {
-      const statusEmoji = operation.status === "ok" ? "✅" : "❌";
-      const toolEmoji = resolveToolEmoji(operation.toolName);
-      const detail = resolveToolDetail(operation.toolName, operation.arguments);
-      return detail
-        ? `${toolEmoji} ${operation.toolName} ${detail} ${statusEmoji}`
-        : `${toolEmoji} ${operation.toolName} ${statusEmoji}`;
-    });
-}
-
-interface ToolOperationSummary {
-  status: "ok" | "error";
-  toolName: string;
-  arguments: Record<string, unknown> | null;
-  errorCode: string | null;
-}
-
-function parseToolOperationSummaries(lines: string[]): ToolOperationSummary[] {
-  const operations: ToolOperationSummary[] = [];
-  let current: ToolOperationSummary | null = null;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    const summaryMatch = line.match(
-      /^- \[\d+\] status=(ok|error) call_id=[^ ]+ tool=([^ ]+) target=[^ ]+$/,
-    );
-    if (summaryMatch) {
-      const status = summaryMatch[1];
-      const toolName = summaryMatch[2];
-      if (!status || !toolName) {
-        current = null;
-        continue;
-      }
-      current = {
-        status: status as "ok" | "error",
-        toolName,
-        arguments: null,
-        errorCode: null,
-      };
-      operations.push({
-        status: current.status,
-        toolName: current.toolName,
-        arguments: current.arguments,
-        errorCode: current.errorCode,
-      });
-      continue;
-    }
-
-    if (current && line.startsWith("arguments=")) {
-      current.arguments = parseOperationLogJson(line.slice("arguments=".length));
-      continue;
-    }
-    if (current && line.startsWith("error=")) {
-      const errorValue = line.slice("error=".length).trim();
-      const errorCode = errorValue.split(":", 1)[0]?.trim() ?? null;
-      current.errorCode = errorCode && errorCode.length > 0 ? errorCode : null;
-      continue;
-    }
-  }
-
-  return operations;
-}
-
-function isSuppressedToolOperation(operation: ToolOperationSummary): boolean {
-  if (operation.status !== "error") {
-    return false;
-  }
-  if (operation.errorCode === "approval_required") {
-    return false;
-  }
-  return operation.errorCode === "approval_rejected" || operation.errorCode === "approval_timeout";
-}
-
-function parseOperationLogJson(input: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(input);
-    return asRecord(parsed);
-  } catch {
-    return null;
-  }
 }
 
 function resolveToolEmoji(toolName: string): string {
@@ -735,6 +676,217 @@ function resolveToolDetail(
     return namespace;
   }
   return null;
+}
+
+function buildToolProgressMessageContent(input: {
+  toolName: string;
+  detail: string | null;
+  status: "pending" | "ok" | "error";
+  errorMessage?: string;
+}): string {
+  const toolEmoji = resolveToolEmoji(input.toolName);
+  const summary = input.detail
+    ? `${toolEmoji} ${input.toolName} \`${truncateOperationLogValue(input.detail, 120)}\``
+    : `${toolEmoji} ${input.toolName}`;
+  if (input.status === "pending") {
+    return `${summary}\n⏳ 実行中...`;
+  }
+  if (input.status === "ok") {
+    return `${summary}\n✅`;
+  }
+  const errorMessage = input.errorMessage
+    ? truncateOperationLogValue(input.errorMessage, 900)
+    : "unknown_error";
+  return `${summary}\n❌ ${errorMessage}`;
+}
+
+function normalizeTaskEventTimestamp(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString();
+}
+
+function readToolEventCallId(payload: Record<string, unknown>): string | null {
+  return readString(payload, "call_id") ?? readString(payload, "callId");
+}
+
+async function sendToolProgressStartMessage(
+  session: MockSession,
+  eventPayload: Record<string, unknown>,
+): Promise<void> {
+  const callId = readToolEventCallId(eventPayload);
+  const toolName = readString(eventPayload, "tool_name");
+  if (!callId || !toolName || toolProgressMessageByCallId.has(callId)) {
+    return;
+  }
+  const detail = resolveToolDetail(toolName, readRecord(eventPayload, "arguments"));
+  const content = buildToolProgressMessageContent({
+    toolName,
+    detail,
+    status: "pending",
+  });
+  const sent = await sendToThread(session.threadId, content);
+  if (!sent) {
+    return;
+  }
+  toolProgressMessageByCallId.set(callId, {
+    threadId: session.threadId,
+    callId,
+    toolName,
+    detail,
+    status: "pending",
+    messageId: sent.id,
+  });
+}
+
+async function updateToolProgressResultMessage(
+  eventPayload: Record<string, unknown>,
+): Promise<void> {
+  const callId = readToolEventCallId(eventPayload);
+  if (!callId) {
+    return;
+  }
+  const state = toolProgressMessageByCallId.get(callId);
+  if (!state || state.status !== "pending") {
+    return;
+  }
+  const status = readString(eventPayload, "status");
+  if (status !== "ok" && status !== "error") {
+    return;
+  }
+  const errorCode = readString(eventPayload, "error_code");
+  const errorMessage = readString(eventPayload, "message");
+  const mergedError =
+    status === "error"
+      ? `${errorCode ?? "tool_error"}: ${errorMessage ?? "tool execution failed"}`
+      : undefined;
+  const content = buildToolProgressMessageContent({
+    toolName: state.toolName,
+    detail: state.detail,
+    status,
+    errorMessage: mergedError,
+  });
+  await editThreadMessage(state.threadId, state.messageId, {
+    content,
+    embeds: [],
+    components: [],
+    files: [],
+  });
+  state.status = status;
+}
+
+async function syncToolProgressMessages(
+  session: MockSession,
+  taskId: string,
+): Promise<void> {
+  const queryParts: string[] = [];
+  queryParts.push("includeTaskEvents=true");
+  queryParts.push(
+    `eventTypes=${encodeURIComponent("mcp.tool.call,mcp.tool.result")}`,
+  );
+  queryParts.push("eventsLimit=100");
+  const eventAfterTimestamp = session.lastTaskEventTimestamp;
+  const toolAfterTimestamp = session.lastToolEventTimestamp;
+  if (eventAfterTimestamp || toolAfterTimestamp) {
+    const candidates = [eventAfterTimestamp, toolAfterTimestamp].filter(
+      (value): value is string => Boolean(value),
+    );
+    const latest = candidates.sort((a, b) => a.localeCompare(b)).at(-1);
+    if (latest) {
+      queryParts.push(`afterTimestamp=${encodeURIComponent(latest)}`);
+    }
+  }
+  const statusResponse = await gatewayApiRequest<GatewayAgentTaskStatusResponse>(
+    "GET",
+    `/v1/agent/tasks/${encodeURIComponent(taskId)}/status?${queryParts.join("&")}`,
+  );
+  session.gatewaySessionId = statusResponse.session.sessionId;
+  session.currentTaskId = statusResponse.task.taskId;
+  setSessionStatus(
+    session,
+    mapGatewaySessionStatus(statusResponse.session.status),
+    `agent task ${statusResponse.agentTask.status}`,
+  );
+  const toolEvents = statusResponse.agentTask.tool_events ?? [];
+  for (const toolEvent of toolEvents) {
+    const phase = toolEvent.phase;
+    if (phase === "start") {
+      await sendToolProgressStartMessage(session, {
+        call_id: toolEvent.call_id,
+        tool_name: toolEvent.tool_name,
+        execution_target: toolEvent.execution_target,
+        phase: toolEvent.phase,
+        reason: toolEvent.reason,
+        arguments: toolEvent.arguments,
+      });
+      continue;
+    }
+    if (phase === "result") {
+      await updateToolProgressResultMessage({
+        call_id: toolEvent.call_id,
+        tool_name: toolEvent.tool_name,
+        execution_target: toolEvent.execution_target,
+        phase: toolEvent.phase,
+        status: toolEvent.status,
+        error_code: toolEvent.error_code,
+        message: toolEvent.message,
+      });
+    }
+  }
+  const normalizedToolEventTimestamps = toolEvents
+    .map((event) => normalizeTaskEventTimestamp(event.timestamp))
+    .filter((value): value is string => value !== null);
+  if (normalizedToolEventTimestamps.length > 0) {
+    const sorted = [...normalizedToolEventTimestamps].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const last = sorted.at(-1);
+    if (last) {
+      session.lastToolEventTimestamp = last;
+    }
+  }
+
+  const events = statusResponse.taskEvents ?? [];
+  for (const event of events) {
+    const payload = asRecord(event.payloadJson);
+    if (!payload) {
+      continue;
+    }
+    if (event.eventType === "mcp.tool.call") {
+      await sendToolProgressStartMessage(session, payload);
+      continue;
+    }
+    if (event.eventType === "mcp.tool.result") {
+      await updateToolProgressResultMessage(payload);
+    }
+  }
+  const normalizedEvents = events
+    .map((event) => normalizeTaskEventTimestamp(event.timestamp))
+    .filter((value): value is string => value !== null);
+  if (normalizedEvents.length > 0) {
+    const sorted = [...normalizedEvents].sort((a, b) => a.localeCompare(b));
+    const last = sorted.at(-1);
+    if (last) {
+      session.lastTaskEventTimestamp = last;
+    }
+  }
+}
+
+function clearToolProgressMessagesForSession(sessionId: string): void {
+  const session = sessionsById.get(sessionId);
+  if (!session) {
+    return;
+  }
+  for (const [callId, state] of toolProgressMessageByCallId.entries()) {
+    if (session.threadId === state.threadId) {
+      toolProgressMessageByCallId.delete(callId);
+    }
+  }
 }
 
 async function ensureGatewayTaskForRun(
@@ -885,6 +1037,8 @@ function clearRuntimeFeedback(session: MockSession): void {
   session.runtimeFeedback.previousToolErrors = [];
   session.runtimeFeedback.retryHint = undefined;
   session.runtimeFeedback.attachmentSources = [];
+  session.lastTaskEventTimestamp = undefined;
+  session.lastToolEventTimestamp = undefined;
 }
 
 function updateRuntimeFeedbackFromTerminalStatus(
@@ -992,13 +1146,27 @@ function touchSession(session: MockSession): void {
 async function sendToThread(
   threadId: Snowflake,
   payload: Parameters<AnyThreadChannel["send"]>[0],
+): Promise<Message<true> | null> {
+  const channel = await client.channels.fetch(threadId);
+  if (!isThreadChannel(channel)) {
+    return null;
+  }
+
+  const sent = await channel.send(payload);
+  return sent;
+}
+
+async function editThreadMessage(
+  threadId: Snowflake,
+  messageId: Snowflake,
+  payload: MessageEditOptions,
 ): Promise<void> {
   const channel = await client.channels.fetch(threadId);
   if (!isThreadChannel(channel)) {
     return;
   }
-
-  await channel.send(payload);
+  const message = await channel.messages.fetch(messageId);
+  await message.edit(payload);
 }
 
 function summarizeError(error: unknown): string {
@@ -1791,66 +1959,6 @@ function readRecord(
   return asRecord(record?.[key]);
 }
 
-function toToolResultStatus(value: unknown): "ok" | "error" | null {
-  if (value === "ok" || value === "error") {
-    return value;
-  }
-  return null;
-}
-
-function buildToolResultOperationLogLines(toolResults: unknown[]): string[] {
-  if (toolResults.length === 0) {
-    return ["- tool_results: none"];
-  }
-
-  const lines: string[] = [`- tool_results_count: ${toolResults.length}`];
-  for (let index = 0; index < toolResults.length; index += 1) {
-    const resultRecord = asRecord(toolResults[index]);
-    if (!resultRecord) {
-      lines.push(`- [${index + 1}] status=unknown raw=${toOperationLogJson(toolResults[index], BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`);
-      continue;
-    }
-
-    const status = toToolResultStatus(resultRecord.status);
-    const callId = readString(resultRecord, "call_id") ?? `call_${index + 1}`;
-    const toolName = readString(resultRecord, "tool_name") ?? "unknown_tool";
-    const executionTarget =
-      readString(resultRecord, "execution_target") ?? "gateway_adapter";
-    const reason = readString(resultRecord, "reason") ?? "-";
-    const argumentsPayload = readRecord(resultRecord, "arguments") ?? {};
-    lines.push(
-      `- [${index + 1}] status=${status ?? "unknown"} call_id=${callId} tool=${toolName} target=${executionTarget}`,
-    );
-    lines.push(
-      `  reason=${truncateOperationLogValue(reason, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
-    );
-    lines.push(
-      `  arguments=${toOperationLogJson(argumentsPayload, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
-    );
-
-    if (status === "ok") {
-      const resultPayload = readRecord(resultRecord, "result") ?? {};
-      lines.push(
-        `  result=${toOperationLogJson(resultPayload, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
-      );
-      continue;
-    }
-
-    const errorCode = readString(resultRecord, "error_code") ?? "unknown_error";
-    const message = readString(resultRecord, "message") ?? "unknown error";
-    const details = readRecord(resultRecord, "details");
-    lines.push(
-      `  error=${errorCode}: ${truncateOperationLogValue(message, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
-    );
-    if (details) {
-      lines.push(
-        `  details=${toOperationLogJson(details, BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
-      );
-    }
-  }
-  return lines;
-}
-
 function buildGatewayApiErrorLogLines(error: unknown): string[] {
   if (error instanceof GatewayApiRequestError) {
     return [
@@ -1963,6 +2071,35 @@ async function runAgentTaskAttempt(
   ]);
 
   return waitForAgentTaskTerminalStatus(session, runAccepted.task.taskId, runSequence);
+}
+
+async function waitForAgentTaskWithToolProgress(
+  session: MockSession,
+  prompt: string,
+  attachments: GatewayAttachmentSource[],
+  toolCalls: GatewayAgentToolCall[],
+  runSequence: number,
+): Promise<GatewayAgentTaskStatusResponse> {
+  const terminalPromise = runAgentTaskAttempt(
+    session,
+    prompt,
+    attachments,
+    toolCalls,
+    runSequence,
+  );
+  while (true) {
+    const race = await Promise.race([
+      terminalPromise.then((value) => ({ kind: "terminal" as const, value })),
+      wait(AGENT_POLL_INTERVAL_MS).then(() => ({ kind: "tick" as const })),
+    ]);
+    if (race.kind === "terminal") {
+      await syncToolProgressMessages(session, race.value.task.taskId);
+      return race.value;
+    }
+    if (session.currentTaskId) {
+      await syncToolProgressMessages(session, session.currentTaskId);
+    }
+  }
 }
 
 async function syncCancelWithGateway(
@@ -2172,7 +2309,7 @@ async function runAgentTask(
       }
 
       startTyping();
-      terminal = await runAgentTaskAttempt(
+      terminal = await waitForAgentTaskWithToolProgress(
         session,
         prompt,
         attachments,
@@ -2243,14 +2380,11 @@ async function runAgentTask(
         throw new Error("approval timeout");
       }
       updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+      clearToolProgressMessagesForSession(session.id);
       throw new SessionRunCanceledError("run canceled while waiting approval");
     }
 
     const runtimeResult = terminal?.agentTask.result;
-    const toolResultLines = buildToolResultOperationLogLines(
-      runtimeResult?.tool_results ?? [],
-    );
-    await sendOperationLog(session.threadId, "run.tool_results", toolResultLines);
     const deliveredFiles = extractDeliveredFilesFromToolResults(
       runtimeResult?.tool_results ?? [],
     );
@@ -2258,12 +2392,6 @@ async function runAgentTask(
       await sendDeliveredFilesToThread(session.threadId, deliveredFiles);
     }
     const toolErrors = summarizeToolErrors(runtimeResult?.tool_results ?? []);
-    if (toolErrors.length > 0) {
-      await sendToThread(
-        session.threadId,
-        `⚠️ ツール実行エラー: ${toolErrors.slice(0, 3).join(" | ")}`,
-      );
-    }
 
     const rawLmMessage = runtimeResult?.final_answer ?? prompt ?? "(empty prompt)";
     await sendOperationLog(session.threadId, "run.final_answer", [
@@ -2273,6 +2401,7 @@ async function runAgentTask(
     await relayLmMessage(session.threadId, rawLmMessage);
     updateRuntimeFeedbackFromTerminalStatus(session, "completed", toolErrors);
     setSessionStatus(session, "idle_waiting", "agent run completed");
+    clearToolProgressMessagesForSession(session.id);
     touchSession(session);
   } catch (error) {
     clearTyping();
@@ -2284,6 +2413,7 @@ async function runAgentTask(
       ) {
         updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
       }
+      clearToolProgressMessagesForSession(session.id);
       setSessionStatus(session, "idle_waiting", "run canceled");
       touchSession(session);
       await sendToThread(session.threadId, "🛑 タスクはキャンセルされました。");
@@ -2300,6 +2430,7 @@ async function runAgentTask(
       );
     }
     setSessionStatus(session, "failed", summarizeError(error));
+    clearToolProgressMessagesForSession(session.id);
     touchSession(session);
     await sendToThread(
       session.threadId,
@@ -2400,6 +2531,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
 
 function cancelSession(session: MockSession, by: Snowflake): void {
   session.cancelRequested = true;
+  clearToolProgressMessagesForSession(session.id);
   updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
   updateRuntimeFeedbackRetryHint(session, `canceled by <@${by}>`);
   setSessionStatus(session, "idle_waiting", `task canceled by <@${by}>`);
@@ -2414,6 +2546,7 @@ function cancelSession(session: MockSession, by: Snowflake): void {
 
 function closeSession(session: MockSession, by: Snowflake): void {
   session.cancelRequested = true;
+  clearToolProgressMessagesForSession(session.id);
   clearRuntimeFeedback(session);
   setSessionStatus(session, "closed_by_user", `closed by <@${by}>`);
 
@@ -2540,6 +2673,8 @@ async function startSessionFromMention(message: Message): Promise<void> {
     cancelRequested: false,
     lastEvent: "session created from mention",
     runtimeFeedback: createRuntimeFeedbackState(),
+    lastTaskEventTimestamp: undefined,
+    lastToolEventTimestamp: undefined,
   };
 
   sessionsById.set(session.id, session);

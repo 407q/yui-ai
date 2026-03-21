@@ -94,6 +94,7 @@ export interface AgentTaskStatusResponse {
     message: string;
     details?: Record<string, unknown>;
   } | null;
+  tool_events: ToolProgressEvent[];
 }
 
 export interface AgentRunAcceptedResponse {
@@ -141,6 +142,19 @@ export interface ToolCallErrorResult {
 }
 
 export type ToolCallResult = ToolCallSuccessResult | ToolCallErrorResult;
+
+export interface ToolProgressEvent {
+  call_id: string;
+  tool_name: string;
+  execution_target: string;
+  phase: "start" | "result";
+  status?: "ok" | "error";
+  error_code?: string;
+  message?: string;
+  arguments?: Record<string, unknown>;
+  reason?: string;
+  timestamp: string;
+}
 
 export interface PermissionRequestInput {
   task_id: string;

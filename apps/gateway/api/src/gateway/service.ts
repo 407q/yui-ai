@@ -22,6 +22,7 @@ import type {
   ApprovalStatus,
   SessionRecord,
   SessionStatus,
+  TaskEventRecord,
   TaskRecord,
   TaskStatus,
   ThreadStatusResponse,
@@ -112,6 +113,10 @@ interface AgentTaskStagedAttachmentFile {
 
 export interface AgentTaskStatusInput {
   taskId: string;
+  includeTaskEvents?: boolean;
+  afterTimestamp?: string;
+  eventTypes?: string[];
+  eventsLimit?: number;
 }
 
 export interface AgentTaskCancelInput {
@@ -852,12 +857,25 @@ export class GatewayApiService {
         final_answer: string;
         tool_results: unknown[];
       } | null;
+      tool_events?: Array<{
+        call_id: string;
+        tool_name: string;
+        execution_target: string;
+        phase: "start" | "result";
+        status?: "ok" | "error";
+        error_code?: string;
+        message?: string;
+        arguments?: Record<string, unknown>;
+        reason?: string;
+        timestamp: string;
+      }> | null;
       error: {
         code: string;
         message: string;
         details?: Record<string, unknown>;
       } | null;
     };
+    taskEvents?: TaskEventRecord[];
   }> {
     const runtimeClient = this.requireAgentRuntimeClient();
     const task = await this.repository.findTaskById(input.taskId);
@@ -882,6 +900,18 @@ export class GatewayApiService {
     const agentTask = await runtimeClient.getTaskStatus(task.taskId);
     const updated = await this.syncTaskStatusFromRuntime(task, session, agentTask.status);
 
+    let taskEvents: TaskEventRecord[] | undefined;
+    if (input.includeTaskEvents) {
+      taskEvents = await this.repository.listTaskEventsByTaskId(task.taskId, {
+        eventTypes:
+          input.eventTypes && input.eventTypes.length > 0
+            ? input.eventTypes
+            : ["mcp.tool.call", "mcp.tool.result"],
+        afterTimestamp: parseOptionalDate(input.afterTimestamp),
+        limit: input.eventsLimit ?? 100,
+      });
+    }
+
     return {
       session: updated.session,
       task: updated.task,
@@ -895,8 +925,10 @@ export class GatewayApiService {
         updated_at: agentTask.updated_at,
         completed_at: agentTask.completed_at ?? null,
         result: agentTask.result ?? null,
+        tool_events: agentTask.tool_events ?? [],
         error: agentTask.error ?? null,
       },
+      taskEvents,
     };
   }
 
@@ -1114,6 +1146,17 @@ export class GatewayApiService {
     }
     return "idle_waiting";
   }
+}
+
+function parseOptionalDate(value: string | undefined): Date | undefined {
+  if (!value || value.trim().length === 0) {
+    return undefined;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+  return parsed;
 }
 
 function newId(prefix: string): string {

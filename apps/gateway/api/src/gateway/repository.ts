@@ -6,6 +6,7 @@ import type {
   SessionRecord,
   SessionPathPermissionRecord,
   SessionStatus,
+  TaskEventRecord,
   TaskRecord,
   TaskStatus,
 } from "./types.js";
@@ -96,6 +97,14 @@ export interface GatewayRepository {
   findLatestTaskBySessionId(sessionId: string): Promise<TaskRecord | null>;
   findLatestActiveTaskBySessionId(sessionId: string): Promise<TaskRecord | null>;
   findTaskById(taskId: string): Promise<TaskRecord | null>;
+  listTaskEventsByTaskId(
+    taskId: string,
+    options?: {
+      eventTypes?: string[];
+      afterTimestamp?: Date;
+      limit?: number;
+    },
+  ): Promise<TaskEventRecord[]>;
   updateTaskStatus(taskId: string, status: TaskStatus): Promise<void>;
   createApproval(input: CreateApprovalInput): Promise<ApprovalRecord>;
   findApprovalById(approvalId: string): Promise<ApprovalRecord | null>;
@@ -323,6 +332,33 @@ export class PostgresGatewayRepository implements GatewayRepository {
     }
 
     return toTaskRecord(requireRow(rows[0], "task by task_id"));
+  }
+
+  async listTaskEventsByTaskId(
+    taskId: string,
+    options?: {
+      eventTypes?: string[];
+      afterTimestamp?: Date;
+      limit?: number;
+    },
+  ): Promise<TaskEventRecord[]> {
+    const eventTypes = options?.eventTypes ?? [];
+    const afterTimestamp = options?.afterTimestamp ?? null;
+    const limit = Math.min(Math.max(options?.limit ?? 100, 1), 500);
+    const useEventTypes = eventTypes.length > 0;
+    const { rows } = await this.pool.query<TaskEventRow>(
+      `
+      SELECT *
+      FROM task_events
+      WHERE task_id = $1
+        AND ($2::boolean = false OR event_type = ANY($3::text[]))
+        AND ($4::timestamptz IS NULL OR "timestamp" > $4)
+      ORDER BY "timestamp" ASC
+      LIMIT $5
+      `,
+      [taskId, useEventTypes, eventTypes, afterTimestamp, limit],
+    );
+    return rows.map(toTaskEventRecord);
   }
 
   async updateTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
@@ -712,6 +748,14 @@ interface TaskRow {
   updated_at: Date;
 }
 
+interface TaskEventRow {
+  event_id: string;
+  task_id: string;
+  event_type: string;
+  payload_json: Record<string, unknown>;
+  timestamp: Date;
+}
+
 interface ApprovalRow {
   approval_id: string;
   task_id: string;
@@ -767,6 +811,16 @@ function toTaskRecord(row: TaskRow): TaskRecord {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function toTaskEventRecord(row: TaskEventRow): TaskEventRecord {
+  return {
+    eventId: row.event_id,
+    taskId: row.task_id,
+    eventType: row.event_type,
+    payloadJson: row.payload_json,
+    timestamp: row.timestamp,
   };
 }
 

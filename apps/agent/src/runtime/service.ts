@@ -13,6 +13,7 @@ import type {
   PermissionRequestResult,
   SessionBootstrapMode,
   ToolCallResult,
+  ToolProgressEvent,
 } from "./types.js";
 import { AgentRuntimeError } from "./errors.js";
 import type { GatewayMcpClient } from "./gatewayMcpClient.js";
@@ -40,6 +41,7 @@ interface TaskExecutionState {
     final_answer: string;
     tool_results: ToolCallResult[];
   } | null;
+  toolEvents: ToolProgressEvent[];
   error: {
     code: string;
     message: string;
@@ -91,6 +93,7 @@ export class AgentRuntimeService {
       updatedAt: now,
       completedAt: null,
       result: null,
+      toolEvents: [],
       error: null,
       abortController: new AbortController(),
     };
@@ -313,6 +316,7 @@ export class AgentRuntimeService {
       final_answer: sendResult.final_answer,
       tool_results: sendResult.tool_results,
     };
+    state.toolEvents = sendResult.tool_events;
     state.error = null;
     state.updatedAt = new Date();
     state.completedAt = state.updatedAt;
@@ -321,6 +325,7 @@ export class AgentRuntimeService {
   private cancelTaskState(state: TaskExecutionState): void {
     state.status = "canceled";
     state.result = null;
+    state.toolEvents = [];
     state.error = {
       code: "task_canceled",
       message: "Task execution was canceled.",
@@ -332,6 +337,7 @@ export class AgentRuntimeService {
   private failTask(state: TaskExecutionState, error: unknown): void {
     state.status = "failed";
     state.result = null;
+    state.toolEvents = [];
     state.error = toTaskError(error);
     state.updatedAt = new Date();
     state.completedAt = state.updatedAt;
@@ -360,6 +366,7 @@ export class AgentRuntimeService {
       updated_at: state.updatedAt.toISOString(),
       completed_at: state.completedAt ? state.completedAt.toISOString() : null,
       result: state.result,
+      tool_events: state.toolEvents,
       error: state.error,
     };
   }

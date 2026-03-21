@@ -151,6 +151,7 @@ export class McpToolService {
           toolName: input.toolName,
           executionTarget: input.executionTarget,
           reason: input.reason,
+          arguments: input.arguments,
         },
         timestamp: new Date(),
       });
@@ -164,6 +165,7 @@ export class McpToolService {
           callId: input.callId,
           toolName: input.toolName,
           status: "ok",
+          result,
         },
         timestamp: new Date(),
       });
@@ -199,6 +201,8 @@ export class McpToolService {
             toolName: input.toolName,
             status: "error",
             errorCode: toolError.code,
+            message: toolError.message,
+            details: toolError.details ?? {},
           },
           timestamp: new Date(),
         });

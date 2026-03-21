@@ -44,6 +44,30 @@ const taskParamsSchema = z.object({
   taskId: z.string().min(1),
 });
 
+const agentTaskStatusQuerySchema = z.object({
+  includeTaskEvents: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
+    .transform((value) => value === true || value === "true"),
+  afterTimestamp: z.string().optional(),
+  eventTypes: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((value) => {
+      if (!value) {
+        return undefined;
+      }
+      if (Array.isArray(value)) {
+        return value;
+      }
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    }),
+  eventsLimit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
 const agentToolCallSchema = z.object({
   toolName: z.string().min(1),
   executionTarget: z.string().optional(),
@@ -288,8 +312,17 @@ export async function registerGatewayRoutes(
       request.params,
       "invalid_task_params",
     );
+    const query = parseOrThrow(
+      agentTaskStatusQuerySchema,
+      request.query,
+      "invalid_agent_task_status_query",
+    );
     return service.getAgentTaskStatus({
       taskId: params.taskId,
+      includeTaskEvents: query.includeTaskEvents,
+      afterTimestamp: query.afterTimestamp,
+      eventTypes: query.eventTypes,
+      eventsLimit: query.eventsLimit,
     });
   });
 

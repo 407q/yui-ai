@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   CopilotClient,
   defineTool,
@@ -19,6 +19,7 @@ import type {
   PermissionRequestInput,
   PermissionRequestResult,
   ToolCallResult,
+  ToolProgressEvent,
 } from "./types.js";
 import { buildActiveSystemMessage } from "./personaPolicy.js";
 
@@ -61,6 +62,7 @@ export interface SendAndWaitInput {
 export interface SendAndWaitResult {
   final_answer: string;
   tool_results: ToolCallResult[];
+  tool_events: ToolProgressEvent[];
 }
 
 export interface CopilotSdkProvider {
@@ -82,6 +84,7 @@ export interface CopilotCliSdkProviderOptions {
 interface ActiveSendContext {
   input: SendAndWaitInput;
   runtimeToolResults: ToolCallResult[];
+  runtimeToolEvents: ToolProgressEvent[];
   declaredToolMap: Map<string, AgentToolCallSpec>;
   builtinToolByCallId: Map<string, BuiltInToolInvocation>;
 }
@@ -256,10 +259,11 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       );
     }
 
-    const declaredToolResults = await executeDeclaredToolCalls(input);
+    const declaredToolExecution = await executeDeclaredToolCalls(input);
     const activeSend: ActiveSendContext = {
       input,
       runtimeToolResults: [],
+      runtimeToolEvents: [],
       declaredToolMap: mapDeclaredToolCalls(input.tool_calls),
       builtinToolByCallId: new Map(),
     };
@@ -274,13 +278,20 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
 
       const assistantMessage = await this.sendAndWaitWithAbort(
         state.session,
-        buildPromptWithDeclaredToolResults(input.prompt, declaredToolResults),
+        buildPromptWithDeclaredToolResults(
+          input.prompt,
+          declaredToolExecution.toolResults,
+        ),
         input.signal,
       );
 
       const mergedToolResults = [
-        ...declaredToolResults,
+        ...declaredToolExecution.toolResults,
         ...activeSend.runtimeToolResults,
+      ];
+      const mergedToolEvents = [
+        ...declaredToolExecution.toolEvents,
+        ...activeSend.runtimeToolEvents,
       ];
       return {
         final_answer: resolveFinalAnswer(
@@ -290,6 +301,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           mergedToolResults,
         ),
         tool_results: mergedToolResults,
+        tool_events: mergedToolEvents,
       };
     } finally {
       state.activeSend = null;
@@ -567,6 +579,18 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         });
         if (logged) {
           activeSend.runtimeToolResults.push(logged);
+          activeSend.runtimeToolEvents.push(
+            createToolProgressResultEvent({
+              callId,
+              toolName: input.toolName,
+              executionTarget: "builtin_container",
+              status: logged.status,
+              errorCode:
+                logged.status === "error" ? logged.error_code : undefined,
+              message:
+                logged.status === "error" ? logged.message : undefined,
+            }),
+          );
         }
       },
     };
@@ -738,6 +762,16 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     const executionTarget = declaredToolSpec?.execution_target ?? "gateway_adapter";
     const reason = declaredToolSpec?.reason ?? input.defaultReason;
     const delayMs = declaredToolSpec?.delay_ms ?? 0;
+    const callId = `call_${randomUUID()}`;
+    activeSend.runtimeToolEvents.push(
+      createToolProgressStartEvent({
+        callId,
+        toolName: input.toolName,
+        executionTarget,
+        reason,
+        argumentsPayload: input.arguments,
+      }),
+    );
 
     assertNotAborted(activeSend.input.signal);
     if (delayMs > 0) {
@@ -758,7 +792,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       const message = `permission request failed: ${error instanceof Error ? error.message : String(error)}`;
       const failedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
-        call_id: `call_${randomUUID()}`,
+        call_id: callId,
         tool_name: input.toolName,
         execution_target: executionTarget,
         reason,
@@ -768,6 +802,16 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         message,
       };
       activeSend.runtimeToolResults.push(failedResult);
+      activeSend.runtimeToolEvents.push(
+        createToolProgressResultEvent({
+          callId,
+          toolName: input.toolName,
+          executionTarget,
+          status: "error",
+          errorCode: failedResult.error_code,
+          message: failedResult.message,
+        }),
+      );
       return {
         resultType: "failure",
         textResultForLlm: message,
@@ -778,7 +822,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     if (permission.decision === "deny") {
       const deniedResult: ToolCallResult = {
         task_id: activeSend.input.task_id,
-        call_id: `call_${randomUUID()}`,
+        call_id: callId,
         tool_name: input.toolName,
         execution_target: executionTarget,
         reason,
@@ -788,6 +832,16 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         message: permission.reason,
       };
       activeSend.runtimeToolResults.push(deniedResult);
+      activeSend.runtimeToolEvents.push(
+        createToolProgressResultEvent({
+          callId,
+          toolName: input.toolName,
+          executionTarget,
+          status: "error",
+          errorCode: deniedResult.error_code,
+          message: deniedResult.message,
+        }),
+      );
       return {
         resultType: "denied",
         textResultForLlm: permission.reason,
@@ -795,7 +849,6 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       };
     }
 
-    const callId = `call_${randomUUID()}`;
     let toolResult: ToolCallResult;
     try {
       toolResult = await activeSend.input.onToolCall({
@@ -821,6 +874,16 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         message,
       };
       activeSend.runtimeToolResults.push(failedResult);
+      activeSend.runtimeToolEvents.push(
+        createToolProgressResultEvent({
+          callId,
+          toolName: input.toolName,
+          executionTarget,
+          status: "error",
+          errorCode: failedResult.error_code,
+          message: failedResult.message,
+        }),
+      );
       return {
         resultType: "failure",
         textResultForLlm: message,
@@ -844,6 +907,22 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
             arguments: input.arguments,
           };
     activeSend.runtimeToolResults.push(enrichedToolResult);
+    activeSend.runtimeToolEvents.push(
+      createToolProgressResultEvent({
+        callId,
+        toolName: input.toolName,
+        executionTarget,
+        status: enrichedToolResult.status,
+        errorCode:
+          enrichedToolResult.status === "error"
+            ? enrichedToolResult.error_code
+            : undefined,
+        message:
+          enrichedToolResult.status === "error"
+            ? enrichedToolResult.message
+            : undefined,
+      }),
+    );
 
     if (enrichedToolResult.status === "ok") {
       const text = safeJsonStringify(enrichedToolResult.result);
@@ -910,7 +989,8 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
     assertCallbacks(input.callbacks);
     assertNotAborted(input.signal);
 
-    const toolResults = await executeDeclaredToolCalls(input);
+    const declaredToolExecution = await executeDeclaredToolCalls(input);
+    const toolResults = declaredToolExecution.toolResults;
 
     const succeeded = toolResults.filter((result) => result.status === "ok").length;
     const failed = toolResults.filter((result) => result.status === "error").length;
@@ -922,6 +1002,7 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
     return {
       final_answer: finalAnswer,
       tool_results: toolResults,
+      tool_events: declaredToolExecution.toolEvents,
     };
   }
 }
@@ -946,8 +1027,9 @@ function createAbortError(): Error {
 
 async function executeDeclaredToolCalls(
   input: SendAndWaitInput,
-): Promise<ToolCallResult[]> {
+): Promise<{ toolResults: ToolCallResult[]; toolEvents: ToolProgressEvent[] }> {
   const toolResults: ToolCallResult[] = [];
+  const toolEvents: ToolProgressEvent[] = [];
   for (const toolCall of input.tool_calls) {
     assertNotAborted(input.signal);
 
@@ -958,6 +1040,17 @@ async function executeDeclaredToolCalls(
     assertNotAborted(input.signal);
 
     const executionTarget = toolCall.execution_target ?? "gateway_adapter";
+    const declaredCallId = `declared_${input.task_id}_${toolCall.tool_name}_${safeJsonStringify(toolCall.arguments)}`;
+    const callId = `call_${createStableHexHash(declaredCallId).slice(0, 16)}`;
+    toolEvents.push(
+      createToolProgressStartEvent({
+        callId,
+        toolName: toolCall.tool_name,
+        executionTarget,
+        reason: toolCall.reason,
+        argumentsPayload: toolCall.arguments,
+      }),
+    );
     const permission = await input.callbacks.onPermissionRequest({
       task_id: input.task_id,
       session_id: input.session_id,
@@ -967,9 +1060,9 @@ async function executeDeclaredToolCalls(
     });
 
     if (permission.decision === "deny") {
-      toolResults.push({
+      const deniedResult: ToolCallResult = {
         task_id: input.task_id,
-        call_id: `call_${randomUUID()}`,
+        call_id: callId,
         tool_name: toolCall.tool_name,
         execution_target: executionTarget,
         reason: toolCall.reason,
@@ -977,11 +1070,21 @@ async function executeDeclaredToolCalls(
         status: "error",
         error_code: "permission_denied",
         message: permission.reason,
-      });
+      };
+      toolResults.push(deniedResult);
+      toolEvents.push(
+        createToolProgressResultEvent({
+          callId,
+          toolName: toolCall.tool_name,
+          executionTarget,
+          status: "error",
+          errorCode: deniedResult.error_code,
+          message: deniedResult.message,
+        }),
+      );
       continue;
     }
 
-    const callId = `call_${randomUUID()}`;
     const result = await input.onToolCall({
       task_id: input.task_id,
       session_id: input.session_id,
@@ -991,16 +1094,30 @@ async function executeDeclaredToolCalls(
       arguments: toolCall.arguments,
       reason: toolCall.reason,
     });
-    toolResults.push({
+    const enrichedResult: ToolCallResult = {
       ...result,
       tool_name: toolCall.tool_name,
       execution_target: executionTarget,
       reason: toolCall.reason,
       arguments: toolCall.arguments,
-    });
+    };
+    toolResults.push(enrichedResult);
+    toolEvents.push(
+      createToolProgressResultEvent({
+        callId,
+        toolName: toolCall.tool_name,
+        executionTarget,
+        status: enrichedResult.status,
+        errorCode: enrichedResult.status === "error" ? enrichedResult.error_code : undefined,
+        message: enrichedResult.status === "error" ? enrichedResult.message : undefined,
+      }),
+    );
   }
 
-  return toolResults;
+  return {
+    toolResults,
+    toolEvents,
+  };
 }
 
 function mapDeclaredToolCalls(
@@ -1159,6 +1276,10 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function createStableHexHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -1258,6 +1379,44 @@ function readNumberFromRecord(
 ): number | null {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function createToolProgressStartEvent(input: {
+  callId: string;
+  toolName: string;
+  executionTarget: string;
+  reason?: string;
+  argumentsPayload?: Record<string, unknown>;
+}): ToolProgressEvent {
+  return {
+    call_id: input.callId,
+    tool_name: input.toolName,
+    execution_target: input.executionTarget,
+    phase: "start",
+    reason: input.reason,
+    arguments: input.argumentsPayload,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function createToolProgressResultEvent(input: {
+  callId: string;
+  toolName: string;
+  executionTarget: string;
+  status: "ok" | "error";
+  errorCode?: string;
+  message?: string;
+}): ToolProgressEvent {
+  return {
+    call_id: input.callId,
+    tool_name: input.toolName,
+    execution_target: input.executionTarget,
+    phase: "result",
+    status: input.status,
+    error_code: input.errorCode,
+    message: input.message,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 function findBuiltInToolCallId(
@@ -1403,6 +1562,15 @@ function onSessionEvent(state: SdkSessionState, event: SessionEvent): void {
     return;
   }
   const args = toRecord(event.data.arguments);
+  activeSend.runtimeToolEvents.push(
+    createToolProgressStartEvent({
+      callId: event.data.toolCallId,
+      toolName,
+      executionTarget: "builtin_container",
+      argumentsPayload: args,
+      reason: `builtin_${toolName}`,
+    }),
+  );
   activeSend.builtinToolByCallId.set(event.data.toolCallId, {
     toolName,
     arguments: args,

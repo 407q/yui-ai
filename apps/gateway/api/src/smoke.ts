@@ -1024,6 +1024,7 @@ function createMockAgentRuntimeClient(): AgentRuntimeClient {
           ),
           tool_results: [],
         };
+        current.tool_events = [];
       }, delayMs);
       tasks.set(input.task_id, snapshot);
       knownSessions.add(input.session_id);
@@ -1044,6 +1045,7 @@ function createMockAgentRuntimeClient(): AgentRuntimeClient {
           updated_at: new Date().toISOString(),
           completed_at: new Date().toISOString(),
           result: null,
+          tool_events: [],
           error: {
             code: "task_not_found",
             message: "mock runtime task not found",
@@ -1066,6 +1068,7 @@ function createMockAgentRuntimeClient(): AgentRuntimeClient {
           updated_at: new Date().toISOString(),
           completed_at: new Date().toISOString(),
           result: null,
+          tool_events: [],
           error: {
             code: "task_not_found",
             message: "mock runtime task not found",
@@ -1104,6 +1107,7 @@ function toSnapshot(
     updated_at: value.updated_at,
     completed_at: value.completed_at ?? null,
     result: value.result ?? null,
+    tool_events: value.tool_events ?? [],
     error: value.error ?? null,
   };
 }

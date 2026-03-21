@@ -47,6 +47,14 @@ export interface TaskRecord {
   updatedAt: Date;
 }
 
+export interface TaskEventRecord {
+  eventId: string;
+  taskId: string;
+  eventType: string;
+  payloadJson: Record<string, unknown>;
+  timestamp: Date;
+}
+
 export interface ApprovalRecord {
   approvalId: string;
   taskId: string;

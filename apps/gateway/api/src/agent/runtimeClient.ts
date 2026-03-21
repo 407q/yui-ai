@@ -71,6 +71,18 @@ export interface AgentRuntimeTaskSnapshot {
     final_answer: string;
     tool_results: unknown[];
   } | null;
+  tool_events?: Array<{
+    call_id: string;
+    tool_name: string;
+    execution_target: string;
+    phase: "start" | "result";
+    status?: "ok" | "error";
+    error_code?: string;
+    message?: string;
+    arguments?: Record<string, unknown>;
+    reason?: string;
+    timestamp: string;
+  }> | null;
   error?: {
     code: string;
     message: string;
