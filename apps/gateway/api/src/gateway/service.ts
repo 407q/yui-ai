@@ -867,6 +867,8 @@ export class GatewayApiService {
         message?: string;
         arguments?: Record<string, unknown>;
         reason?: string;
+        result?: Record<string, unknown>;
+        details?: Record<string, unknown>;
         timestamp: string;
       }> | null;
       error: {

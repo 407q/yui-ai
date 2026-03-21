@@ -598,6 +598,8 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
                 logged.status === "error" ? logged.error_code : undefined,
               message:
                 logged.status === "error" ? logged.message : undefined,
+              result: logged.status === "ok" ? logged.result : undefined,
+              details: logged.status === "error" ? logged.details : undefined,
             }),
           );
         }
@@ -819,6 +821,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           status: "error",
           errorCode: failedResult.error_code,
           message: failedResult.message,
+          details: { error: message },
         }),
       );
       return {
@@ -849,6 +852,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           status: "error",
           errorCode: deniedResult.error_code,
           message: deniedResult.message,
+          details: { reason: permission.reason },
         }),
       );
       return {
@@ -891,6 +895,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           status: "error",
           errorCode: failedResult.error_code,
           message: failedResult.message,
+          details: { error: message },
         }),
       );
       return {
@@ -929,6 +934,14 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         message:
           enrichedToolResult.status === "error"
             ? enrichedToolResult.message
+            : undefined,
+        result:
+          enrichedToolResult.status === "ok"
+            ? enrichedToolResult.result
+            : undefined,
+        details:
+          enrichedToolResult.status === "error"
+            ? enrichedToolResult.details
             : undefined,
       }),
     );
@@ -1089,6 +1102,7 @@ async function executeDeclaredToolCalls(
           status: "error",
           errorCode: deniedResult.error_code,
           message: deniedResult.message,
+          details: { reason: permission.reason },
         }),
       );
       continue;
@@ -1119,6 +1133,8 @@ async function executeDeclaredToolCalls(
         status: enrichedResult.status,
         errorCode: enrichedResult.status === "error" ? enrichedResult.error_code : undefined,
         message: enrichedResult.status === "error" ? enrichedResult.message : undefined,
+        result: enrichedResult.status === "ok" ? enrichedResult.result : undefined,
+        details: enrichedResult.status === "error" ? enrichedResult.details : undefined,
       }),
     );
   }
@@ -1416,6 +1432,8 @@ function createToolProgressResultEvent(input: {
   status: "ok" | "error";
   errorCode?: string;
   message?: string;
+  result?: Record<string, unknown>;
+  details?: Record<string, unknown>;
 }): ToolProgressEvent {
   return {
     call_id: input.callId,
@@ -1425,6 +1443,8 @@ function createToolProgressResultEvent(input: {
     status: input.status,
     error_code: input.errorCode,
     message: input.message,
+    result: input.result,
+    details: input.details,
     timestamp: new Date().toISOString(),
   };
 }

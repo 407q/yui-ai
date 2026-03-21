@@ -161,6 +161,8 @@ const BOT_DELIVERED_FILE_MAX_COUNT = parsePositiveInt(
   process.env.BOT_DELIVERED_FILE_MAX_COUNT,
   3,
 );
+const TOOL_PROGRESS_LOG_PREVIEW_MAX_LINES = 8;
+const TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS = 720;
 
 function createDiscordClient(): Client {
   return new Client({
@@ -281,6 +283,8 @@ interface GatewayAgentTaskSnapshot {
     message?: string;
     arguments?: Record<string, unknown>;
     reason?: string;
+    result?: Record<string, unknown>;
+    details?: Record<string, unknown>;
     timestamp: string;
   }> | null;
   error?: {
@@ -372,6 +376,9 @@ interface ToolProgressMessageState {
   threadId: Snowflake;
   callId: string;
   toolName: string;
+  executionTarget: string | null;
+  reason: string | null;
+  argumentsPayload: Record<string, unknown> | null;
   detail: string | null;
   status: "pending" | "ok" | "error";
   messageId: Snowflake;
@@ -680,24 +687,149 @@ function resolveToolDetail(
 
 function buildToolProgressMessageContent(input: {
   toolName: string;
+  executionTarget?: string | null;
+  reason?: string | null;
+  argumentsPayload?: Record<string, unknown> | null;
   detail: string | null;
   status: "pending" | "ok" | "error";
+  resultPayload?: Record<string, unknown> | null;
   errorMessage?: string;
+  logExcerpt?: string | null;
 }): string {
   const toolEmoji = resolveToolEmoji(input.toolName);
-  const summary = input.detail
-    ? `${toolEmoji} ${input.toolName} \`${truncateOperationLogValue(input.detail, 120)}\``
-    : `${toolEmoji} ${input.toolName}`;
+  const lines = [
+    `[tool-progress] ${toolEmoji} ${input.toolName}`,
+    `status=${input.status}`,
+  ];
+  if (input.executionTarget) {
+    lines.push(`execution_target=${input.executionTarget}`);
+  }
+  if (input.reason) {
+    lines.push(
+      `reason=${truncateOperationLogValue(
+        input.reason.replace(/\r?\n/g, "\\n"),
+        180,
+      )}`,
+    );
+  }
+  if (input.detail) {
+    lines.push(`detail=${truncateOperationLogValue(input.detail, 160)}`);
+  }
+  if (input.argumentsPayload) {
+    lines.push(
+      `arguments=${toOperationLogJson(
+        input.argumentsPayload,
+        BOT_OPERATION_LOG_MAX_FIELD_CHARS * 2,
+      )}`,
+    );
+  }
   if (input.status === "pending") {
-    return `${summary}\n⏳ 実行中...`;
+    lines.push("progress=⏳ 実行中...");
+    return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   if (input.status === "ok") {
-    return `${summary}\n✅`;
+    lines.push("progress=✅ 成功");
+    if (input.logExcerpt) {
+      lines.push(`log_excerpt=${input.logExcerpt}`);
+    } else if (input.resultPayload) {
+      lines.push(
+        `result=${toOperationLogJson(
+          input.resultPayload,
+          BOT_OPERATION_LOG_MAX_FIELD_CHARS * 2,
+        )}`,
+      );
+    }
+    return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   const errorMessage = input.errorMessage
-    ? truncateOperationLogValue(input.errorMessage, 900)
+    ? truncateOperationLogValue(input.errorMessage, 520)
     : "unknown_error";
-  return `${summary}\n❌ ${errorMessage}`;
+  lines.push(`progress=❌ 失敗`);
+  lines.push(`error=${errorMessage}`);
+  if (input.logExcerpt) {
+    lines.push(`log_excerpt=${input.logExcerpt}`);
+  }
+  return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+}
+
+function sanitizeToolProgressContent(value: string): string {
+  return value.replace(/```/g, "'''").replace(/\r?\n/g, "\\n");
+}
+
+function truncateToolProgressLog(
+  value: string,
+  maxChars = TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS,
+): string {
+  return truncateOperationLogValue(
+    sanitizeToolProgressContent(value).trim(),
+    maxChars,
+  );
+}
+
+function selectToolLogExcerpt(
+  payload: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!payload) {
+    return null;
+  }
+  const candidates: string[] = [];
+  const directFields = ["stdout", "stderr", "output", "content", "body"];
+  for (const field of directFields) {
+    const value = readString(payload, field);
+    if (value && value.trim().length > 0) {
+      candidates.push(value);
+    }
+  }
+
+  const nestedResult = readRecord(payload, "result");
+  if (nestedResult) {
+    for (const field of directFields) {
+      const value = readString(nestedResult, field);
+      if (value && value.trim().length > 0) {
+        candidates.push(value);
+      }
+    }
+    const entries = nestedResult["entries"];
+    if (Array.isArray(entries) && entries.length > 0) {
+      candidates.push(
+        toOperationLogJson(
+          entries.slice(0, 5),
+          TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS,
+        ),
+      );
+    }
+  }
+
+  const details = readRecord(payload, "details");
+  if (details) {
+    const detailOut =
+      readString(details, "stdout") ??
+      readString(details, "stderr") ??
+      readString(details, "response") ??
+      readString(details, "content");
+    if (detailOut && detailOut.trim().length > 0) {
+      candidates.push(detailOut);
+    }
+  }
+
+  const message = readString(payload, "message");
+  if (message && message.trim().length > 0) {
+    candidates.push(message);
+  }
+
+  const first = candidates.find((candidate) => candidate.trim().length > 0);
+  if (!first) {
+    return null;
+  }
+  const lines = first
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, TOOL_PROGRESS_LOG_PREVIEW_MAX_LINES);
+  if (lines.length === 0) {
+    return null;
+  }
+  return truncateToolProgressLog(lines.join(" | "));
 }
 
 function normalizeTaskEventTimestamp(value: string | null | undefined): string | null {
@@ -724,9 +856,15 @@ async function sendToolProgressStartMessage(
   if (!callId || !toolName || toolProgressMessageByCallId.has(callId)) {
     return;
   }
+  const executionTarget = readString(eventPayload, "execution_target");
+  const reason = readString(eventPayload, "reason");
+  const argumentsPayload = readRecord(eventPayload, "arguments");
   const detail = resolveToolDetail(toolName, readRecord(eventPayload, "arguments"));
   const content = buildToolProgressMessageContent({
     toolName,
+    executionTarget,
+    reason,
+    argumentsPayload,
     detail,
     status: "pending",
   });
@@ -738,6 +876,9 @@ async function sendToolProgressStartMessage(
     threadId: session.threadId,
     callId,
     toolName,
+    executionTarget,
+    reason,
+    argumentsPayload,
     detail,
     status: "pending",
     messageId: sent.id,
@@ -761,15 +902,26 @@ async function updateToolProgressResultMessage(
   }
   const errorCode = readString(eventPayload, "error_code");
   const errorMessage = readString(eventPayload, "message");
+  const resultPayload = readRecord(eventPayload, "result");
+  const detailsPayload = readRecord(eventPayload, "details");
+  const logExcerpt =
+    selectToolLogExcerpt(resultPayload) ??
+    selectToolLogExcerpt(detailsPayload) ??
+    selectToolLogExcerpt(eventPayload);
   const mergedError =
     status === "error"
       ? `${errorCode ?? "tool_error"}: ${errorMessage ?? "tool execution failed"}`
       : undefined;
   const content = buildToolProgressMessageContent({
     toolName: state.toolName,
+    executionTarget: state.executionTarget,
+    reason: state.reason,
+    argumentsPayload: state.argumentsPayload,
     detail: state.detail,
     status,
+    resultPayload,
     errorMessage: mergedError,
+    logExcerpt,
   });
   await editThreadMessage(state.threadId, state.messageId, {
     content,
@@ -835,6 +987,8 @@ async function syncToolProgressMessages(
         status: toolEvent.status,
         error_code: toolEvent.error_code,
         message: toolEvent.message,
+        result: toolEvent.result,
+        details: toolEvent.details,
       });
     }
   }
