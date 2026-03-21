@@ -55,14 +55,3 @@ export interface MemoryBacklinkRecord {
   relation: string;
   createdAt: Date;
 }
-
-export interface DiscordProfileRecord {
-  userId: string;
-  username: string | null;
-  nickname: string | null;
-  channelId: string;
-  channelName: string | null;
-  threadId: string;
-  threadName: string | null;
-  updatedAt: string;
-}

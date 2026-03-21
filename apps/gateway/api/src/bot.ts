@@ -43,7 +43,6 @@ type ApprovalOperationCode =
   | "list"
   | "exec"
   | "http_request"
-  | "discord_profile_get"
   | "discord_channel_history"
   | "discord_channel_list";
 
@@ -711,9 +710,6 @@ function resolveToolDetail(
       return `limit=${limit}`;
     }
     return "configured guild";
-  }
-  if (toolName === "discord.profile_get") {
-    return "session user";
   }
   if (toolName.startsWith("memory.")) {
     const namespace = readString(args, "namespace");
@@ -2180,8 +2176,6 @@ function inferApprovalOperationFromToolCall(
       return "exec";
     case "host.http_request":
       return "http_request";
-    case "discord.profile_get":
-      return "discord_profile_get";
     case "discord.channel_history":
       return "discord_channel_history";
     case "discord.channel_list":
@@ -2202,7 +2196,6 @@ function toApprovalOperationCode(value: string | null): ApprovalOperationCode | 
     case "list":
     case "exec":
     case "http_request":
-    case "discord_profile_get":
     case "discord_channel_history":
     case "discord_channel_list":
       return value;
@@ -2244,10 +2237,6 @@ function inferApprovalTargetFromToolCall(
     }
   }
 
-  if (toolCall.toolName === "discord.profile_get") {
-    return "session user profile";
-  }
-
   if (toolCall.toolName === "discord.channel_history") {
     const channelId = readString(toolCall.arguments, "channelId");
     return channelId ? `discord_channel:${channelId}` : "session channel";
@@ -2274,8 +2263,6 @@ function describeApprovalOperation(operation: ApprovalOperationCode): string {
       return "CLI コマンド実行";
     case "http_request":
       return "HTTP リクエスト送信";
-    case "discord_profile_get":
-      return "Discord プロフィール取得";
     case "discord_channel_history":
       return "Discord チャンネル履歴取得";
     case "discord_channel_list":

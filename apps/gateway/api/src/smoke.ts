@@ -245,12 +245,6 @@ async function main(): Promise<void> {
     );
     assert(
       runtimeAnswer.includes(
-        "discord_history_handling: rely_on_session_history_default",
-      ),
-      "runtime prompt should declare session-history-default handling",
-    );
-    assert(
-      runtimeAnswer.includes(
         "[User Prompt]\nagent runtime smoke run",
       ),
       "runtime prompt should keep original user prompt in envelope",
@@ -673,116 +667,6 @@ async function main(): Promise<void> {
     });
     assert(memoryDeleteResult.status === "ok", "memory.delete should succeed");
 
-    const discordProfileResult = await callMcpTool(app, reporter, {
-      task_id: startBody.taskId,
-      session_id: startBody.session.sessionId,
-      call_id: `call_${randomUUID()}`,
-      tool_name: "discord.profile_get",
-      execution_target: "gateway_adapter",
-      arguments: {},
-      reason: "discord profile",
-    });
-    assert(
-      discordProfileResult.status === "error" &&
-        discordProfileResult.error_code === "approval_required",
-      "discord.profile_get should require approval before granted",
-    );
-    const discordProfileScope = (discordProfileResult as McpResultError).details?.scope;
-    assert(
-      typeof discordProfileScope === "string",
-      "discord.profile_get approval_required should include scope",
-    );
-
-    const discordProfileApprovalRequestResponse = await app.inject({
-      method: "POST",
-      url: `/v1/threads/${threadId}/approvals/request`,
-      payload: {
-        userId,
-        operation: "discord_profile_get",
-        path: discordProfileScope,
-      },
-    });
-    const discordProfileApprovalRequestBody = parseJsonBody(
-      discordProfileApprovalRequestResponse.body,
-    ) as {
-      approval: { approvalId: string; status: string };
-    };
-    assertStatusCode(
-      discordProfileApprovalRequestResponse.statusCode,
-      200,
-      "threads/approvals/request(discord_profile_get)",
-    );
-    assert(
-      discordProfileApprovalRequestBody.approval.status === "requested",
-      "discord profile approval should be requested",
-    );
-    const discordProfileApprovalRespondResponse = await app.inject({
-      method: "POST",
-      url: `/v1/approvals/${discordProfileApprovalRequestBody.approval.approvalId}/respond`,
-      payload: {
-        userId,
-        decision: "approved",
-      },
-    });
-    assertStatusCode(
-      discordProfileApprovalRespondResponse.statusCode,
-      200,
-      "approvals/respond(discord_profile_get)",
-    );
-
-    const discordProfileGrantedResult = await callMcpTool(app, reporter, {
-      task_id: startBody.taskId,
-      session_id: startBody.session.sessionId,
-      call_id: `call_${randomUUID()}`,
-      tool_name: "discord.profile_get",
-      execution_target: "gateway_adapter",
-      arguments: {},
-      reason: "discord profile after approval",
-    });
-    assert(
-      discordProfileGrantedResult.status === "ok",
-      "discord.profile_get should succeed",
-    );
-    const discordProfilePayload = (discordProfileGrantedResult as McpResultSuccess).result as {
-      profile: {
-        userId: string;
-        username: string | null;
-        nickname: string | null;
-        channelId: string;
-        channelName: string | null;
-        threadId: string;
-        threadName: string | null;
-      };
-    };
-    assert(
-      discordProfilePayload.profile.userId === userId,
-      "discord.profile_get should return current session user",
-    );
-    assert(
-      discordProfilePayload.profile.username === "smoke-user",
-      "discord.profile_get should return latest username",
-    );
-    assert(
-      discordProfilePayload.profile.nickname === "smoke-nick",
-      "discord.profile_get should return latest nickname",
-    );
-    assert(
-      discordProfilePayload.profile.channelId === channelId,
-      "discord.profile_get should return current channel id",
-    );
-    assert(
-      discordProfilePayload.profile.channelName === "smoke-channel",
-      "discord.profile_get should return current channel name",
-    );
-    assert(
-      discordProfilePayload.profile.threadId === threadId,
-      "discord.profile_get should return current thread id",
-    );
-    assert(
-      discordProfilePayload.profile.threadName === "smoke-thread",
-      "discord.profile_get should return current thread name",
-    );
-
     const discordChannelHistoryResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
@@ -877,8 +761,8 @@ async function main(): Promise<void> {
       "discord.channel_history should return entries",
     );
     assert(
-      discordChannelHistoryPayload.note.includes("session history"),
-      "discord.channel_history should explain session-history-default behavior",
+      discordChannelHistoryPayload.note.includes("non-thread context"),
+      "discord.channel_history should explain channel metadata usage",
     );
 
     const discordChannelListResult = await callMcpTool(app, reporter, {

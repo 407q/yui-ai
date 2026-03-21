@@ -213,8 +213,7 @@ function buildDiscordLines(discord: ContextEnvelopeDiscordInput | undefined): st
     `- discord_channel_name: ${channelName}`,
     `- discord_thread_id: ${normalizeInline(discord.threadId)}`,
     `- discord_thread_name: ${threadName}`,
-    "- discord_history_handling: rely_on_session_history_default",
-    "- discord_tools_hint: use discord.profile_get / discord.channel_history / discord.channel_list when additional Discord context is required",
+    "- discord_tools_hint: use discord.channel_history / discord.channel_list when additional Discord context is required",
   ];
   return lines;
 }

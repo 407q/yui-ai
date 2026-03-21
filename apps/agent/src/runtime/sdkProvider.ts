@@ -193,8 +193,6 @@ const memoryDeleteSchema = z.object({
   key: z.string().min(1),
 });
 
-const discordProfileGetSchema = z.object({});
-
 const discordChannelHistorySchema = z.object({
   channelId: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(50).optional().default(20),
@@ -744,13 +742,6 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         "Delete a memory entry from the Gateway memory store.",
         memoryDeleteSchema,
         "delete memory entry",
-      ),
-      this.defineGatewayTool(
-        state,
-        "discord.profile_get",
-        "Get Discord profile context for the current session user (requires approval).",
-        discordProfileGetSchema,
-        "get discord profile context",
       ),
       this.defineGatewayTool(
         state,

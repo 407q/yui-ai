@@ -4,11 +4,7 @@ import { z } from "zod";
 import type { GatewayRepository } from "../gateway/repository.js";
 import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
-import type {
-  DiscordProfileRecord,
-  ToolCallRequest,
-  ToolCallResult,
-} from "./types.js";
+import type { ToolCallRequest, ToolCallResult } from "./types.js";
 
 const containerFileReadSchema = z.object({
   path: z.string().min(1),
@@ -81,8 +77,6 @@ const memoryDeleteSchema = z.object({
   namespace: z.string().min(1),
   key: z.string().min(1),
 });
-
-const discordProfileGetSchema = z.object({});
 
 const discordChannelHistorySchema = z.object({
   channelId: z.string().min(1).optional(),
@@ -474,41 +468,6 @@ export class McpToolService {
         await this.repository.deleteMemory(userId, args.namespace, args.key);
         return { deleted: true };
       }
-      case "discord.profile_get": {
-        parseToolArgs(discordProfileGetSchema, input.arguments);
-        const session = await this.repository.findSessionById(input.sessionId);
-        if (!session) {
-          throw new McpToolError(
-            "invalid_tool_arguments",
-            "Session is not found for discord.profile_get.",
-            {
-              session_id: input.sessionId,
-            },
-          );
-        }
-        await this.assertDiscordScopeAllowed(
-          input.sessionId,
-          "discord_profile_get",
-          `discord_user:${session.userId}`,
-        );
-        const context = await this.repository.findDiscordProfileContextBySessionId(
-          session.sessionId,
-          session.userId,
-        );
-        const profile: DiscordProfileRecord = {
-          userId: session.userId,
-          username: context.username,
-          nickname: context.nickname,
-          channelId: session.channelId,
-          channelName: context.channelName,
-          threadId: session.threadId,
-          threadName: context.threadName,
-          updatedAt: (context.updatedAt ?? session.updatedAt).toISOString(),
-        };
-        return {
-          profile,
-        };
-      }
       case "discord.channel_history": {
         const args = parseToolArgs(discordChannelHistorySchema, input.arguments);
         const session = await this.repository.findSessionById(input.sessionId);
@@ -554,7 +513,8 @@ export class McpToolService {
           channel_name: matchedChannel?.channelName ?? null,
           entries: toDiscordHistoryEntries(messages, args.role, args.limit),
           source: channelSet.source,
-          note: "session history is available by default; use this metadata for channel context",
+          note:
+            "for non-thread context, use this tool for channel-level metadata and recent cross-session messages",
         };
       }
       case "discord.channel_list": {
