@@ -77,6 +77,9 @@ export function buildGatewayApiServer(
     memoryNamespaceValidationMode:
       options.memoryNamespaceValidationMode ??
       resolveMemoryNamespaceValidationMode(),
+    discordBotToken: process.env.DISCORD_BOT_TOKEN,
+    discordGuildId: process.env.DISCORD_GUILD_ID,
+    discordApiBaseUrl: process.env.DISCORD_API_BASE_URL,
   });
 
   if (!options.pool) {

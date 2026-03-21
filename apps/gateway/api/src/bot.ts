@@ -36,6 +36,16 @@ type ApprovalDecision = "approved" | "rejected" | "timeout" | "canceled";
 type SystemControlMode = "exit" | "reboot";
 type RuntimeInfrastructureStatus = "booting" | "ready" | "failed";
 type ContextEnvelopeTaskTerminalStatus = "completed" | "failed" | "canceled";
+type ApprovalOperationCode =
+  | "read"
+  | "write"
+  | "delete"
+  | "list"
+  | "exec"
+  | "http_request"
+  | "discord_profile_get"
+  | "discord_channel_history"
+  | "discord_channel_list";
 
 interface RuntimeFeedbackState {
   previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
@@ -75,7 +85,7 @@ interface DeliveredContainerFile {
 
 interface ToolApprovalRequest {
   tool: string;
-  operationCode: string;
+  operationCode: ApprovalOperationCode;
   operationLabel: string;
   target: string;
 }
@@ -340,7 +350,8 @@ interface GatewayRunContextEnvelopePayload {
     toolRoutingPolicy:
       | "gateway_only"
       | "hybrid_container_builtin_gateway_host";
-    approvalPolicy: "host_ops_require_explicit_approval";
+    approvalPolicy:
+      | "host_ops_require_explicit_approval";
     responseContract: "ja, concise, ask_when_ambiguous";
     executionContract: "no_external_mcp, no_unapproved_host_ops";
   };
@@ -642,6 +653,9 @@ function resolveToolEmoji(toolName: string): string {
   if (toolName === "host.http_request") {
     return "🌐";
   }
+  if (toolName.startsWith("discord.")) {
+    return "💬";
+  }
   if (toolName.startsWith("memory.")) {
     return "🧠";
   }
@@ -687,6 +701,19 @@ function resolveToolDetail(
   }
   if (toolName === "host.http_request") {
     return readString(args, "url");
+  }
+  if (toolName === "discord.channel_history") {
+    return readString(args, "channelId") ?? "session channel";
+  }
+  if (toolName === "discord.channel_list") {
+    const limit = args["limit"];
+    if (typeof limit === "number" && Number.isFinite(limit)) {
+      return `limit=${limit}`;
+    }
+    return "configured guild";
+  }
+  if (toolName === "discord.profile_get") {
+    return "session user";
   }
   if (toolName.startsWith("memory.")) {
     const namespace = readString(args, "namespace");
@@ -2064,7 +2091,8 @@ function resolveApprovalRequestFromResults(
     const details = asRecord(result.details);
     const toolCall = toolCalls[index];
     const operationCode =
-      readString(details, "operation") ?? inferApprovalOperationFromToolCall(toolCall);
+      toApprovalOperationCode(readString(details, "operation")) ??
+      inferApprovalOperationFromToolCall(toolCall);
     const target =
       readString(details, "scope") ?? inferApprovalTargetFromToolCall(toolCall);
     if (!operationCode || !target) {
@@ -2138,7 +2166,7 @@ function extractDeliveredFilesFromToolResults(toolResults: unknown[]): Delivered
 
 function inferApprovalOperationFromToolCall(
   toolCall: GatewayAgentToolCall | undefined,
-): string | null {
+): ApprovalOperationCode | null {
   switch (toolCall?.toolName) {
     case "host.file_read":
       return "read";
@@ -2152,6 +2180,32 @@ function inferApprovalOperationFromToolCall(
       return "exec";
     case "host.http_request":
       return "http_request";
+    case "discord.profile_get":
+      return "discord_profile_get";
+    case "discord.channel_history":
+      return "discord_channel_history";
+    case "discord.channel_list":
+      return "discord_channel_list";
+    default:
+      return null;
+  }
+}
+
+function toApprovalOperationCode(value: string | null): ApprovalOperationCode | null {
+  if (!value) {
+    return null;
+  }
+  switch (value) {
+    case "read":
+    case "write":
+    case "delete":
+    case "list":
+    case "exec":
+    case "http_request":
+    case "discord_profile_get":
+    case "discord_channel_history":
+    case "discord_channel_list":
+      return value;
     default:
       return null;
   }
@@ -2190,10 +2244,23 @@ function inferApprovalTargetFromToolCall(
     }
   }
 
+  if (toolCall.toolName === "discord.profile_get") {
+    return "session user profile";
+  }
+
+  if (toolCall.toolName === "discord.channel_history") {
+    const channelId = readString(toolCall.arguments, "channelId");
+    return channelId ? `discord_channel:${channelId}` : "session channel";
+  }
+
+  if (toolCall.toolName === "discord.channel_list") {
+    return "configured Discord guild channels";
+  }
+
   return null;
 }
 
-function describeApprovalOperation(operation: string): string {
+function describeApprovalOperation(operation: ApprovalOperationCode): string {
   switch (operation) {
     case "read":
       return "ファイル内容の読み取り";
@@ -2207,8 +2274,14 @@ function describeApprovalOperation(operation: string): string {
       return "CLI コマンド実行";
     case "http_request":
       return "HTTP リクエスト送信";
+    case "discord_profile_get":
+      return "Discord プロフィール取得";
+    case "discord_channel_history":
+      return "Discord チャンネル履歴取得";
+    case "discord_channel_list":
+      return "Discord チャンネル一覧取得";
     default:
-      return operation;
+      return "不明な承認操作";
   }
 }
 

@@ -95,7 +95,8 @@ export interface AgentTaskRunInput {
       toolRoutingPolicy?:
         | "gateway_only"
         | "hybrid_container_builtin_gateway_host";
-      approvalPolicy?: "host_ops_require_explicit_approval";
+      approvalPolicy?:
+        | "host_ops_require_explicit_approval";
       responseContract?: "ja, concise, ask_when_ambiguous";
       executionContract?: "no_external_mcp, no_unapproved_host_ops";
     };

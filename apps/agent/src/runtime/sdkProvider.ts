@@ -196,8 +196,13 @@ const memoryDeleteSchema = z.object({
 const discordProfileGetSchema = z.object({});
 
 const discordChannelHistorySchema = z.object({
+  channelId: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(50).optional().default(20),
   role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+});
+
+const discordChannelListSchema = z.object({
+  limit: z.number().int().min(1).max(200).optional().default(50),
 });
 
 const HYBRID_BUILTIN_TOOL_ALLOWLIST = [
@@ -743,16 +748,23 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       this.defineGatewayTool(
         state,
         "discord.profile_get",
-        "Get Discord profile context for the current session user (user_id / username / nickname / channel / thread).",
+        "Get Discord profile context for the current session user (requires approval).",
         discordProfileGetSchema,
         "get discord profile context",
       ),
       this.defineGatewayTool(
         state,
         "discord.channel_history",
-        "Get Discord channel context metadata for the current session channel.",
+        "Get Discord channel context metadata for a Discord channel (current channel by default, requires approval).",
         discordChannelHistorySchema,
         "get discord channel history",
+      ),
+      this.defineGatewayTool(
+        state,
+        "discord.channel_list",
+        "List Discord channels in the configured guild (requires approval).",
+        discordChannelListSchema,
+        "list discord channels",
       ),
     ];
   }
@@ -1276,6 +1288,7 @@ function buildSystemMessageWithRuntimeContracts(
     "- file_roundtrip_rule: when user sends files, process them inside the container workspace and return outputs using container.file_deliver instead of host path operations",
     "- host_tool_usage_rule: use host.* tools only when user explicitly requests host access and approval allows it",
     "- host_approval_trigger_rule: when host access is explicitly requested, call the required host.* tool directly; gateway will return approval_required and start approval flow automatically when needed",
+    "- discord_tool_usage_rule: discord.* tools are approval-gated; call the required discord.* tool directly so gateway can trigger approval_required flow with concrete scope",
     routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
     "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",

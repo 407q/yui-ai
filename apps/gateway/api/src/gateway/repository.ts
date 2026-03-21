@@ -91,12 +91,22 @@ export interface ListDiscordRecentMessagesInput {
   limit: number;
 }
 
+export interface ListKnownDiscordChannelsInput {
+  limit: number;
+}
+
 export interface DiscordProfileContextRecord {
   username: string | null;
   nickname: string | null;
   channelName: string | null;
   threadName: string | null;
   updatedAt: Date | null;
+}
+
+export interface DiscordKnownChannelRecord {
+  channelId: string;
+  channelName: string | null;
+  lastSeenAt: Date | null;
 }
 
 export interface GatewayRepository {
@@ -174,6 +184,9 @@ export interface GatewayRepository {
     sessionId: string,
     userId: string,
   ): Promise<DiscordProfileContextRecord>;
+  listKnownDiscordChannels(
+    input: ListKnownDiscordChannelsInput,
+  ): Promise<DiscordKnownChannelRecord[]>;
   listDiscordRecentMessages(
     input: ListDiscordRecentMessagesInput,
   ): Promise<DiscordRecentMessageRecord[]>;
@@ -963,6 +976,37 @@ export class PostgresGatewayRepository implements GatewayRepository {
     };
   }
 
+  async listKnownDiscordChannels(
+    input: ListKnownDiscordChannelsInput,
+  ): Promise<DiscordKnownChannelRecord[]> {
+    const normalizedLimit = Math.min(Math.max(input.limit, 1), 200);
+    const { rows } = await this.pool.query<DiscordKnownChannelRow>(
+      `
+      SELECT
+        s.channel_id,
+        (
+          ARRAY_REMOVE(
+            ARRAY_AGG(
+              NULLIF(e.payload_json ->> 'channelName', '')
+              ORDER BY e."timestamp" DESC
+            ),
+            NULL
+          )
+        )[1] AS channel_name,
+        MAX(e."timestamp") AS last_seen_at
+      FROM sessions s
+      LEFT JOIN tasks t ON t.session_id = s.session_id
+      LEFT JOIN task_events e ON e.task_id = t.task_id
+        AND e.event_type IN ('thread.task.start', 'thread.message.received')
+      GROUP BY s.channel_id
+      ORDER BY MAX(e."timestamp") DESC NULLS LAST, s.channel_id ASC
+      LIMIT $1
+      `,
+      [normalizedLimit],
+    );
+    return rows.map(toDiscordKnownChannelRecord);
+  }
+
   async listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]> {
     const { rows } = await this.pool.query<SessionRow>(
       `
@@ -1122,6 +1166,12 @@ interface DiscordProfileContextEventRow {
   timestamp: Date;
 }
 
+interface DiscordKnownChannelRow {
+  channel_id: string;
+  channel_name: string | null;
+  last_seen_at: Date | null;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -1223,6 +1273,16 @@ function toDiscordRecentMessageRecord(
     role: row.role === "user" ? "user" : "assistant",
     content: row.content,
     timestamp: row.timestamp,
+  };
+}
+
+function toDiscordKnownChannelRecord(
+  row: DiscordKnownChannelRow,
+): DiscordKnownChannelRecord {
+  return {
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    lastSeenAt: row.last_seen_at,
   };
 }
 

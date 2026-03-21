@@ -240,9 +240,12 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 - `memory.upsert/search/get/delete`
 - `discord.profile_get`
 - `discord.channel_history`
+- `discord.channel_list`
 
 `discord.profile_get` は、セッションに紐づくイベント（開始時メタデータ/ユーザーメッセージ）から
 `userId/username/nickname/channelId/channelName/threadId/threadName/updatedAt` を返します。
+`discord.*` ツールはすべて承認制で、未承認時は `approval_required` を返します。
+`discord.channel_history` は `channelId` 指定で対象を切り替えられ、`discord.channel_list` はサーバー全体のチャンネル一覧取得に利用できます。
 
 ### スモークテスト
 

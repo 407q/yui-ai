@@ -682,8 +682,68 @@ async function main(): Promise<void> {
       arguments: {},
       reason: "discord profile",
     });
-    assert(discordProfileResult.status === "ok", "discord.profile_get should succeed");
-    const discordProfilePayload = discordProfileResult.result as {
+    assert(
+      discordProfileResult.status === "error" &&
+        discordProfileResult.error_code === "approval_required",
+      "discord.profile_get should require approval before granted",
+    );
+    const discordProfileScope = (discordProfileResult as McpResultError).details?.scope;
+    assert(
+      typeof discordProfileScope === "string",
+      "discord.profile_get approval_required should include scope",
+    );
+
+    const discordProfileApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "discord_profile_get",
+        path: discordProfileScope,
+      },
+    });
+    const discordProfileApprovalRequestBody = parseJsonBody(
+      discordProfileApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      discordProfileApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(discord_profile_get)",
+    );
+    assert(
+      discordProfileApprovalRequestBody.approval.status === "requested",
+      "discord profile approval should be requested",
+    );
+    const discordProfileApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${discordProfileApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      discordProfileApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(discord_profile_get)",
+    );
+
+    const discordProfileGrantedResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.profile_get",
+      execution_target: "gateway_adapter",
+      arguments: {},
+      reason: "discord profile after approval",
+    });
+    assert(
+      discordProfileGrantedResult.status === "ok",
+      "discord.profile_get should succeed",
+    );
+    const discordProfilePayload = (discordProfileGrantedResult as McpResultSuccess).result as {
       profile: {
         userId: string;
         username: string | null;
@@ -730,17 +790,81 @@ async function main(): Promise<void> {
       tool_name: "discord.channel_history",
       execution_target: "gateway_adapter",
       arguments: {
+        channelId,
         limit: 10,
         role: "all",
       },
       reason: "discord channel history",
     });
     assert(
-      discordChannelHistoryResult.status === "ok",
+      discordChannelHistoryResult.status === "error" &&
+        discordChannelHistoryResult.error_code === "approval_required",
+      "discord.channel_history should require approval before granted",
+    );
+    const discordChannelHistoryScope =
+      (discordChannelHistoryResult as McpResultError).details?.scope;
+    assert(
+      typeof discordChannelHistoryScope === "string",
+      "discord.channel_history approval_required should include scope",
+    );
+    const discordChannelHistoryApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "discord_channel_history",
+        path: discordChannelHistoryScope,
+      },
+    });
+    const discordChannelHistoryApprovalRequestBody = parseJsonBody(
+      discordChannelHistoryApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      discordChannelHistoryApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(discord_channel_history)",
+    );
+    assert(
+      discordChannelHistoryApprovalRequestBody.approval.status === "requested",
+      "discord channel history approval should be requested",
+    );
+    const discordChannelHistoryApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${discordChannelHistoryApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      discordChannelHistoryApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(discord_channel_history)",
+    );
+    const discordChannelHistoryGrantedResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        channelId,
+        limit: 10,
+        role: "all",
+      },
+      reason: "discord channel history after approval",
+    });
+    assert(
+      discordChannelHistoryGrantedResult.status === "ok",
       "discord.channel_history should succeed",
     );
-    const discordChannelHistoryPayload = discordChannelHistoryResult.result as {
+    const discordChannelHistoryPayload = (discordChannelHistoryGrantedResult as McpResultSuccess)
+      .result as {
       channel_id: string;
+      channel_name: string | null;
+      source: "discord_api" | "repository";
       entries: unknown[];
       note: string;
     };
@@ -755,6 +879,95 @@ async function main(): Promise<void> {
     assert(
       discordChannelHistoryPayload.note.includes("session history"),
       "discord.channel_history should explain session-history-default behavior",
+    );
+
+    const discordChannelListResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_list",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 20,
+      },
+      reason: "discord channel list",
+    });
+    assert(
+      discordChannelListResult.status === "error" &&
+        discordChannelListResult.error_code === "approval_required",
+      "discord.channel_list should require approval before granted",
+    );
+    const discordChannelListScope =
+      (discordChannelListResult as McpResultError).details?.scope;
+    assert(
+      typeof discordChannelListScope === "string",
+      "discord.channel_list approval_required should include scope",
+    );
+    const discordChannelListApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "discord_channel_list",
+        path: discordChannelListScope,
+      },
+    });
+    const discordChannelListApprovalRequestBody = parseJsonBody(
+      discordChannelListApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      discordChannelListApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(discord_channel_list)",
+    );
+    const discordChannelListApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${discordChannelListApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      discordChannelListApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(discord_channel_list)",
+    );
+    const discordChannelListGrantedResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_list",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 20,
+      },
+      reason: "discord channel list after approval",
+    });
+    assert(
+      discordChannelListGrantedResult.status === "ok",
+      "discord.channel_list should succeed after approval",
+    );
+    const discordChannelListPayload = (discordChannelListGrantedResult as McpResultSuccess)
+      .result as {
+      source: "discord_api" | "repository";
+      channels: Array<{ channel_id: string }>;
+    };
+    assert(
+      Array.isArray(discordChannelListPayload.channels),
+      "discord.channel_list should return channels array",
+    );
+    assert(
+      discordChannelListPayload.channels.length > 0,
+      "discord.channel_list should return at least one channel",
+    );
+    assert(
+      discordChannelListPayload.channels.some(
+        (channel) => channel.channel_id === channelId,
+      ),
+      "discord.channel_list should include current session channel",
     );
 
     const messageResponse = await app.inject({

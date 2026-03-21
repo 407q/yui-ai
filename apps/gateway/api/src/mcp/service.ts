@@ -85,8 +85,13 @@ const memoryDeleteSchema = z.object({
 const discordProfileGetSchema = z.object({});
 
 const discordChannelHistorySchema = z.object({
+  channelId: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(50).optional().default(20),
   role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+});
+
+const discordChannelListSchema = z.object({
+  limit: z.number().int().min(1).max(200).optional().default(50),
 });
 
 export interface McpToolServiceOptions {
@@ -100,6 +105,9 @@ export interface McpToolServiceOptions {
   hostHttpTimeoutSec: number;
   hostCliAllowlist: string[];
   memoryNamespaceValidationMode?: "warn" | "enforce";
+  discordBotToken?: string;
+  discordGuildId?: string;
+  discordApiBaseUrl?: string;
 }
 
 const RECOMMENDED_MEMORY_NAMESPACES = [
@@ -113,6 +121,12 @@ export class McpToolService {
   private readonly containerAdapter: ContainerToolAdapter;
   private readonly hostAdapter: HostToolAdapter;
   private readonly memoryNamespaceValidationMode: "warn" | "enforce";
+  private discordGuildChannelsCache:
+    | {
+        fetchedAt: number;
+        channels: DiscordGuildChannel[];
+      }
+    | null = null;
 
   constructor(
     private readonly repository: GatewayRepository,
@@ -472,6 +486,11 @@ export class McpToolService {
             },
           );
         }
+        await this.assertDiscordScopeAllowed(
+          input.sessionId,
+          "discord_profile_get",
+          `discord_user:${session.userId}`,
+        );
         const context = await this.repository.findDiscordProfileContextBySessionId(
           session.sessionId,
           session.userId,
@@ -502,14 +521,79 @@ export class McpToolService {
             },
           );
         }
+        const targetChannelId = args.channelId?.trim() ?? session.channelId;
+        await this.assertDiscordScopeAllowed(
+          input.sessionId,
+          "discord_channel_history",
+          `discord_channel:${targetChannelId}`,
+        );
+        const channelSet = await this.listDiscordChannels();
+        const matchedChannel = channelSet.channels.find(
+          (channel) => channel.channelId === targetChannelId,
+        );
+        if (
+          args.channelId &&
+          channelSet.source === "discord_api" &&
+          !matchedChannel
+        ) {
+          throw new McpToolError(
+            "invalid_tool_arguments",
+            "Requested Discord channel was not found in the configured guild.",
+            {
+              channel_id: targetChannelId,
+              guild_id: channelSet.guildId,
+            },
+          );
+        }
         const messages = await this.repository.listDiscordRecentMessages({
-          channelId: session.channelId,
+          channelId: targetChannelId,
           limit: args.limit,
         });
         return {
-          channel_id: session.channelId,
+          channel_id: targetChannelId,
+          channel_name: matchedChannel?.channelName ?? null,
           entries: toDiscordHistoryEntries(messages, args.role, args.limit),
+          source: channelSet.source,
           note: "session history is available by default; use this metadata for channel context",
+        };
+      }
+      case "discord.channel_list": {
+        const args = parseToolArgs(discordChannelListSchema, input.arguments);
+        const session = await this.repository.findSessionById(input.sessionId);
+        if (!session) {
+          throw new McpToolError(
+            "invalid_tool_arguments",
+            "Session is not found for discord.channel_list.",
+            {
+              session_id: input.sessionId,
+            },
+          );
+        }
+        await this.assertDiscordScopeAllowed(
+          input.sessionId,
+          "discord_channel_list",
+          this.options.discordGuildId?.trim()
+            ? `discord_guild:${this.options.discordGuildId.trim()}`
+            : "discord_guild:known_channels",
+        );
+        const channelSet = await this.listDiscordChannels();
+        return {
+          guild_id: channelSet.guildId,
+          source: channelSet.source,
+          channels: channelSet.channels
+            .slice(0, args.limit)
+            .map((channel) => ({
+              channel_id: channel.channelId,
+              channel_name: channel.channelName,
+              channel_type: channel.channelType,
+              parent_channel_id: channel.parentChannelId,
+              position: channel.position,
+              last_seen_at: channel.lastSeenAt?.toISOString() ?? null,
+            })),
+          note:
+            channelSet.source === "discord_api"
+              ? "channels are fetched from the Discord guild API"
+              : "known channels are derived from session records and related metadata events",
         };
       }
       default:
@@ -591,6 +675,184 @@ export class McpToolService {
         scope: scopeValue,
       },
     );
+  }
+
+  private async assertDiscordScopeAllowed(
+    sessionId: string,
+    operation: string,
+    scopeValue: string,
+  ): Promise<void> {
+    const grantedPermissions = await this.repository.listPathPermissions(
+      sessionId,
+      operation,
+    );
+    if (grantedPermissions.some((permission) => permission.path === scopeValue)) {
+      return;
+    }
+
+    const latestApproval = await this.repository.findLatestApprovalByScope(
+      sessionId,
+      operation,
+      scopeValue,
+    );
+    if (!latestApproval || latestApproval.status === "requested") {
+      throw new McpToolError(
+        "approval_required",
+        "Discord operation requires approval before execution.",
+        {
+          session_id: sessionId,
+          operation,
+          scope: scopeValue,
+          approval_id: latestApproval?.approvalId ?? null,
+        },
+      );
+    }
+    if (latestApproval.status === "rejected") {
+      throw new McpToolError(
+        "approval_rejected",
+        "Discord operation was rejected by approval policy.",
+        {
+          session_id: sessionId,
+          operation,
+          scope: scopeValue,
+          approval_id: latestApproval.approvalId,
+        },
+      );
+    }
+    if (latestApproval.status === "timeout") {
+      throw new McpToolError(
+        "approval_timeout",
+        "Discord operation approval timed out.",
+        {
+          session_id: sessionId,
+          operation,
+          scope: scopeValue,
+          approval_id: latestApproval.approvalId,
+        },
+      );
+    }
+
+    throw new McpToolError(
+      "path_not_approved_for_session",
+      "Discord scope is not approved in this session.",
+      {
+        session_id: sessionId,
+        operation,
+        scope: scopeValue,
+      },
+    );
+  }
+
+  private async listDiscordChannels(): Promise<{
+    guildId: string | null;
+    source: "discord_api" | "repository";
+    channels: DiscordGuildChannel[];
+    fallbackReason?: string;
+  }> {
+    const guildId = this.options.discordGuildId?.trim() || null;
+    const token = this.options.discordBotToken?.trim();
+    const apiBaseUrl = this.normalizeDiscordApiBaseUrl(
+      this.options.discordApiBaseUrl,
+    );
+    if (!guildId || !token) {
+      const known = await this.repository.listKnownDiscordChannels({ limit: 200 });
+      return {
+        guildId,
+        source: "repository",
+        channels: known.map((channel) => ({
+          channelId: channel.channelId,
+          channelName: channel.channelName,
+          channelType: null,
+          parentChannelId: null,
+          position: null,
+          lastSeenAt: channel.lastSeenAt,
+        })),
+      };
+    }
+
+    const cache = this.discordGuildChannelsCache;
+    const now = Date.now();
+    if (cache && now - cache.fetchedAt < 30_000) {
+      return {
+        guildId,
+        source: "discord_api",
+        channels: cache.channels,
+      };
+    }
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/guilds/${encodeURIComponent(guildId)}/channels`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bot ${token}`,
+          },
+        },
+      );
+      if (!response.ok) {
+        const responseBody = truncate(await response.text(), 400);
+        throw new McpToolError(
+          "tool_execution_failed",
+          "Failed to fetch Discord guild channels.",
+          {
+            status: response.status,
+            guild_id: guildId,
+            response: responseBody,
+          },
+        );
+      }
+      const payload: unknown = await response.json();
+      if (!Array.isArray(payload)) {
+        throw new McpToolError(
+          "tool_execution_failed",
+          "Unexpected Discord channels response format.",
+          {
+            guild_id: guildId,
+          },
+        );
+      }
+      const channels = payload
+        .map((entry) => parseDiscordGuildChannel(entry))
+        .filter((entry): entry is DiscordGuildChannel => entry !== null)
+        .sort((a, b) => {
+          const positionA = a.position ?? Number.MAX_SAFE_INTEGER;
+          const positionB = b.position ?? Number.MAX_SAFE_INTEGER;
+          if (positionA !== positionB) {
+            return positionA - positionB;
+          }
+          return a.channelId.localeCompare(b.channelId);
+        });
+      this.discordGuildChannelsCache = {
+        fetchedAt: now,
+        channels,
+      };
+      return {
+        guildId,
+        source: "discord_api",
+        channels,
+      };
+    } catch (error) {
+      const known = await this.repository.listKnownDiscordChannels({ limit: 200 });
+      return {
+        guildId,
+        source: "repository",
+        fallbackReason: summarizeError(error),
+        channels: known.map((channel) => ({
+          channelId: channel.channelId,
+          channelName: channel.channelName,
+          channelType: null,
+          parentChannelId: null,
+          position: null,
+          lastSeenAt: channel.lastSeenAt,
+        })),
+      };
+    }
+  }
+
+  private normalizeDiscordApiBaseUrl(raw: string | undefined): string {
+    const base = raw?.trim() || "https://discord.com/api/v10";
+    return base.endsWith("/") ? base.slice(0, -1) : base;
   }
 
   private isPermissionMatch(
@@ -759,6 +1021,66 @@ function resolveMimeTypeFromPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+interface DiscordGuildChannel {
+  channelId: string;
+  channelName: string | null;
+  channelType: number | null;
+  parentChannelId: string | null;
+  position: number | null;
+  lastSeenAt: Date | null;
+}
+
+function parseDiscordGuildChannel(value: unknown): DiscordGuildChannel | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const channelId = readNonEmptyString(record.id);
+  if (!channelId) {
+    return null;
+  }
+  const channelName = readNonEmptyString(record.name);
+  const parentChannelId = readNonEmptyString(record.parent_id);
+  const channelType =
+    typeof record.type === "number" && Number.isFinite(record.type)
+      ? record.type
+      : null;
+  const position =
+    typeof record.position === "number" && Number.isFinite(record.position)
+      ? record.position
+      : null;
+  return {
+    channelId,
+    channelName,
+    channelType,
+    parentChannelId,
+    position,
+    lastSeenAt: null,
+  };
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function truncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function summarizeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 function toDiscordHistoryEntries(

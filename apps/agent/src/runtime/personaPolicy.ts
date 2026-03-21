@@ -52,6 +52,7 @@ export const PERSONA_REGISTRY = {
         "Treat unapproved host operations as blocked.",
         "When approval is required, present the exact next step clearly.",
         "Do not ask for host permission in plain text before tool calls; invoke the relevant host.* tool so Gateway approval flow can trigger with concrete scope.",
+        "Discord context tools (`discord.*`) are also approval-gated; invoke them directly to trigger Gateway approval flow when needed.",
       ],
       memory: [
         "Store durable user preferences and confirmed facts when useful.",

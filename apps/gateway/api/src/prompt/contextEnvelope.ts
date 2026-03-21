@@ -162,6 +162,7 @@ function buildBehaviorLines(behavior: ContextEnvelopeBehaviorInput): string[] {
     `- tool_routing_policy: ${normalizeInline(behavior.toolRoutingPolicy)}`,
     `- approval_policy: ${normalizeInline(behavior.approvalPolicy)}`,
     "- approval_trigger_rule: for explicit host requests, call host.* tools directly so gateway approval flow can trigger via approval_required",
+    "- discord_approval_rule: discord.* tools are approval-gated; call discord.* directly so gateway approval flow can trigger via approval_required",
     `- response_contract: ${normalizeInline(behavior.responseContract)}`,
     `- execution_contract: ${normalizeInline(behavior.executionContract)}`,
   ];
@@ -213,7 +214,7 @@ function buildDiscordLines(discord: ContextEnvelopeDiscordInput | undefined): st
     `- discord_thread_id: ${normalizeInline(discord.threadId)}`,
     `- discord_thread_name: ${threadName}`,
     "- discord_history_handling: rely_on_session_history_default",
-    "- discord_tools_hint: use discord.profile_get / discord.channel_history when additional Discord context is required",
+    "- discord_tools_hint: use discord.profile_get / discord.channel_history / discord.channel_list when additional Discord context is required",
   ];
   return lines;
 }
