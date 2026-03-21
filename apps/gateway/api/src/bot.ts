@@ -205,6 +205,7 @@ const pendingApprovals = new Map<string, PendingApproval>();
 const idleTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const runningSessionIds = new Set<string>();
 const toolProgressMessageByCallId = new Map<string, ToolProgressMessageState>();
+const suppressedToolProgressCallByCallId = new Map<string, Snowflake>();
 let isSystemControlPending = false;
 let isGracefulShutdownInProgress = false;
 let runtimeInfrastructureStatus: RuntimeInfrastructureStatus = ORCHESTRATOR_ENABLED
@@ -1351,6 +1352,46 @@ function readToolEventCallId(payload: Record<string, unknown>): string | null {
   return readString(payload, "call_id") ?? readString(payload, "callId");
 }
 
+function shouldSuppressToolProgressLog(input: {
+  toolName: string;
+  reason?: string | null;
+  argumentsPayload?: Record<string, unknown> | null;
+  resultPayload?: Record<string, unknown> | null;
+  detailsPayload?: Record<string, unknown> | null;
+}): boolean {
+  if (input.toolName !== "memory.get" && input.toolName !== "memory.search") {
+    return false;
+  }
+
+  const reason = input.reason?.toLowerCase() ?? "";
+  if (reason.includes("system memory preload")) {
+    return true;
+  }
+
+  const namespaceFromArgs = readString(input.argumentsPayload, "namespace");
+  if (namespaceFromArgs?.startsWith("system.")) {
+    return true;
+  }
+
+  const namespaceFromResult = readString(input.resultPayload, "namespace");
+  if (namespaceFromResult?.startsWith("system.")) {
+    return true;
+  }
+
+  const entry = readRecord(input.resultPayload, "entry");
+  const namespaceFromEntry = readString(entry, "namespace");
+  if (namespaceFromEntry?.startsWith("system.")) {
+    return true;
+  }
+
+  const namespaceFromDetails = readString(input.detailsPayload, "namespace");
+  if (namespaceFromDetails?.startsWith("system.")) {
+    return true;
+  }
+
+  return false;
+}
+
 async function sendToolProgressStartMessage(
   session: MockSession,
   eventPayload: Record<string, unknown>,
@@ -1363,7 +1404,17 @@ async function sendToolProgressStartMessage(
   const executionTarget = readString(eventPayload, "execution_target");
   const reason = readString(eventPayload, "reason");
   const argumentsPayload = readRecord(eventPayload, "arguments");
-  const detail = resolveToolDetail(toolName, readRecord(eventPayload, "arguments"));
+  if (
+    shouldSuppressToolProgressLog({
+      toolName,
+      reason,
+      argumentsPayload,
+    })
+  ) {
+    suppressedToolProgressCallByCallId.set(callId, session.threadId);
+    return;
+  }
+  const detail = resolveToolDetail(toolName, argumentsPayload);
   const content = buildToolProgressMessageContent({
     toolName,
     executionTarget,
@@ -1396,8 +1447,29 @@ async function updateToolProgressResultMessage(
   if (!callId) {
     return;
   }
+  const suppressedThreadId = suppressedToolProgressCallByCallId.get(callId);
+  if (suppressedThreadId) {
+    suppressedToolProgressCallByCallId.delete(callId);
+    return;
+  }
   const state = toolProgressMessageByCallId.get(callId);
   if (!state || state.status !== "pending") {
+    const toolName = readString(eventPayload, "tool_name");
+    if (!toolName) {
+      return;
+    }
+    const resultPayload = readRecord(eventPayload, "result");
+    const detailsPayload = readRecord(eventPayload, "details");
+    if (
+      shouldSuppressToolProgressLog({
+        toolName,
+        argumentsPayload: readRecord(eventPayload, "arguments"),
+        resultPayload,
+        detailsPayload,
+      })
+    ) {
+      return;
+    }
     return;
   }
   const status = readString(eventPayload, "status");
@@ -1553,6 +1625,11 @@ function clearToolProgressMessagesForSession(sessionId: string): void {
   for (const [callId, state] of toolProgressMessageByCallId.entries()) {
     if (session.threadId === state.threadId) {
       toolProgressMessageByCallId.delete(callId);
+    }
+  }
+  for (const [callId, threadId] of suppressedToolProgressCallByCallId.entries()) {
+    if (session.threadId === threadId) {
+      suppressedToolProgressCallByCallId.delete(callId);
     }
   }
 }
