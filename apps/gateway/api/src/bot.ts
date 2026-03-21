@@ -2610,10 +2610,12 @@ function formatToolCallSummary(toolCalls: GatewayAgentToolCall[]): string {
   return listed;
 }
 
-function resolveApprovalRequestFromResults(
+function resolveApprovalRequestsFromResults(
   toolResults: unknown[],
   toolCalls: GatewayAgentToolCall[],
-): ToolApprovalRequest | null {
+): ToolApprovalRequest[] {
+  const requests: ToolApprovalRequest[] = [];
+  const seenScopes = new Set<string>();
   for (let index = 0; index < toolResults.length; index += 1) {
     const result = asRecord(toolResults[index]);
     if (!result) {
@@ -2635,15 +2637,24 @@ function resolveApprovalRequestFromResults(
       continue;
     }
 
-    return {
-      tool: toolCall?.toolName ?? `host.${operationCode}`,
+    const scopeKey = `${operationCode}:${target}`;
+    if (seenScopes.has(scopeKey)) {
+      continue;
+    }
+    seenScopes.add(scopeKey);
+
+    requests.push({
+      tool:
+        readString(result, "tool_name") ??
+        toolCall?.toolName ??
+        `host.${operationCode}`,
       operationCode,
       operationLabel: describeApprovalOperation(operationCode),
       target,
-    };
+    });
   }
 
-  return null;
+  return requests;
 }
 
 function summarizeToolErrors(toolResults: unknown[]): string[] {
@@ -3246,11 +3257,11 @@ async function runAgentTask(
         throw new Error(runtimeError);
       }
 
-      const approvalRequest = resolveApprovalRequestFromResults(
+      const approvalRequests = resolveApprovalRequestsFromResults(
         terminal.agentTask.result?.tool_results ?? [],
         toolCalls,
       );
-      if (!approvalRequest) {
+      if (approvalRequests.length === 0) {
         break;
       }
 
@@ -3260,42 +3271,46 @@ async function runAgentTask(
         );
       }
 
-      const approvalDecision = await requestApproval(session, approvalRequest);
-      session.pendingApprovalId = undefined;
-      touchSession(session);
+      for (const approvalRequest of approvalRequests) {
+        const approvalDecision = await requestApproval(session, approvalRequest);
+        session.pendingApprovalId = undefined;
+        touchSession(session);
 
-      if (approvalDecision === "approved") {
-        attempt += 1;
-        updateRuntimeFeedbackRetryHint(
-          session,
-          "previous run stopped by approval_required; approved and retrying",
-        );
-        await sendToThread(
-          session.threadId,
-          "✅ 承認を確認しました。Agent 実行を再開します。",
-        );
-        continue;
+        if (approvalDecision === "approved") {
+          continue;
+        }
+
+        if (approvalDecision === "rejected") {
+          updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+          updateRuntimeFeedbackRetryHint(
+            session,
+            "approval rejected in previous attempt",
+          );
+          throw new Error("approval rejected");
+        }
+        if (approvalDecision === "timeout") {
+          updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+          updateRuntimeFeedbackRetryHint(
+            session,
+            "approval timeout in previous attempt",
+          );
+          throw new Error("approval timeout");
+        }
+        updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+        clearToolProgressMessagesForSession(session.id);
+        throw new SessionRunCanceledError("run canceled while waiting approval");
       }
 
-      if (approvalDecision === "rejected") {
-        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
-        updateRuntimeFeedbackRetryHint(
-          session,
-          "approval rejected in previous attempt",
-        );
-        throw new Error("approval rejected");
-      }
-      if (approvalDecision === "timeout") {
-        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
-        updateRuntimeFeedbackRetryHint(
-          session,
-          "approval timeout in previous attempt",
-        );
-        throw new Error("approval timeout");
-      }
-      updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
-      clearToolProgressMessagesForSession(session.id);
-      throw new SessionRunCanceledError("run canceled while waiting approval");
+      attempt += 1;
+      updateRuntimeFeedbackRetryHint(
+        session,
+        "previous run stopped by approval_required; approved and retrying",
+      );
+      await sendToThread(
+        session.threadId,
+        "✅ 承認を確認しました。Agent 実行を再開します。",
+      );
+      continue;
     }
 
     const runtimeResult = terminal?.agentTask.result;
