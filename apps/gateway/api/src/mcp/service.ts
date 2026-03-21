@@ -508,13 +508,27 @@ export class McpToolService {
           channelId: targetChannelId,
           limit: args.limit,
         });
+        const apiHistory = await this.listDiscordChannelMessages({
+          channelId: targetChannelId,
+          limit: args.limit,
+          sessionId: input.sessionId,
+          taskId: input.taskId,
+          sessionUserId: userId,
+        });
+        const historyEntries =
+          apiHistory.source === "discord_api" ? apiHistory.entries : messages;
         return {
           channel_id: targetChannelId,
           channel_name: matchedChannel?.channelName ?? null,
-          entries: toDiscordHistoryEntries(messages, args.role, args.limit),
+          entries: toDiscordHistoryEntries(historyEntries, args.role, args.limit),
           source: channelSet.source,
+          entries_source: apiHistory.source,
+          fallback_reason:
+            apiHistory.source === "repository" ? apiHistory.fallbackReason : null,
           note:
-            "for non-thread context, use this tool for channel-level metadata and recent cross-session messages",
+            apiHistory.source === "discord_api"
+              ? "for non-thread context, entries are fetched from Discord channel messages API"
+              : "for non-thread context, entries are derived from session records because Discord channel messages API was unavailable",
         };
       }
       case "discord.channel_list": {
@@ -810,6 +824,87 @@ export class McpToolService {
     }
   }
 
+  private async listDiscordChannelMessages(input: {
+    channelId: string;
+    limit: number;
+    sessionId: string;
+    taskId: string;
+    sessionUserId: string;
+  }): Promise<{
+    source: "discord_api" | "repository";
+    entries: DiscordHistoryEntry[];
+    fallbackReason?: string;
+  }> {
+    const token = this.options.discordBotToken?.trim();
+    if (!token) {
+      return {
+        source: "repository",
+        entries: [],
+        fallbackReason: "discord_bot_token_missing",
+      };
+    }
+    const apiBaseUrl = this.normalizeDiscordApiBaseUrl(
+      this.options.discordApiBaseUrl,
+    );
+    const params = new URLSearchParams({
+      limit: String(Math.min(Math.max(input.limit, 1), 50)),
+    });
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/channels/${encodeURIComponent(input.channelId)}/messages?${params.toString()}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bot ${token}`,
+          },
+        },
+      );
+      if (!response.ok) {
+        const responseBody = truncate(await response.text(), 400);
+        throw new McpToolError(
+          "tool_execution_failed",
+          "Failed to fetch Discord channel messages.",
+          {
+            status: response.status,
+            channel_id: input.channelId,
+            response: responseBody,
+          },
+        );
+      }
+      const payload: unknown = await response.json();
+      if (!Array.isArray(payload)) {
+        throw new McpToolError(
+          "tool_execution_failed",
+          "Unexpected Discord channel messages response format.",
+          {
+            channel_id: input.channelId,
+          },
+        );
+      }
+      const entries = payload
+        .map((entry) =>
+          parseDiscordChannelMessage(
+            entry,
+            input.sessionId,
+            input.taskId,
+            input.sessionUserId,
+          ),
+        )
+        .filter((entry): entry is DiscordHistoryEntry => entry !== null)
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      return {
+        source: "discord_api",
+        entries,
+      };
+    } catch (error) {
+      return {
+        source: "repository",
+        entries: [],
+        fallbackReason: summarizeError(error),
+      };
+    }
+  }
+
   private normalizeDiscordApiBaseUrl(raw: string | undefined): string {
     const base = raw?.trim() || "https://discord.com/api/v10";
     return base.endsWith("/") ? base.slice(0, -1) : base;
@@ -992,6 +1087,18 @@ interface DiscordGuildChannel {
   lastSeenAt: Date | null;
 }
 
+interface DiscordHistoryEntry {
+  eventId: string;
+  sessionId: string;
+  taskId: string;
+  role: "user" | "assistant";
+  userId: string;
+  username: string | null;
+  nickname: string | null;
+  content: string;
+  timestamp: Date;
+}
+
 function parseDiscordGuildChannel(value: unknown): DiscordGuildChannel | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1021,6 +1128,54 @@ function parseDiscordGuildChannel(value: unknown): DiscordGuildChannel | null {
   };
 }
 
+function parseDiscordChannelMessage(
+  value: unknown,
+  sessionId: string,
+  taskId: string,
+  sessionUserId: string,
+): DiscordHistoryEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const messageId = readNonEmptyString(record.id);
+  const content = readNonEmptyString(record.content);
+  const timestampRaw = readNonEmptyString(record.timestamp);
+  const author = asRecord(record.author);
+  const authorId = readNonEmptyString(author?.id);
+  if (!messageId || !timestampRaw || !authorId) {
+    return null;
+  }
+  const timestamp = new Date(timestampRaw);
+  if (Number.isNaN(timestamp.getTime())) {
+    return null;
+  }
+  const member = asRecord(record.member);
+  const username =
+    readNonEmptyString(author?.username) ?? readNonEmptyString(author?.global_name);
+  const nickname = readNonEmptyString(member?.nick);
+  const role: "user" | "assistant" =
+    authorId === sessionUserId ? "user" : "assistant";
+  return {
+    eventId: messageId,
+    sessionId,
+    taskId,
+    role,
+    userId: authorId,
+    username,
+    nickname,
+    content: content ?? "",
+    timestamp,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -1044,17 +1199,7 @@ function summarizeError(error: unknown): string {
 }
 
 function toDiscordHistoryEntries(
-  records: Array<{
-    eventId: string;
-    sessionId: string;
-    taskId: string;
-    role: "user" | "assistant";
-    userId: string;
-    username: string | null;
-    nickname: string | null;
-    content: string;
-    timestamp: Date;
-  }>,
+  records: DiscordHistoryEntry[],
   role: "all" | "user" | "assistant",
   limit: number,
 ): Array<{

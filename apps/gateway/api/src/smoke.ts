@@ -749,6 +749,8 @@ async function main(): Promise<void> {
       channel_id: string;
       channel_name: string | null;
       source: "discord_api" | "repository";
+      entries_source: "discord_api" | "repository";
+      fallback_reason: string | null;
       entries: unknown[];
       note: string;
     };
@@ -759,6 +761,10 @@ async function main(): Promise<void> {
     assert(
       Array.isArray(discordChannelHistoryPayload.entries),
       "discord.channel_history should return entries",
+    );
+    assert(
+      discordChannelHistoryPayload.entries_source === "repository",
+      "discord.channel_history should fallback to repository when Discord messages API is unavailable",
     );
     assert(
       discordChannelHistoryPayload.note.includes("non-thread context"),

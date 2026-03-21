@@ -242,7 +242,8 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 - `discord.channel_list`
 
 `discord.*` ツールはすべて承認制で、未承認時は `approval_required` を返します。
-`discord.channel_history` は `channelId` 指定で対象を切り替えられ、`discord.channel_list` はサーバー全体のチャンネル一覧取得に利用できます。
+`discord.channel_history` は `channelId` 指定で対象を切り替えられ、Discord API（`/channels/:id/messages`）から取得したメッセージを優先し、失敗時はセッション記録へフォールバックします。
+`discord.channel_list` はサーバー全体のチャンネル一覧取得に利用できます。
 
 ### スモークテスト
 
