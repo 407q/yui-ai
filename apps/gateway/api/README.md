@@ -219,7 +219,8 @@ Bot から `contextEnvelope` を受け取る場合、主に次を使用します
 - `runtimeFeedback.attachmentSources[]`（`{ name, sourceUrl }`）
 - `discord.userId` / `discord.username` / `discord.nickname`
 - `discord.channelId` / `discord.channelName` / `discord.threadId` / `discord.threadName`
-- `discord.recentMessages[]`（`{ role, userId, username, nickname, content, timestamp }`）
+
+スレッド内の会話履歴はセッション履歴として標準参照されるため、`discord.recentMessages` は渡しません。
 
 `attachmentNames` が指定されている場合、Gateway は各ファイルに対応する
 `runtimeFeedback.attachmentSources` を必須として `POST /v1/tasks/:taskId/attachments/stage`
@@ -238,7 +239,6 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 - `host.http_request`
 - `memory.upsert/search/get/delete`
 - `discord.profile_get`
-- `discord.thread_history`
 - `discord.channel_history`
 
 ### スモークテスト

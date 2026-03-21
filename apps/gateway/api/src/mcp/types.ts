@@ -66,15 +66,3 @@ export interface DiscordProfileRecord {
   threadName: string | null;
   updatedAt: string;
 }
-
-export interface DiscordHistoryEntryRecord {
-  eventId: string;
-  sessionId: string;
-  taskId: string;
-  role: "user" | "assistant";
-  userId: string;
-  username: string | null;
-  nickname: string | null;
-  content: string;
-  timestamp: string;
-}

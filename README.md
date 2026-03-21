@@ -91,7 +91,7 @@ yarn api:smoke
 
 - `POST /v1/mcp/tool-call`
 - `container.*` / `host.*` / `memory.*` を Gateway で実行
-- `discord.profile_get` / `discord.thread_history` / `discord.channel_history` を Gateway で実行
+- `discord.profile_get` / `discord.channel_history` を Gateway で実行（スレッド履歴はセッション履歴を標準参照）
 - `container.file_deliver` でコンテナ内ファイルを base64 返却し、Bot が Discord 添付として送信可能
 - `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加
 

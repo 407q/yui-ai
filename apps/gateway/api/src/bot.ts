@@ -44,15 +44,6 @@ interface RuntimeFeedbackState {
   attachmentSources: GatewayAttachmentSource[];
 }
 
-interface ContextEnvelopeDiscordRecentMessagePayload {
-  role: "user" | "assistant";
-  userId?: string;
-  username?: string;
-  nickname?: string;
-  content: string;
-  timestamp?: string;
-}
-
 interface ContextEnvelopeDiscordPayload {
   userId: string;
   username?: string;
@@ -61,7 +52,6 @@ interface ContextEnvelopeDiscordPayload {
   channelName?: string;
   threadId: string;
   threadName?: string;
-  recentMessages: ContextEnvelopeDiscordRecentMessagePayload[];
 }
 
 interface QueuedRun {
@@ -187,9 +177,6 @@ const BOT_DELIVERED_FILE_MAX_COUNT = parsePositiveInt(
 );
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_LINES = 8;
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS = 720;
-const CONTEXT_DISCORD_RECENT_MESSAGE_MAX = 8;
-const CONTEXT_DISCORD_MESSAGE_MAX_CHARS = 280;
-
 function createDiscordClient(): Client {
   return new Client({
     intents: [
@@ -1215,14 +1202,6 @@ function createRuntimeFeedbackState(): RuntimeFeedbackState {
   };
 }
 
-function normalizeContextMessageValue(value: string, maxChars: number): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= maxChars) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, maxChars - 3)}...`;
-}
-
 function extractThreadDisplayName(thread: AnyThreadChannel): string | undefined {
   const name = thread.name?.trim();
   return name && name.length > 0 ? name : undefined;
@@ -1262,65 +1241,6 @@ function resolveDiscordNickname(
   return nickname && nickname.length > 0 ? nickname : undefined;
 }
 
-async function buildRecentDiscordMessages(
-  thread: AnyThreadChannel,
-  includeAssistant: boolean,
-): Promise<ContextEnvelopeDiscordRecentMessagePayload[]> {
-  const fetched = await thread.messages.fetch({ limit: 30 });
-  const chronological = Array.from(fetched.values()).sort(
-    (left, right) => left.createdTimestamp - right.createdTimestamp,
-  );
-  const result: ContextEnvelopeDiscordRecentMessagePayload[] = [];
-  for (const message of chronological) {
-    if (message.author.bot) {
-      if (!includeAssistant) {
-        continue;
-      }
-      if (message.author.id !== client.user?.id) {
-        continue;
-      }
-      const content = normalizeContextMessageValue(
-        message.content,
-        CONTEXT_DISCORD_MESSAGE_MAX_CHARS,
-      );
-      if (!content) {
-        continue;
-      }
-      result.push({
-        role: "assistant",
-        userId: message.author.id,
-        username: message.author.username,
-        nickname: undefined,
-        content,
-        timestamp: new Date(message.createdTimestamp).toISOString(),
-      });
-      continue;
-    }
-    const content = normalizeContextMessageValue(
-      message.content,
-      CONTEXT_DISCORD_MESSAGE_MAX_CHARS,
-    );
-    if (!content) {
-      continue;
-    }
-    result.push({
-      role: "user",
-      userId: message.author.id,
-      username: message.author.username,
-      nickname:
-        message.member?.nickname ??
-        message.member?.displayName ??
-        undefined,
-      content,
-      timestamp: new Date(message.createdTimestamp).toISOString(),
-    });
-  }
-  if (result.length <= CONTEXT_DISCORD_RECENT_MESSAGE_MAX) {
-    return result;
-  }
-  return result.slice(result.length - CONTEXT_DISCORD_RECENT_MESSAGE_MAX);
-}
-
 async function buildDiscordContextPayload(
   session: MockSession,
 ): Promise<ContextEnvelopeDiscordPayload> {
@@ -1330,7 +1250,6 @@ async function buildDiscordContextPayload(
   }
   const username = resolveDiscordUsername(channel, session.ownerUserId);
   const nickname = resolveDiscordNickname(channel, session.ownerUserId);
-  const recentMessages = await buildRecentDiscordMessages(channel, true);
   return {
     userId: session.ownerUserId,
     username: session.ownerUsername ?? username,
@@ -1339,7 +1258,6 @@ async function buildDiscordContextPayload(
     channelName: session.channelName ?? extractThreadParentName(channel),
     threadId: session.threadId,
     threadName: session.threadName ?? extractThreadDisplayName(channel),
-    recentMessages,
   };
 }
 
@@ -1361,7 +1279,6 @@ async function resolveDiscordContextPayloadForRun(
       channelName: session.channelName,
       threadId: session.threadId,
       threadName: session.threadName,
-      recentMessages: [],
     };
   }
 }

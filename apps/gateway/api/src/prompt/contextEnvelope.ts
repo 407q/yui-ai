@@ -29,15 +29,6 @@ export interface ContextEnvelopeRuntimeFeedbackInput {
   retryHint?: string;
 }
 
-export interface ContextEnvelopeDiscordRecentMessageInput {
-  role: "user" | "assistant";
-  userId?: string;
-  username?: string;
-  nickname?: string;
-  content: string;
-  timestamp?: string;
-}
-
 export interface ContextEnvelopeDiscordInput {
   userId: string;
   username?: string;
@@ -46,7 +37,6 @@ export interface ContextEnvelopeDiscordInput {
   channelName?: string;
   threadId: string;
   threadName?: string;
-  recentMessages?: ContextEnvelopeDiscordRecentMessageInput[];
 }
 
 export interface ContextEnvelopeAttachmentRuntimeInput {
@@ -71,7 +61,6 @@ export interface ContextEnvelopeInput {
 const MAX_ATTACHMENT_LINES = 8;
 const MAX_STAGED_FILE_LINES = 8;
 const MAX_TOOL_ERROR_LINES = 3;
-const MAX_DISCORD_RECENT_LINES = 8;
 const MAX_VALUE_LENGTH = 160;
 
 export function buildPromptWithContextEnvelope(input: ContextEnvelopeInput): string {
@@ -214,30 +203,6 @@ function buildDiscordLines(discord: ContextEnvelopeDiscordInput | undefined): st
     ? normalizeInline(discord.threadName)
     : "unknown";
 
-  const normalizedRecent = (discord.recentMessages ?? [])
-    .map((message) => ({
-      role: message.role,
-      userId:
-        message.userId && message.userId.trim().length > 0
-          ? normalizeInline(message.userId)
-          : "unknown",
-      username:
-        message.username && message.username.trim().length > 0
-          ? normalizeInline(message.username)
-          : "unknown",
-      nickname:
-        message.nickname && message.nickname.trim().length > 0
-          ? normalizeInline(message.nickname)
-          : "none",
-      content: normalizeInline(message.content),
-      timestamp:
-        message.timestamp && message.timestamp.trim().length > 0
-          ? normalizeInline(message.timestamp)
-          : "unknown",
-    }))
-    .filter((message) => message.content.length > 0)
-    .slice(-MAX_DISCORD_RECENT_LINES);
-
   const lines: string[] = [
     `- discord_user_id: ${normalizeInline(discord.userId)}`,
     `- discord_username: ${username}`,
@@ -246,21 +211,9 @@ function buildDiscordLines(discord: ContextEnvelopeDiscordInput | undefined): st
     `- discord_channel_name: ${channelName}`,
     `- discord_thread_id: ${normalizeInline(discord.threadId)}`,
     `- discord_thread_name: ${threadName}`,
-    `- discord_recent_messages_count: ${normalizedRecent.length}`,
+    "- discord_history_handling: rely_on_session_history_default",
+    "- discord_tools_hint: use discord.profile_get / discord.channel_history when additional Discord context is required",
   ];
-
-  for (let index = 0; index < normalizedRecent.length; index += 1) {
-    const message = normalizedRecent[index];
-    if (!message) {
-      continue;
-    }
-    lines.push(
-      `- discord_recent_message_${index + 1}: [${message.role}] user_id=${message.userId} username=${message.username} nickname=${message.nickname} at=${message.timestamp} content=${message.content}`,
-    );
-  }
-  lines.push(
-    "- discord_tools_hint: use discord.profile_get / discord.thread_history / discord.channel_history when additional Discord context is required",
-  );
   return lines;
 }
 

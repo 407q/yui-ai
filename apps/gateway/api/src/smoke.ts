@@ -141,23 +141,6 @@ async function main(): Promise<void> {
             channelName: "smoke-channel",
             threadId,
             threadName: "smoke-thread",
-            recentMessages: [
-              {
-                role: "user",
-                userId,
-                username: "smoke-user",
-                nickname: "smoke-nick",
-                content: "直前の依頼です",
-                timestamp: new Date().toISOString(),
-              },
-              {
-                role: "assistant",
-                userId: "assistant",
-                username: "assistant",
-                content: "了解しました",
-                timestamp: new Date().toISOString(),
-              },
-            ],
           },
         },
         toolCalls: [
@@ -259,6 +242,12 @@ async function main(): Promise<void> {
     assert(
       runtimeAnswer.includes(`discord_user_id: ${userId}`),
       "runtime prompt should include discord user id",
+    );
+    assert(
+      runtimeAnswer.includes(
+        "discord_history_handling: rely_on_session_history_default",
+      ),
+      "runtime prompt should declare session-history-default handling",
     );
     assert(
       runtimeAnswer.includes(
@@ -690,53 +679,16 @@ async function main(): Promise<void> {
       call_id: `call_${randomUUID()}`,
       tool_name: "discord.profile_get",
       execution_target: "gateway_adapter",
-      arguments: {
-        includeRecentMessages: true,
-        recentLimit: 6,
-      },
+      arguments: {},
       reason: "discord profile",
     });
     assert(discordProfileResult.status === "ok", "discord.profile_get should succeed");
     const discordProfilePayload = discordProfileResult.result as {
       profile: { userId: string };
-      recent_messages: unknown[];
     };
     assert(
       discordProfilePayload.profile.userId === userId,
       "discord.profile_get should return current session user",
-    );
-    assert(
-      Array.isArray(discordProfilePayload.recent_messages),
-      "discord.profile_get should return recent messages array",
-    );
-
-    const discordThreadHistoryResult = await callMcpTool(app, reporter, {
-      task_id: startBody.taskId,
-      session_id: startBody.session.sessionId,
-      call_id: `call_${randomUUID()}`,
-      tool_name: "discord.thread_history",
-      execution_target: "gateway_adapter",
-      arguments: {
-        limit: 10,
-        role: "all",
-      },
-      reason: "discord thread history",
-    });
-    assert(
-      discordThreadHistoryResult.status === "ok",
-      "discord.thread_history should succeed",
-    );
-    const discordThreadHistoryPayload = discordThreadHistoryResult.result as {
-      thread_id: string;
-      entries: unknown[];
-    };
-    assert(
-      discordThreadHistoryPayload.thread_id === threadId,
-      "discord.thread_history should return current thread",
-    );
-    assert(
-      Array.isArray(discordThreadHistoryPayload.entries),
-      "discord.thread_history should return entries",
     );
 
     const discordChannelHistoryResult = await callMcpTool(app, reporter, {
@@ -758,6 +710,7 @@ async function main(): Promise<void> {
     const discordChannelHistoryPayload = discordChannelHistoryResult.result as {
       channel_id: string;
       entries: unknown[];
+      note: string;
     };
     assert(
       discordChannelHistoryPayload.channel_id === channelId,
@@ -766,6 +719,10 @@ async function main(): Promise<void> {
     assert(
       Array.isArray(discordChannelHistoryPayload.entries),
       "discord.channel_history should return entries",
+    );
+    assert(
+      discordChannelHistoryPayload.note.includes("session history"),
+      "discord.channel_history should explain session-history-default behavior",
     );
 
     const messageResponse = await app.inject({

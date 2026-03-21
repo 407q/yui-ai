@@ -113,14 +113,6 @@ export interface AgentTaskRunInput {
       channelName?: string;
       threadId: string;
       threadName?: string;
-      recentMessages?: Array<{
-        role: "user" | "assistant";
-        userId?: string;
-        username?: string;
-        nickname?: string;
-        content: string;
-        timestamp?: string;
-      }>;
     };
   };
   toolCalls?: AgentRuntimeToolCall[];
@@ -882,16 +874,6 @@ export class GatewayApiService {
               channelName: discordInput.channelName,
               threadId: discordInput.threadId,
               threadName: discordInput.threadName,
-              recentMessages: (discordInput.recentMessages ?? [])
-                .map((message) => ({
-                  role: message.role,
-                  userId: message.userId,
-                  username: message.username,
-                  nickname: message.nickname,
-                  content: message.content,
-                  timestamp: message.timestamp,
-                }))
-                .filter((message) => message.content.trim().length > 0),
             }
           : undefined;
       const attachmentRuntimeInput = attachmentRuntime ?? {

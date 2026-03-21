@@ -63,8 +63,8 @@ COPILOT_SDK_LOG_LEVEL=info
   host 操作・memory 操作は従来どおり Gateway custom tool 経由で実行します。
 - Gateway custom tool に `container.file_deliver` を追加し、`/agent/session/<session_id>` 配下ファイルを
   base64 payload として返却できるようにしました（最終的な Discord 送信は Bot 側で実施）。
-- Discord 文脈取得ツールとして `discord.profile_get` / `discord.thread_history` / `discord.channel_history`
-  を Gateway custom tool 経由で利用できます。
+- Discord 文脈取得ツールとして `discord.profile_get` / `discord.channel_history`
+  を Gateway custom tool 経由で利用できます（スレッド履歴はセッション履歴を標準参照）。
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
 
 ## Persona / Policy 設定（PR-1）
