@@ -883,7 +883,31 @@ async function main(): Promise<void> {
       source: "discord_api" | "repository";
       entries_source: "discord_api" | "repository";
       fallback_reason: string | null;
-      entries: unknown[];
+      entries: Array<{
+        attachmentUrls: string[];
+        reference: {
+          messageId: string;
+          channelId: string | null;
+          guildId: string | null;
+        } | null;
+        replyTo: {
+          messageId: string;
+          channelId: string | null;
+          userId: string | null;
+          username: string | null;
+          content: string | null;
+          attachmentUrls: string[];
+        } | null;
+        forwardFrom: {
+          messageId: string | null;
+          channelId: string | null;
+          guildId: string | null;
+          userId: string | null;
+          username: string | null;
+          content: string | null;
+          attachmentUrls: string[];
+        } | null;
+      }>;
       note: string;
     };
     assert(
@@ -897,6 +921,16 @@ async function main(): Promise<void> {
     assert(
       discordChannelHistoryPayload.entries_source === "repository",
       "discord.channel_history should fallback to repository when Discord messages API is unavailable",
+    );
+    assert(
+      discordChannelHistoryPayload.entries.every(
+        (entry) =>
+          Array.isArray(entry.attachmentUrls) &&
+          Object.prototype.hasOwnProperty.call(entry, "reference") &&
+          Object.prototype.hasOwnProperty.call(entry, "replyTo") &&
+          Object.prototype.hasOwnProperty.call(entry, "forwardFrom"),
+      ),
+      "discord.channel_history should include attachment/reference/forward fields",
     );
     assert(
       discordChannelHistoryPayload.note.includes("non-thread context"),

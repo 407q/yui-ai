@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 import type { GatewayRepository } from "../gateway/repository.js";
+import type { DiscordRecentMessageRecord } from "../gateway/types.js";
 import {
   RECOMMENDED_MEMORY_NAMESPACES,
   isSystemMemoryNamespace,
@@ -538,7 +539,9 @@ export class McpToolService {
           sessionUserId: userId,
         });
         const historyEntries =
-          apiHistory.source === "discord_api" ? apiHistory.entries : messages;
+          apiHistory.source === "discord_api"
+            ? apiHistory.entries
+            : messages.map((message) => toRepositoryDiscordHistoryEntry(message));
         return {
           channel_id: targetChannelId,
           channel_name: matchedChannel?.channelName ?? null,
@@ -1118,6 +1121,29 @@ interface DiscordHistoryEntry {
   username: string | null;
   nickname: string | null;
   content: string;
+  attachmentUrls: string[];
+  reference: {
+    messageId: string;
+    channelId: string | null;
+    guildId: string | null;
+  } | null;
+  replyTo: {
+    messageId: string;
+    channelId: string | null;
+    userId: string | null;
+    username: string | null;
+    content: string | null;
+    attachmentUrls: string[];
+  } | null;
+  forwardFrom: {
+    messageId: string | null;
+    channelId: string | null;
+    guildId: string | null;
+    userId: string | null;
+    username: string | null;
+    content: string | null;
+    attachmentUrls: string[];
+  } | null;
   timestamp: Date;
 }
 
@@ -1178,6 +1204,10 @@ function parseDiscordChannelMessage(
   const nickname = readNonEmptyString(member?.nick);
   const role: "user" | "assistant" =
     authorId === sessionUserId ? "user" : "assistant";
+  const attachmentUrls = extractDiscordAttachmentUrls(record.attachments);
+  const reference = parseDiscordMessageReference(record.message_reference);
+  const replyTo = parseDiscordReplyTo(record.referenced_message);
+  const forwardFrom = parseDiscordForwardSource(record.message_snapshots);
   return {
     eventId: messageId,
     sessionId,
@@ -1187,7 +1217,121 @@ function parseDiscordChannelMessage(
     username,
     nickname,
     content: content ?? "",
+    attachmentUrls,
+    reference,
+    replyTo,
+    forwardFrom,
     timestamp,
+  };
+}
+
+function extractDiscordAttachmentUrls(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const urls: string[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    const url = readNonEmptyString(record?.url);
+    if (!url) {
+      continue;
+    }
+    urls.push(url);
+  }
+  return urls;
+}
+
+function parseDiscordMessageReference(value: unknown): {
+  messageId: string;
+  channelId: string | null;
+  guildId: string | null;
+} | null {
+  const record = asRecord(value);
+  const messageId = readNonEmptyString(record?.message_id);
+  if (!messageId) {
+    return null;
+  }
+  return {
+    messageId,
+    channelId: readNonEmptyString(record?.channel_id),
+    guildId: readNonEmptyString(record?.guild_id),
+  };
+}
+
+function parseDiscordReplyTo(value: unknown): {
+  messageId: string;
+  channelId: string | null;
+  userId: string | null;
+  username: string | null;
+  content: string | null;
+  attachmentUrls: string[];
+} | null {
+  const record = asRecord(value);
+  const messageId = readNonEmptyString(record?.id);
+  if (!messageId) {
+    return null;
+  }
+  const author = asRecord(record?.author);
+  return {
+    messageId,
+    channelId: readNonEmptyString(record?.channel_id),
+    userId: readNonEmptyString(author?.id),
+    username:
+      readNonEmptyString(author?.username) ??
+      readNonEmptyString(author?.global_name),
+    content: readStringOrNull(record?.content),
+    attachmentUrls: extractDiscordAttachmentUrls(record?.attachments),
+  };
+}
+
+function parseDiscordForwardSource(value: unknown): {
+  messageId: string | null;
+  channelId: string | null;
+  guildId: string | null;
+  userId: string | null;
+  username: string | null;
+  content: string | null;
+  attachmentUrls: string[];
+} | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const first = asRecord(value[0]);
+  const message = asRecord(first?.message);
+  if (!message) {
+    return null;
+  }
+  const author = asRecord(message.author);
+  return {
+    messageId: readNonEmptyString(message.id),
+    channelId: readNonEmptyString(message.channel_id),
+    guildId: readNonEmptyString(message.guild_id),
+    userId: readNonEmptyString(author?.id),
+    username:
+      readNonEmptyString(author?.username) ??
+      readNonEmptyString(author?.global_name),
+    content: readStringOrNull(message.content),
+    attachmentUrls: extractDiscordAttachmentUrls(message.attachments),
+  };
+}
+
+function toRepositoryDiscordHistoryEntry(
+  record: DiscordRecentMessageRecord,
+): DiscordHistoryEntry {
+  return {
+    eventId: record.eventId,
+    sessionId: record.sessionId,
+    taskId: record.taskId,
+    role: record.role,
+    userId: record.userId,
+    username: record.username,
+    nickname: record.nickname,
+    content: record.content,
+    attachmentUrls: [],
+    reference: null,
+    replyTo: null,
+    forwardFrom: null,
+    timestamp: record.timestamp,
   };
 }
 
@@ -1204,6 +1348,13 @@ function readNonEmptyString(value: unknown): string | null {
   }
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function readStringOrNull(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return value;
 }
 
 function truncate(value: string, maxLength: number): string {
@@ -1233,6 +1384,29 @@ function toDiscordHistoryEntries(
   username: string | null;
   nickname: string | null;
   content: string;
+  attachmentUrls: string[];
+  reference: {
+    messageId: string;
+    channelId: string | null;
+    guildId: string | null;
+  } | null;
+  replyTo: {
+    messageId: string;
+    channelId: string | null;
+    userId: string | null;
+    username: string | null;
+    content: string | null;
+    attachmentUrls: string[];
+  } | null;
+  forwardFrom: {
+    messageId: string | null;
+    channelId: string | null;
+    guildId: string | null;
+    userId: string | null;
+    username: string | null;
+    content: string | null;
+    attachmentUrls: string[];
+  } | null;
   timestamp: string;
 }> {
   const filtered = records.filter((entry) => role === "all" || entry.role === role);
@@ -1246,6 +1420,35 @@ function toDiscordHistoryEntries(
     username: entry.username,
     nickname: entry.nickname,
     content: entry.content,
+    attachmentUrls: entry.attachmentUrls,
+    reference: entry.reference
+      ? {
+          messageId: entry.reference.messageId,
+          channelId: entry.reference.channelId,
+          guildId: entry.reference.guildId,
+        }
+      : null,
+    replyTo: entry.replyTo
+      ? {
+          messageId: entry.replyTo.messageId,
+          channelId: entry.replyTo.channelId,
+          userId: entry.replyTo.userId,
+          username: entry.replyTo.username,
+          content: entry.replyTo.content,
+          attachmentUrls: entry.replyTo.attachmentUrls,
+        }
+      : null,
+    forwardFrom: entry.forwardFrom
+      ? {
+          messageId: entry.forwardFrom.messageId,
+          channelId: entry.forwardFrom.channelId,
+          guildId: entry.forwardFrom.guildId,
+          userId: entry.forwardFrom.userId,
+          username: entry.forwardFrom.username,
+          content: entry.forwardFrom.content,
+          attachmentUrls: entry.forwardFrom.attachmentUrls,
+        }
+      : null,
     timestamp: entry.timestamp.toISOString(),
   }));
 }
