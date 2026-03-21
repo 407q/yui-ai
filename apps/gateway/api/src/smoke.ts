@@ -26,6 +26,7 @@ async function main(): Promise<void> {
     pool,
     agentRuntimeClient,
     containerExecutionMode: "host",
+    memoryNamespaceValidationMode: "warn",
   });
   const reporter = new SmokeReporter();
 
@@ -503,6 +504,27 @@ async function main(): Promise<void> {
       "host read should return file content",
     );
 
+    const memorySourceUpsertResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "memory.upsert",
+      execution_target: "gateway_adapter",
+      arguments: {
+        namespace: "conversation.fact",
+        key: "entry-base",
+        value: {
+          content: "source-memory",
+        },
+        tags: ["smoke", "source"],
+      },
+      reason: "memory source upsert",
+    });
+    assert(
+      memorySourceUpsertResult.status === "ok",
+      "memory source upsert should succeed",
+    );
+
     const memoryUpsertResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
       session_id: startBody.session.sessionId,
@@ -516,6 +538,13 @@ async function main(): Promise<void> {
           content: "hello-memory",
         },
         tags: ["smoke"],
+        backlinks: [
+          {
+            namespace: "conversation.fact",
+            key: "entry-base",
+            relation: "derived_from",
+          },
+        ],
       },
       reason: "memory upsert",
     });
@@ -536,12 +565,34 @@ async function main(): Promise<void> {
     assert(memoryGetResult.status === "ok", "memory.get should succeed");
     const memoryGetPayload = memoryGetResult.result as {
       found: boolean;
-      entry: { value: { content: string } } | null;
+      entry:
+        | {
+            value: { content: string };
+            backlinks?: Array<{
+              source_key: string;
+              source_namespace: string;
+              relation: string;
+            }>;
+          }
+        | null;
     };
     assert(memoryGetPayload.found, "memory.get should return found=true");
     assert(
       memoryGetPayload.entry?.value.content === "hello-memory",
       "memory.get should return stored value",
+    );
+    assert(
+      Array.isArray(memoryGetPayload.entry?.backlinks),
+      "memory.get should include backlinks array",
+    );
+    assert(
+      memoryGetPayload.entry?.backlinks?.some(
+        (backlink) =>
+          backlink.source_namespace === "conversation.fact" &&
+          backlink.source_key === "entry-base" &&
+          backlink.relation === "derived_from",
+      ),
+      "memory.get should include expected backlink",
     );
 
     const memorySearchResult = await callMcpTool(app, reporter, {
@@ -559,11 +610,17 @@ async function main(): Promise<void> {
     });
     assert(memorySearchResult.status === "ok", "memory.search should succeed");
     const memorySearchPayload = memorySearchResult.result as {
-      entries: Array<{ key: string }>;
+      entries: Array<{ key: string; backlinks?: unknown[] }>;
     };
     assert(
       memorySearchPayload.entries.some((entry) => entry.key === "entry1"),
       "memory.search should include upserted key",
+    );
+    assert(
+      memorySearchPayload.entries.some(
+        (entry) => entry.key === "entry1" && Array.isArray(entry.backlinks),
+      ),
+      "memory.search should include backlinks for matching entry",
     );
 
     const memoryDeleteResult = await callMcpTool(app, reporter, {

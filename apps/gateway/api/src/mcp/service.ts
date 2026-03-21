@@ -51,6 +51,15 @@ const memoryUpsertSchema = z.object({
   key: z.string().min(1),
   value: z.record(z.string(), z.unknown()),
   tags: z.array(z.string()).optional().default([]),
+  backlinks: z
+    .array(
+      z.object({
+        namespace: z.string().min(1),
+        key: z.string().min(1),
+        relation: z.string().min(1).max(64).optional(),
+      }),
+    )
+    .optional(),
 });
 
 const memoryGetSchema = z.object({
@@ -79,11 +88,20 @@ export interface McpToolServiceOptions {
   hostCliTimeoutSec: number;
   hostHttpTimeoutSec: number;
   hostCliAllowlist: string[];
+  memoryNamespaceValidationMode?: "warn" | "enforce";
 }
+
+const RECOMMENDED_MEMORY_NAMESPACES = [
+  "profile.person",
+  "conversation.fact",
+  "knowledge.note",
+  "task.preference",
+] as const;
 
 export class McpToolService {
   private readonly containerAdapter: ContainerToolAdapter;
   private readonly hostAdapter: HostToolAdapter;
+  private readonly memoryNamespaceValidationMode: "warn" | "enforce";
 
   constructor(
     private readonly repository: GatewayRepository,
@@ -101,6 +119,8 @@ export class McpToolService {
       cliTimeoutSec: options.hostCliTimeoutSec,
       httpTimeoutSec: options.hostHttpTimeoutSec,
     });
+    this.memoryNamespaceValidationMode =
+      options.memoryNamespaceValidationMode ?? "warn";
   }
 
   async executeToolCall(input: ToolCallRequest): Promise<ToolCallResult> {
@@ -349,6 +369,7 @@ export class McpToolService {
       }
       case "memory.upsert": {
         const args = parseToolArgs(memoryUpsertSchema, input.arguments);
+        this.validateMemoryNamespace(args.namespace, input.callId);
         const stored = await this.repository.upsertMemory({
           memoryId: newId("mem"),
           userId,
@@ -356,6 +377,7 @@ export class McpToolService {
           key: args.key,
           valueJson: args.value,
           tagsJson: args.tags,
+          backlinks: args.backlinks,
         });
         return {
           memoryId: stored.memoryId,
@@ -368,6 +390,7 @@ export class McpToolService {
       }
       case "memory.get": {
         const args = parseToolArgs(memoryGetSchema, input.arguments);
+        this.validateMemoryNamespace(args.namespace, input.callId);
         const found = await this.repository.getMemory(userId, args.namespace, args.key);
         return {
           found: found !== null,
@@ -380,12 +403,21 @@ export class McpToolService {
                   key: found.key,
                   value: found.valueJson,
                   tags: found.tagsJson,
+                  backlinks:
+                    found.backlinks?.map((backlink) => ({
+                      source_memory_id: backlink.sourceMemoryId,
+                      source_namespace: backlink.sourceNamespace,
+                      source_key: backlink.sourceKey,
+                      relation: backlink.relation,
+                      created_at: backlink.createdAt.toISOString(),
+                    })) ?? [],
                   updatedAt: found.updatedAt.toISOString(),
                 },
         };
       }
       case "memory.search": {
         const args = parseToolArgs(memorySearchSchema, input.arguments);
+        this.validateMemoryNamespace(args.namespace, input.callId);
         const results = await this.repository.searchMemory({
           userId,
           namespace: args.namespace,
@@ -399,12 +431,21 @@ export class McpToolService {
             key: entry.key,
             value: entry.valueJson,
             tags: entry.tagsJson,
+            backlinks:
+              entry.backlinks?.map((backlink) => ({
+                source_memory_id: backlink.sourceMemoryId,
+                source_namespace: backlink.sourceNamespace,
+                source_key: backlink.sourceKey,
+                relation: backlink.relation,
+                created_at: backlink.createdAt.toISOString(),
+              })) ?? [],
             updatedAt: entry.updatedAt.toISOString(),
           })),
         };
       }
       case "memory.delete": {
         const args = parseToolArgs(memoryDeleteSchema, input.arguments);
+        this.validateMemoryNamespace(args.namespace, input.callId);
         await this.repository.deleteMemory(userId, args.namespace, args.key);
         return { deleted: true };
       }
@@ -510,6 +551,35 @@ export class McpToolService {
 
     return grantedValue === scopeValue;
   }
+
+  private validateMemoryNamespace(namespace: string, callId: string): void {
+    if (RECOMMENDED_MEMORY_NAMESPACES.includes(namespace as (typeof RECOMMENDED_MEMORY_NAMESPACES)[number])) {
+      return;
+    }
+    if (this.memoryNamespaceValidationMode === "enforce") {
+      throw new McpToolError(
+        "invalid_tool_arguments",
+        "Memory namespace is not allowed by policy.",
+        {
+          namespace,
+          allowed_namespaces: [...RECOMMENDED_MEMORY_NAMESPACES],
+        },
+      );
+    }
+    this.repository
+      .appendAuditLog({
+        logId: newId("audit"),
+        correlationId: `memory-namespace:${callId}`,
+        actor: "gateway_mcp",
+        decision: "warn",
+        reason: "memory_namespace_not_recommended",
+        raw: {
+          namespace,
+          allowed_namespaces: [...RECOMMENDED_MEMORY_NAMESPACES],
+        },
+      })
+      .catch(() => undefined);
+  }
 }
 
 class McpToolError extends Error {
@@ -564,6 +634,20 @@ function toMcpToolError(error: unknown): McpToolError {
     return new McpToolError(
       "container_file_too_large",
       "Container file exceeds maxBytes limit.",
+    );
+  }
+  if (
+    error instanceof Error &&
+    error.message.startsWith("memory_backlink_source_not_found:")
+  ) {
+    const [, sourceNamespace, sourceKey] = error.message.split(":", 3);
+    return new McpToolError(
+      "invalid_tool_arguments",
+      "Backlink source memory entry was not found.",
+      {
+        source_namespace: sourceNamespace,
+        source_key: sourceKey,
+      },
     );
   }
 

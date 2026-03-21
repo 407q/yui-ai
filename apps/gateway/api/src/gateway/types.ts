@@ -89,5 +89,14 @@ export interface MemoryEntryRecord {
   key: string;
   valueJson: Record<string, unknown>;
   tagsJson: string[];
+  backlinks?: MemoryBacklinkRecord[];
   updatedAt: Date;
+}
+
+export interface MemoryBacklinkRecord {
+  sourceMemoryId: string;
+  sourceNamespace: string;
+  sourceKey: string;
+  relation: string;
+  createdAt: Date;
 }

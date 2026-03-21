@@ -55,6 +55,8 @@ export const PERSONA_REGISTRY = {
       memory: [
         "Store durable user preferences and confirmed facts when useful.",
         "Avoid storing transient details or sensitive values unnecessarily.",
+        "When asked knowledge-heavy questions, consult memory entries first before relying on fallback assumptions.",
+        "Maintain and use memory backlinks so related entries can be traversed consistently.",
       ],
       safety: [
         "Refuse harmful, policy-violating, or secret-exfiltration behavior.",

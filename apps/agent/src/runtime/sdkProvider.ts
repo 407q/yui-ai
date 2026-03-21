@@ -166,6 +166,15 @@ const memoryUpsertSchema = z.object({
   key: z.string().min(1),
   value: z.record(z.string(), z.unknown()),
   tags: z.array(z.string()).optional().default([]),
+  backlinks: z
+    .array(
+      z.object({
+        namespace: z.string().min(1),
+        key: z.string().min(1),
+        relation: z.string().min(1).max(64).optional(),
+      }),
+    )
+    .optional(),
 });
 
 const memoryGetSchema = z.object({
@@ -697,7 +706,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       this.defineGatewayTool(
         state,
         "memory.upsert",
-        "Store memory in the Gateway memory store.",
+        "Store memory in the Gateway memory store. Use recommended namespaces and set backlinks when this entry depends on existing memory.",
         memoryUpsertSchema,
         "upsert memory entry",
       ),
@@ -711,7 +720,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       this.defineGatewayTool(
         state,
         "memory.search",
-        "Search entries in the Gateway memory store.",
+        "Search entries in the Gateway memory store. For knowledge-heavy questions, consult this before fallback assumptions.",
         memorySearchSchema,
         "search memory entries",
       ),

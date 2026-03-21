@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import type {
   ApprovalRecord,
   ApprovalStatus,
+  MemoryBacklinkRecord,
   MemoryEntryRecord,
   SessionRecord,
   SessionPathPermissionRecord,
@@ -63,6 +64,11 @@ export interface UpsertMemoryInput {
   key: string;
   valueJson: Record<string, unknown>;
   tagsJson?: string[];
+  backlinks?: Array<{
+    namespace: string;
+    key: string;
+    relation?: string;
+  }>;
 }
 
 export interface SearchMemoryInput {
@@ -70,6 +76,12 @@ export interface SearchMemoryInput {
   namespace: string;
   query?: string;
   limit: number;
+}
+
+export interface ResolveMemoryBacklinkInput {
+  userId: string;
+  namespace: string;
+  key: string;
 }
 
 export interface GatewayRepository {
@@ -139,6 +151,9 @@ export interface GatewayRepository {
     key: string,
   ): Promise<MemoryEntryRecord | null>;
   searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]>;
+  resolveMemoryBacklinks(
+    input: ResolveMemoryBacklinkInput,
+  ): Promise<MemoryBacklinkRecord[]>;
   deleteMemory(userId: string, namespace: string, key: string): Promise<void>;
   listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]>;
 }
@@ -551,35 +566,130 @@ export class PostgresGatewayRepository implements GatewayRepository {
   }
 
   async upsertMemory(input: UpsertMemoryInput): Promise<MemoryEntryRecord> {
-    const { rows } = await this.pool.query<MemoryEntryRow>(
-      `
-      INSERT INTO memory_entries (
-        memory_id,
-        user_id,
-        namespace,
-        "key",
-        value_json,
-        tags_json,
-        updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-      ON CONFLICT (user_id, namespace, "key")
-      DO UPDATE SET
-        value_json = EXCLUDED.value_json,
-        tags_json = EXCLUDED.tags_json,
-        updated_at = NOW()
-      RETURNING *
-      `,
-      [
-        input.memoryId,
-        input.userId,
-        input.namespace,
-        input.key,
-        JSON.stringify(input.valueJson),
-        JSON.stringify(input.tagsJson ?? []),
-      ],
-    );
-    return toMemoryEntryRecord(requireRow(rows[0], "upserted memory entry"));
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query<MemoryEntryRow>(
+        `
+        INSERT INTO memory_entries (
+          memory_id,
+          user_id,
+          namespace,
+          "key",
+          value_json,
+          tags_json,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (user_id, namespace, "key")
+        DO UPDATE SET
+          value_json = EXCLUDED.value_json,
+          tags_json = EXCLUDED.tags_json,
+          updated_at = NOW()
+        RETURNING *
+        `,
+        [
+          input.memoryId,
+          input.userId,
+          input.namespace,
+          input.key,
+          JSON.stringify(input.valueJson),
+          JSON.stringify(input.tagsJson ?? []),
+        ],
+      );
+      const stored = toMemoryEntryRecord(requireRow(rows[0], "upserted memory entry"));
+
+      if (input.backlinks !== undefined) {
+        await client.query(
+          `
+          DELETE FROM memory_links
+          WHERE target_user_id = $1
+            AND target_namespace = $2
+            AND target_key = $3
+          `,
+          [input.userId, input.namespace, input.key],
+        );
+
+        const seen = new Set<string>();
+        for (const backlink of input.backlinks) {
+          const sourceNamespace = backlink.namespace.trim();
+          const sourceKey = backlink.key.trim();
+          const relation =
+            backlink.relation && backlink.relation.trim().length > 0
+              ? backlink.relation.trim()
+              : "related";
+          const dedupeKey = `${sourceNamespace}\u0000${sourceKey}\u0000${relation}`;
+          if (seen.has(dedupeKey)) {
+            continue;
+          }
+          seen.add(dedupeKey);
+
+          const sourceResult = await client.query<{
+            memory_id: string;
+          }>(
+            `
+            SELECT memory_id
+            FROM memory_entries
+            WHERE user_id = $1
+              AND namespace = $2
+              AND "key" = $3
+            `,
+            [input.userId, sourceNamespace, sourceKey],
+          );
+          const source = sourceResult.rows[0];
+          if (!source) {
+            throw new Error(
+              `memory_backlink_source_not_found:${sourceNamespace}:${sourceKey}`,
+            );
+          }
+
+          await client.query(
+            `
+            INSERT INTO memory_links (
+              source_memory_id,
+              source_user_id,
+              source_namespace,
+              source_key,
+              target_user_id,
+              target_namespace,
+              target_key,
+              relation,
+              created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            ON CONFLICT (
+              source_user_id,
+              source_namespace,
+              source_key,
+              target_user_id,
+              target_namespace,
+              target_key,
+              relation
+            ) DO UPDATE SET
+              created_at = NOW()
+            `,
+            [
+              source.memory_id,
+              input.userId,
+              sourceNamespace,
+              sourceKey,
+              input.userId,
+              input.namespace,
+              input.key,
+              relation,
+            ],
+          );
+        }
+      }
+
+      await client.query("COMMIT");
+      return stored;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getMemory(
@@ -600,7 +710,16 @@ export class PostgresGatewayRepository implements GatewayRepository {
     if (rows.length === 0) {
       return null;
     }
-    return toMemoryEntryRecord(requireRow(rows[0], "memory by key"));
+    const entry = toMemoryEntryRecord(requireRow(rows[0], "memory by key"));
+    const backlinks = await this.resolveMemoryBacklinks({
+      userId: entry.userId,
+      namespace: entry.namespace,
+      key: entry.key,
+    });
+    return {
+      ...entry,
+      backlinks,
+    };
   }
 
   async searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]> {
@@ -617,7 +736,8 @@ export class PostgresGatewayRepository implements GatewayRepository {
         `,
         [input.userId, input.namespace, normalizedLimit],
       );
-      return rows.map(toMemoryEntryRecord);
+      const entries = rows.map(toMemoryEntryRecord);
+      return this.attachBacklinks(entries);
     }
 
     const search = `%${input.query}%`;
@@ -637,7 +757,52 @@ export class PostgresGatewayRepository implements GatewayRepository {
       `,
       [input.userId, input.namespace, search, normalizedLimit],
     );
-    return rows.map(toMemoryEntryRecord);
+    const entries = rows.map(toMemoryEntryRecord);
+    return this.attachBacklinks(entries);
+  }
+
+  async resolveMemoryBacklinks(
+    input: ResolveMemoryBacklinkInput,
+  ): Promise<MemoryBacklinkRecord[]> {
+    const { rows } = await this.pool.query<MemoryBacklinkRow>(
+      `
+      SELECT
+        source_memory_id,
+        source_namespace,
+        source_key,
+        relation,
+        created_at
+      FROM memory_links
+      WHERE target_user_id = $1
+        AND target_namespace = $2
+        AND target_key = $3
+      ORDER BY created_at DESC
+      `,
+      [input.userId, input.namespace, input.key],
+    );
+    return rows.map(toMemoryBacklinkRecord);
+  }
+
+  private async attachBacklinks(
+    entries: MemoryEntryRecord[],
+  ): Promise<MemoryEntryRecord[]> {
+    if (entries.length === 0) {
+      return entries;
+    }
+    const resolved = await Promise.all(
+      entries.map(async (entry) => {
+        const backlinks = await this.resolveMemoryBacklinks({
+          userId: entry.userId,
+          namespace: entry.namespace,
+          key: entry.key,
+        });
+        return {
+          ...entry,
+          backlinks,
+        };
+      }),
+    );
+    return resolved;
   }
 
   async deleteMemory(
@@ -645,6 +810,15 @@ export class PostgresGatewayRepository implements GatewayRepository {
     namespace: string,
     key: string,
   ): Promise<void> {
+    await this.pool.query(
+      `
+      DELETE FROM memory_links
+      WHERE target_user_id = $1
+        AND target_namespace = $2
+        AND target_key = $3
+      `,
+      [userId, namespace, key],
+    );
     await this.pool.query(
       `
       DELETE FROM memory_entries
@@ -787,6 +961,14 @@ interface MemoryEntryRow {
   updated_at: Date;
 }
 
+interface MemoryBacklinkRow {
+  source_memory_id: string;
+  source_namespace: string;
+  source_key: string;
+  relation: string;
+  created_at: Date;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -860,6 +1042,16 @@ function toMemoryEntryRecord(row: MemoryEntryRow): MemoryEntryRecord {
     valueJson: row.value_json,
     tagsJson: row.tags_json,
     updatedAt: row.updated_at,
+  };
+}
+
+function toMemoryBacklinkRecord(row: MemoryBacklinkRow): MemoryBacklinkRecord {
+  return {
+    sourceMemoryId: row.source_memory_id,
+    sourceNamespace: row.source_namespace,
+    sourceKey: row.source_key,
+    relation: row.relation,
+    createdAt: row.created_at,
   };
 }
 

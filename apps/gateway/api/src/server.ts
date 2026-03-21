@@ -32,6 +32,7 @@ interface BuildGatewayApiServerOptions {
   hostCliTimeoutSec?: number;
   hostHttpTimeoutSec?: number;
   hostCliAllowlist?: string[];
+  memoryNamespaceValidationMode?: "warn" | "enforce";
   agentRuntimeClient?: AgentRuntimeClient;
   agentRuntimeBaseUrl?: string;
   agentRuntimeTimeoutSec?: number;
@@ -73,6 +74,9 @@ export function buildGatewayApiServer(
     hostHttpTimeoutSec:
       options.hostHttpTimeoutSec ?? resolveHostHttpTimeoutSec(),
     hostCliAllowlist: options.hostCliAllowlist ?? resolveHostCliAllowlist(),
+    memoryNamespaceValidationMode:
+      options.memoryNamespaceValidationMode ??
+      resolveMemoryNamespaceValidationMode(),
   });
 
   if (!options.pool) {
@@ -183,6 +187,14 @@ function resolveHostCliAllowlist(): string[] {
     return ["git", "node", "npm", "yarn", "curl"];
   }
   return commands;
+}
+
+function resolveMemoryNamespaceValidationMode(): "warn" | "enforce" {
+  const raw = process.env.MEMORY_NAMESPACE_VALIDATION_MODE;
+  if (raw === "warn" || raw === "enforce") {
+    return raw;
+  }
+  return "warn";
 }
 
 function resolveAgentRuntimeBaseUrl(): string {
