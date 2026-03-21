@@ -722,6 +722,483 @@ function resolveToolDetail(
   return null;
 }
 
+const RAW_SYSTEM_ERROR_CODES = new Set<string>([
+  "tool_execution_failed",
+  "unknown_error",
+]);
+
+const TOOL_ERROR_REASON_BY_CODE: Record<string, string> = {
+  approval_required: "承認が必要です",
+  approval_rejected: "承認が拒否されました",
+  approval_timeout: "承認がタイムアウトしました",
+  external_mcp_disabled: "許可されていない実行経路です",
+  invalid_tool_arguments: "入力値が不正です",
+  container_path_out_of_scope: "許可されたコンテナ範囲外です",
+  container_path_not_found: "対象が見つかりません",
+  container_path_not_file: "対象はファイルではありません",
+  container_file_too_large: "サイズ上限を超えています",
+  policy_denied_command: "許可リスト外コマンドです",
+  path_not_approved_for_session: "このセッションで未承認です",
+};
+
+function resolveToolPathArg(args: Record<string, unknown> | null): string | null {
+  if (!args) {
+    return null;
+  }
+  return (
+    readString(args, "path") ??
+    readString(args, "file_path") ??
+    readString(args, "filePath") ??
+    readString(args, "target_file") ??
+    readString(args, "targetFile") ??
+    readString(args, "file")
+  );
+}
+
+function parseScopeSuffix(scope: string | null, prefix: string): string | null {
+  if (!scope || !scope.startsWith(prefix)) {
+    return null;
+  }
+  const value = scope.slice(prefix.length).trim();
+  return value.length > 0 ? value : null;
+}
+
+function shortenIdentifier(raw: string): string {
+  const normalized = raw.trim();
+  if (normalized.length <= 6) {
+    return normalized;
+  }
+  return normalized.slice(0, 6);
+}
+
+function shortenUrlForDisplay(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    const rendered = `${url.origin}${url.pathname}`;
+    return truncateOperationLogValue(rendered, 72);
+  } catch {
+    return truncateOperationLogValue(rawUrl, 72);
+  }
+}
+
+function formatDiscordChannelTarget(
+  channelName: string | null | undefined,
+  channelId: string | null | undefined,
+): string {
+  const normalizedName = channelName?.trim();
+  const name =
+    normalizedName && normalizedName.length > 0
+      ? normalizedName.startsWith("#")
+        ? normalizedName
+        : `#${normalizedName}`
+      : "#session";
+  if (!channelId) {
+    return name;
+  }
+  return `${name} (${shortenIdentifier(channelId)})`;
+}
+
+function formatCommandTarget(args: Record<string, unknown> | null): string {
+  const command = readString(args, "command");
+  if (!command) {
+    return "対象不明";
+  }
+  const argList = readArray(args, "args")
+    ?.map((value) => (typeof value === "string" ? value : null))
+    .filter((value): value is string => value !== null) ?? [];
+  const rendered = [command, ...argList].join(" ");
+  return `$ ${truncateOperationLogValue(rendered, 120)}`;
+}
+
+function resolveToolTargetLine(input: {
+  toolName: string;
+  args: Record<string, unknown> | null;
+  resultPayload?: Record<string, unknown> | null;
+  detailsPayload?: Record<string, unknown> | null;
+  fallbackDetail?: string | null;
+}): string {
+  const scope = readString(input.detailsPayload, "scope");
+  if (
+    input.toolName === "read_file" ||
+    input.toolName === "edit_file" ||
+    input.toolName === "str_replace_editor" ||
+    input.toolName === "view" ||
+    input.toolName.endsWith("file_read") ||
+    input.toolName.endsWith("file_write") ||
+    input.toolName.endsWith("file_delete") ||
+    input.toolName.endsWith("file_list") ||
+    input.toolName === "container.file_deliver"
+  ) {
+    const pathValue =
+      resolveToolPathArg(input.args) ??
+      readString(input.resultPayload, "path") ??
+      scope ??
+      input.fallbackDetail;
+    return pathValue ? truncateOperationLogValue(pathValue, 120) : "対象不明";
+  }
+  if (input.toolName === "grep" || input.toolName === "glob") {
+    const pathValue =
+      readString(input.args, "path") ?? scope ?? input.fallbackDetail ?? ".";
+    return truncateOperationLogValue(pathValue, 120);
+  }
+  if (
+    input.toolName === "bash" ||
+    input.toolName === "container.cli_exec" ||
+    input.toolName === "host.cli_exec"
+  ) {
+    return formatCommandTarget(input.args);
+  }
+  if (input.toolName === "host.http_request") {
+    const method =
+      (readString(input.args, "method") ??
+        readString(input.resultPayload, "method") ??
+        "GET").toUpperCase();
+    const rawUrl =
+      readString(input.args, "url") ??
+      readString(input.resultPayload, "url") ??
+      scope;
+    const urlText = rawUrl ? shortenUrlForDisplay(rawUrl) : "(url不明)";
+    return `${method} ${urlText}`;
+  }
+  if (input.toolName === "discord.channel_history") {
+    const scopeChannelId = parseScopeSuffix(scope, "discord_channel:");
+    const channelId =
+      readString(input.resultPayload, "channel_id") ??
+      readString(input.args, "channelId") ??
+      scopeChannelId;
+    const channelName = readString(input.resultPayload, "channel_name");
+    return formatDiscordChannelTarget(channelName, channelId);
+  }
+  if (input.toolName === "discord.channel_list") {
+    return "Guild channels";
+  }
+  if (input.toolName.startsWith("memory.")) {
+    const namespace =
+      readString(input.args, "namespace") ??
+      readString(input.resultPayload, "namespace");
+    if (input.toolName === "memory.search") {
+      const query = readString(input.args, "query");
+      if (namespace && query) {
+        return truncateOperationLogValue(`${namespace}: ${query}`, 120);
+      }
+    }
+    const key = readString(input.args, "key") ?? readString(input.resultPayload, "key");
+    if (namespace && key) {
+      return truncateOperationLogValue(`${namespace}/${key}`, 120);
+    }
+    if (namespace) {
+      return truncateOperationLogValue(namespace, 120);
+    }
+    return "memory";
+  }
+  if (input.fallbackDetail) {
+    return truncateOperationLogValue(input.fallbackDetail, 120);
+  }
+  return "対象不明";
+}
+
+function formatListPreview(values: string[], count: number): string {
+  const top = values.slice(0, 3).join(", ");
+  const rendered = top.length > 0 ? top : "-";
+  return `${count}件: ${truncateOperationLogValue(rendered, 96)}`;
+}
+
+function readNamedEntries(values: unknown[] | null): string[] {
+  if (!values) {
+    return [];
+  }
+  return values
+    .map((value) => {
+      if (typeof value === "string") {
+        return value;
+      }
+      const record = asRecord(value);
+      return (
+        readString(record, "name") ??
+        readString(record, "key") ??
+        readString(record, "path") ??
+        readString(record, "channel_name")
+      );
+    })
+    .filter((value): value is string => Boolean(value))
+    .map((value) => truncateOperationLogValue(value, 36));
+}
+
+function countContentLines(content: string | null | undefined): number {
+  if (!content) {
+    return 0;
+  }
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (normalized.length === 0) {
+    return 0;
+  }
+  return normalized.split("\n").length;
+}
+
+function firstNonEmptyLine(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const line = value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 0);
+  if (!line) {
+    return null;
+  }
+  return truncateOperationLogValue(sanitizeToolProgressContent(line), 110);
+}
+
+function formatBytesHuman(bytes: number | null): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) {
+    return "size unknown";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveToolSuccessLine(
+  toolName: string,
+  resultPayload: Record<string, unknown> | null | undefined,
+  logExcerpt: string | null | undefined,
+): string {
+  const entries = readArray(resultPayload, "entries");
+  const listEntries = readArray(resultPayload, "channels") ?? entries;
+  if (
+    toolName === "read_file" ||
+    toolName === "view" ||
+    toolName === "container.file_read" ||
+    toolName === "host.file_read"
+  ) {
+    const lineCount = countContentLines(readString(resultPayload, "content"));
+    return lineCount > 0 ? `${lineCount}行を取得` : "読み取り完了";
+  }
+  if (toolName === "edit_file" || toolName === "str_replace_editor") {
+    const add = readNumber(resultPayload, "add") ?? readNumber(resultPayload, "added");
+    const del =
+      readNumber(resultPayload, "del") ??
+      readNumber(resultPayload, "deleted") ??
+      readNumber(resultPayload, "remove");
+    if (add !== null || del !== null) {
+      return `更新完了（+${add ?? 0}/-${del ?? 0}）`;
+    }
+    return "更新完了";
+  }
+  if (toolName === "container.file_write") {
+    const bytes = readNumber(resultPayload, "bytes");
+    return bytes !== null ? `${bytes} bytes 書き込み` : "書き込みました";
+  }
+  if (toolName === "host.file_write") {
+    return "書き込みました";
+  }
+  if (toolName === "container.file_delete" || toolName === "host.file_delete") {
+    return "削除しました";
+  }
+  if (toolName === "glob" || toolName === "container.file_list" || toolName === "host.file_list") {
+    const names = readNamedEntries(listEntries);
+    const count = listEntries?.length ?? 0;
+    return formatListPreview(names, count);
+  }
+  if (toolName === "grep") {
+    const matches =
+      readArray(resultPayload, "matches") ??
+      readArray(resultPayload, "results") ??
+      entries;
+    const count =
+      readNumber(resultPayload, "match_count") ??
+      readNumber(resultPayload, "count") ??
+      (matches ? matches.length : null);
+    const names = readNamedEntries(matches);
+    if (count !== null) {
+      return count > 0
+        ? `${count}件ヒット: ${truncateOperationLogValue(names.slice(0, 3).join(", ") || "-", 84)}`
+        : "0件ヒット";
+    }
+    const preview = firstNonEmptyLine(logExcerpt);
+    return preview ? `検索完了: ${preview}` : "検索完了";
+  }
+  if (toolName === "bash" || toolName === "container.cli_exec" || toolName === "host.cli_exec") {
+    const stdout = readString(resultPayload, "stdout") ?? logExcerpt;
+    const stdoutPreview = firstNonEmptyLine(stdout);
+    if (stdoutPreview) {
+      return stdoutPreview;
+    }
+    const exitCode =
+      readNumber(resultPayload, "exitCode") ?? readNumber(resultPayload, "exit_code");
+    if (exitCode !== null) {
+      return `exit=${exitCode}`;
+    }
+    return "コマンド実行完了";
+  }
+  if (toolName === "container.file_deliver") {
+    const fileName =
+      readString(resultPayload, "file_name") ??
+      (() => {
+        const sourcePath = readString(resultPayload, "path");
+        return sourcePath ? path.basename(sourcePath) : null;
+      })();
+    const size = formatBytesHuman(readNumber(resultPayload, "bytes"));
+    if (fileName) {
+      return `${fileName} (${size}) を返却`;
+    }
+    return "ファイルを返却しました";
+  }
+  if (toolName === "host.http_request") {
+    const status = readNumber(resultPayload, "status");
+    return status !== null ? `HTTP ${status}` : "HTTP リクエスト完了";
+  }
+  if (toolName === "memory.search") {
+    const foundEntries = readArray(resultPayload, "entries");
+    const keys = readNamedEntries(foundEntries);
+    const count = foundEntries?.length ?? 0;
+    return count > 0 ? `${count}件ヒット: ${keys.slice(0, 3).join(", ")}` : "0件ヒット";
+  }
+  if (toolName === "memory.get") {
+    const found = readBoolean(resultPayload, "found");
+    if (found === false) {
+      return "見つかりません";
+    }
+    return "見つかりました";
+  }
+  if (toolName === "memory.upsert") {
+    return "保存しました";
+  }
+  if (toolName === "memory.delete") {
+    return "削除しました";
+  }
+  if (toolName === "discord.channel_history") {
+    const historyEntries = readArray(resultPayload, "entries");
+    if (!historyEntries || historyEntries.length === 0) {
+      return "履歴0件";
+    }
+    const latest = asRecord(historyEntries[historyEntries.length - 1]);
+    const speaker =
+      readString(latest, "nickname") ??
+      readString(latest, "username") ??
+      readString(latest, "userId") ??
+      "unknown";
+    const content = readString(latest, "content") ?? "(本文なし)";
+    const preview = truncateOperationLogValue(sanitizeToolProgressContent(content), 64);
+    const remaining = historyEntries.length - 1;
+    return remaining > 0
+      ? `${speaker}: ${preview}（他${remaining}件）`
+      : `${speaker}: ${preview}`;
+  }
+  if (toolName === "discord.channel_list") {
+    const channels = readArray(resultPayload, "channels");
+    const names =
+      channels
+        ?.map((value) => {
+          const channel = asRecord(value);
+          const rawName = readString(channel, "channel_name");
+          if (!rawName) {
+            return null;
+          }
+          return rawName.startsWith("#") ? rawName : `#${rawName}`;
+        })
+        .filter((value): value is string => value !== null) ?? [];
+    return formatListPreview(names, channels?.length ?? 0);
+  }
+  const excerpt = firstNonEmptyLine(logExcerpt);
+  return excerpt ?? "処理が完了しました";
+}
+
+function resolveToolErrorLine(input: {
+  toolName: string;
+  targetLine: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  resultPayload?: Record<string, unknown> | null;
+  detailsPayload?: Record<string, unknown> | null;
+}): string {
+  const rawMessage = truncateOperationLogValue(
+    sanitizeToolProgressContent(input.errorMessage ?? "不明なエラーです。"),
+    200,
+  );
+  if (!input.errorCode || RAW_SYSTEM_ERROR_CODES.has(input.errorCode)) {
+    return rawMessage;
+  }
+  const reason = TOOL_ERROR_REASON_BY_CODE[input.errorCode];
+  if (!reason) {
+    return rawMessage;
+  }
+  if (
+    input.toolName === "read_file" ||
+    input.toolName === "view" ||
+    input.toolName === "container.file_read" ||
+    input.toolName === "host.file_read"
+  ) {
+    return `${input.targetLine} の読み取りに失敗しました（${reason}）`;
+  }
+  if (input.toolName === "edit_file" || input.toolName === "str_replace_editor") {
+    return `${input.targetLine} の更新に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "grep" || input.toolName === "memory.search") {
+    return `${input.targetLine} の検索に失敗しました（${reason}）`;
+  }
+  if (
+    input.toolName === "glob" ||
+    input.toolName === "container.file_list" ||
+    input.toolName === "host.file_list" ||
+    input.toolName === "discord.channel_list"
+  ) {
+    if (input.toolName === "discord.channel_list") {
+      return `チャンネル一覧の取得に失敗しました（${reason}）`;
+    }
+    return `${input.targetLine} の一覧取得に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "container.file_write" || input.toolName === "host.file_write") {
+    return `${input.targetLine} への書き込みに失敗しました（${reason}）`;
+  }
+  if (input.toolName === "container.file_delete" || input.toolName === "host.file_delete") {
+    return `${input.targetLine} の削除に失敗しました（${reason}）`;
+  }
+  if (
+    input.toolName === "bash" ||
+    input.toolName === "container.cli_exec" ||
+    input.toolName === "host.cli_exec"
+  ) {
+    const exitCode =
+      readNumber(input.detailsPayload, "exitCode") ??
+      readNumber(input.detailsPayload, "exit_code") ??
+      readNumber(input.resultPayload, "exitCode") ??
+      readNumber(input.resultPayload, "exit_code");
+    if (exitCode !== null) {
+      return `コマンド実行に失敗しました（exit=${exitCode} / ${reason}）`;
+    }
+    return `コマンド実行に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "container.file_deliver") {
+    return `${input.targetLine} の返却に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "host.http_request") {
+    const statusCode =
+      readNumber(input.detailsPayload, "status") ?? readNumber(input.resultPayload, "status");
+    if (statusCode !== null) {
+      return `${input.targetLine} で失敗しました（HTTP ${statusCode} / ${reason}）`;
+    }
+    return `${input.targetLine} で失敗しました（${reason}）`;
+  }
+  if (input.toolName === "memory.get") {
+    return `${input.targetLine} の取得に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "memory.upsert") {
+    return `${input.targetLine} の保存に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "memory.delete") {
+    return `${input.targetLine} の削除に失敗しました（${reason}）`;
+  }
+  if (input.toolName === "discord.channel_history") {
+    return `${input.targetLine} の履歴取得に失敗しました（${reason}）`;
+  }
+  return `処理に失敗しました（${reason}）`;
+}
+
 function buildToolProgressMessageContent(input: {
   toolName: string;
   executionTarget?: string | null;
@@ -730,72 +1207,52 @@ function buildToolProgressMessageContent(input: {
   detail: string | null;
   status: "pending" | "waiting_approval" | "ok" | "error";
   resultPayload?: Record<string, unknown> | null;
-  errorMessage?: string;
+  detailsPayload?: Record<string, unknown> | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
   logExcerpt?: string | null;
 }): string {
   const toolEmoji = resolveToolEmoji(input.toolName);
-  const lines = [
-    `[tool-progress] ${toolEmoji} ${input.toolName}`,
-    `status=${input.status}`,
-  ];
-  if (input.executionTarget) {
-    lines.push(`execution_target=${input.executionTarget}`);
-  }
-  if (input.reason) {
-    lines.push(
-      `reason=${truncateOperationLogValue(
-        input.reason.replace(/\r?\n/g, "\\n"),
-        180,
-      )}`,
-    );
-  }
-  if (input.detail) {
-    lines.push(`detail=${truncateOperationLogValue(input.detail, 160)}`);
-  }
-  if (input.argumentsPayload) {
-    lines.push(
-      `arguments=${toOperationLogJson(
-        input.argumentsPayload,
-        BOT_OPERATION_LOG_MAX_FIELD_CHARS * 2,
-      )}`,
-    );
-  }
+  const targetLine = resolveToolTargetLine({
+    toolName: input.toolName,
+    args: input.argumentsPayload ?? null,
+    resultPayload: input.resultPayload,
+    detailsPayload: input.detailsPayload,
+    fallbackDetail: input.detail,
+  });
+  const lines = [`${toolEmoji} ${input.toolName}`, targetLine];
   if (input.status === "pending") {
-    lines.push("progress=⏳ 実行中...");
+    lines.push("⏳ 実行中");
+    const reason =
+      input.reason && input.reason.trim().length > 0
+        ? `理由: ${truncateOperationLogValue(sanitizeToolProgressContent(input.reason), 96)}`
+        : "実行を開始しました";
+    lines.push(reason);
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   if (input.status === "waiting_approval") {
-    lines.push("progress=🛂 承認待ち");
-    if (input.errorMessage) {
-      lines.push(`approval=${truncateOperationLogValue(input.errorMessage, 520)}`);
-    }
-    if (input.logExcerpt) {
-      lines.push(`log_excerpt=${input.logExcerpt}`);
-    }
+    lines.push("🛂 承認待ち");
+    lines.push(`${targetLine} の実行には承認が必要です`);
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   if (input.status === "ok") {
-    lines.push("progress=✅ 成功");
-    if (input.logExcerpt) {
-      lines.push(`log_excerpt=${input.logExcerpt}`);
-    } else if (input.resultPayload) {
-      lines.push(
-        `result=${toOperationLogJson(
-          input.resultPayload,
-          BOT_OPERATION_LOG_MAX_FIELD_CHARS * 2,
-        )}`,
-      );
-    }
+    lines.push("✅ 成功");
+    lines.push(
+      resolveToolSuccessLine(input.toolName, input.resultPayload, input.logExcerpt),
+    );
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
-  const errorMessage = input.errorMessage
-    ? truncateOperationLogValue(input.errorMessage, 520)
-    : "unknown_error";
-  lines.push(`progress=❌ 失敗`);
-  lines.push(`error=${errorMessage}`);
-  if (input.logExcerpt) {
-    lines.push(`log_excerpt=${input.logExcerpt}`);
-  }
+  lines.push("❌ 失敗");
+  lines.push(
+    resolveToolErrorLine({
+      toolName: input.toolName,
+      targetLine,
+      errorCode: input.errorCode ?? "unknown_error",
+      errorMessage: input.errorMessage ?? "不明なエラーです。",
+      resultPayload: input.resultPayload,
+      detailsPayload: input.detailsPayload,
+    }),
+  );
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
 }
 
@@ -959,9 +1416,13 @@ async function updateToolProgressResultMessage(
     selectToolLogExcerpt(resultPayload) ??
     selectToolLogExcerpt(detailsPayload) ??
     selectToolLogExcerpt(eventPayload);
+  const shouldUseRawSystemMessage =
+    errorCode === "tool_execution_failed" || errorCode === "unknown_error";
   const mergedError =
     displayStatus === "error" || displayStatus === "waiting_approval"
-      ? `${errorCode ?? "tool_error"}: ${errorMessage ?? "tool execution failed"}`
+      ? shouldUseRawSystemMessage
+        ? (errorMessage ?? "tool execution failed")
+        : (errorMessage ?? "tool execution failed")
       : undefined;
   const content = buildToolProgressMessageContent({
     toolName: state.toolName,
@@ -971,6 +1432,8 @@ async function updateToolProgressResultMessage(
     detail: state.detail,
     status: displayStatus,
     resultPayload,
+    detailsPayload,
+    errorCode,
     errorMessage: mergedError,
     logExcerpt,
   });
@@ -2117,6 +2580,10 @@ function summarizeToolErrors(toolResults: unknown[]): string[] {
       readString(record, "error_code") ?? readString(record, "code") ?? "unknown_error";
     const message =
       readString(record, "message") ?? "ツール実行でエラーが発生しました。";
+    if (errorCode === "tool_execution_failed" || errorCode === "unknown_error") {
+      summaries.push(message);
+      continue;
+    }
     summaries.push(`${errorCode}: ${message}`);
   }
   return summaries;
@@ -2293,6 +2760,22 @@ function readNumber(
 ): number | null {
   const value = record?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readBoolean(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): boolean | null {
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function readArray(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): unknown[] | null {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : null;
 }
 
 function readRecord(
