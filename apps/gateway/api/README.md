@@ -241,6 +241,9 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 - `discord.profile_get`
 - `discord.channel_history`
 
+`discord.profile_get` は、セッションに紐づくイベント（開始時メタデータ/ユーザーメッセージ）から
+`userId/username/nickname/channelId/channelName/threadId/threadName/updatedAt` を返します。
+
 ### スモークテスト
 
 ```bash

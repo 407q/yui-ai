@@ -91,6 +91,14 @@ export interface ListDiscordRecentMessagesInput {
   limit: number;
 }
 
+export interface DiscordProfileContextRecord {
+  username: string | null;
+  nickname: string | null;
+  channelName: string | null;
+  threadName: string | null;
+  updatedAt: Date | null;
+}
+
 export interface GatewayRepository {
   ping(): Promise<void>;
   createSessionAndTask(
@@ -162,6 +170,10 @@ export interface GatewayRepository {
     input: ResolveMemoryBacklinkInput,
   ): Promise<MemoryBacklinkRecord[]>;
   deleteMemory(userId: string, namespace: string, key: string): Promise<void>;
+  findDiscordProfileContextBySessionId(
+    sessionId: string,
+    userId: string,
+  ): Promise<DiscordProfileContextRecord>;
   listDiscordRecentMessages(
     input: ListDiscordRecentMessagesInput,
   ): Promise<DiscordRecentMessageRecord[]>;
@@ -877,6 +889,80 @@ export class PostgresGatewayRepository implements GatewayRepository {
     return rows.map(toDiscordRecentMessageRecord).reverse();
   }
 
+  async findDiscordProfileContextBySessionId(
+    sessionId: string,
+    userId: string,
+  ): Promise<DiscordProfileContextRecord> {
+    const eventTypes = [
+      "thread.task.start",
+      "thread.message.received",
+      "discord.message.logged",
+    ];
+    const { rows } = await this.pool.query<DiscordProfileContextEventRow>(
+      `
+      SELECT
+        e.event_type,
+        e.payload_json,
+        e."timestamp"
+      FROM task_events e
+      INNER JOIN tasks t ON t.task_id = e.task_id
+      WHERE t.session_id = $1
+        AND e.event_type = ANY($2::text[])
+      ORDER BY e."timestamp" DESC
+      LIMIT 200
+      `,
+      [sessionId, eventTypes],
+    );
+
+    let username: string | null = null;
+    let nickname: string | null = null;
+    let channelName: string | null = null;
+    let threadName: string | null = null;
+    let updatedAt: Date | null = null;
+
+    for (const row of rows) {
+      if (!updatedAt) {
+        updatedAt = row.timestamp;
+      }
+      const payload = toPayloadRecord(row.payload_json);
+      if (!payload) {
+        continue;
+      }
+      const fromThreadMetadata =
+        row.event_type === "thread.task.start" ||
+        row.event_type === "thread.message.received";
+      const fromUserMessage =
+        row.event_type === "discord.message.logged" &&
+        readPayloadString(payload, "role") === "user" &&
+        readPayloadString(payload, "userId") === userId;
+
+      if (!username && (fromThreadMetadata || fromUserMessage)) {
+        username = readPayloadString(payload, "username");
+      }
+      if (!nickname && (fromThreadMetadata || fromUserMessage)) {
+        nickname = readPayloadString(payload, "nickname");
+      }
+      if (!channelName && fromThreadMetadata) {
+        channelName = readPayloadString(payload, "channelName");
+      }
+      if (!threadName && fromThreadMetadata) {
+        threadName = readPayloadString(payload, "threadName");
+      }
+
+      if (username && nickname && channelName && threadName) {
+        break;
+      }
+    }
+
+    return {
+      username,
+      nickname,
+      channelName,
+      threadName,
+      updatedAt,
+    };
+  }
+
   async listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]> {
     const { rows } = await this.pool.query<SessionRow>(
       `
@@ -1030,6 +1116,12 @@ interface DiscordRecentMessageRow {
   timestamp: Date;
 }
 
+interface DiscordProfileContextEventRow {
+  event_type: string;
+  payload_json: Record<string, unknown>;
+  timestamp: Date;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -1140,4 +1232,23 @@ function requireRow<T>(row: T | undefined, context: string): T {
   }
 
   return row;
+}
+
+function toPayloadRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readPayloadString(
+  payload: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = payload[key];
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }

@@ -684,11 +684,43 @@ async function main(): Promise<void> {
     });
     assert(discordProfileResult.status === "ok", "discord.profile_get should succeed");
     const discordProfilePayload = discordProfileResult.result as {
-      profile: { userId: string };
+      profile: {
+        userId: string;
+        username: string | null;
+        nickname: string | null;
+        channelId: string;
+        channelName: string | null;
+        threadId: string;
+        threadName: string | null;
+      };
     };
     assert(
       discordProfilePayload.profile.userId === userId,
       "discord.profile_get should return current session user",
+    );
+    assert(
+      discordProfilePayload.profile.username === "smoke-user",
+      "discord.profile_get should return latest username",
+    );
+    assert(
+      discordProfilePayload.profile.nickname === "smoke-nick",
+      "discord.profile_get should return latest nickname",
+    );
+    assert(
+      discordProfilePayload.profile.channelId === channelId,
+      "discord.profile_get should return current channel id",
+    );
+    assert(
+      discordProfilePayload.profile.channelName === "smoke-channel",
+      "discord.profile_get should return current channel name",
+    );
+    assert(
+      discordProfilePayload.profile.threadId === threadId,
+      "discord.profile_get should return current thread id",
+    );
+    assert(
+      discordProfilePayload.profile.threadName === "smoke-thread",
+      "discord.profile_get should return current thread name",
     );
 
     const discordChannelHistoryResult = await callMcpTool(app, reporter, {

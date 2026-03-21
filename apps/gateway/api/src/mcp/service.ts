@@ -472,15 +472,19 @@ export class McpToolService {
             },
           );
         }
+        const context = await this.repository.findDiscordProfileContextBySessionId(
+          session.sessionId,
+          session.userId,
+        );
         const profile: DiscordProfileRecord = {
           userId: session.userId,
-          username: null,
-          nickname: null,
+          username: context.username,
+          nickname: context.nickname,
           channelId: session.channelId,
-          channelName: null,
+          channelName: context.channelName,
           threadId: session.threadId,
-          threadName: null,
-          updatedAt: session.updatedAt.toISOString(),
+          threadName: context.threadName,
+          updatedAt: (context.updatedAt ?? session.updatedAt).toISOString(),
         };
         return {
           profile,
