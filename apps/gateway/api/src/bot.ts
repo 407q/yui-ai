@@ -394,7 +394,7 @@ interface ToolProgressMessageState {
   reason: string | null;
   argumentsPayload: Record<string, unknown> | null;
   detail: string | null;
-  status: "pending" | "ok" | "error";
+  status: "pending" | "waiting_approval" | "ok" | "error";
   messageId: Snowflake;
 }
 
@@ -705,7 +705,7 @@ function buildToolProgressMessageContent(input: {
   reason?: string | null;
   argumentsPayload?: Record<string, unknown> | null;
   detail: string | null;
-  status: "pending" | "ok" | "error";
+  status: "pending" | "waiting_approval" | "ok" | "error";
   resultPayload?: Record<string, unknown> | null;
   errorMessage?: string;
   logExcerpt?: string | null;
@@ -739,6 +739,16 @@ function buildToolProgressMessageContent(input: {
   }
   if (input.status === "pending") {
     lines.push("progress=⏳ 実行中...");
+    return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+  }
+  if (input.status === "waiting_approval") {
+    lines.push("progress=🛂 承認待ち");
+    if (input.errorMessage) {
+      lines.push(`approval=${truncateOperationLogValue(input.errorMessage, 520)}`);
+    }
+    if (input.logExcerpt) {
+      lines.push(`log_excerpt=${input.logExcerpt}`);
+    }
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   if (input.status === "ok") {
@@ -916,6 +926,10 @@ async function updateToolProgressResultMessage(
   }
   const errorCode = readString(eventPayload, "error_code");
   const errorMessage = readString(eventPayload, "message");
+  const displayStatus: "waiting_approval" | "ok" | "error" =
+    status === "error" && errorCode === "approval_required"
+      ? "waiting_approval"
+      : status;
   const resultPayload = readRecord(eventPayload, "result");
   const detailsPayload = readRecord(eventPayload, "details");
   const logExcerpt =
@@ -923,7 +937,7 @@ async function updateToolProgressResultMessage(
     selectToolLogExcerpt(detailsPayload) ??
     selectToolLogExcerpt(eventPayload);
   const mergedError =
-    status === "error"
+    displayStatus === "error" || displayStatus === "waiting_approval"
       ? `${errorCode ?? "tool_error"}: ${errorMessage ?? "tool execution failed"}`
       : undefined;
   const content = buildToolProgressMessageContent({
@@ -932,7 +946,7 @@ async function updateToolProgressResultMessage(
     reason: state.reason,
     argumentsPayload: state.argumentsPayload,
     detail: state.detail,
-    status,
+    status: displayStatus,
     resultPayload,
     errorMessage: mergedError,
     logExcerpt,
@@ -943,7 +957,7 @@ async function updateToolProgressResultMessage(
     components: [],
     files: [],
   });
-  state.status = status;
+  state.status = displayStatus;
 }
 
 async function syncToolProgressMessages(
