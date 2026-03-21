@@ -44,6 +44,26 @@ interface RuntimeFeedbackState {
   attachmentSources: GatewayAttachmentSource[];
 }
 
+interface ContextEnvelopeDiscordRecentMessagePayload {
+  role: "user" | "assistant";
+  userId?: string;
+  username?: string;
+  nickname?: string;
+  content: string;
+  timestamp?: string;
+}
+
+interface ContextEnvelopeDiscordPayload {
+  userId: string;
+  username?: string;
+  nickname?: string;
+  channelId: string;
+  channelName?: string;
+  threadId: string;
+  threadName?: string;
+  recentMessages: ContextEnvelopeDiscordRecentMessagePayload[];
+}
+
 interface QueuedRun {
   prompt: string;
   attachments: GatewayAttachmentSource[];
@@ -73,8 +93,12 @@ interface ToolApprovalRequest {
 interface MockSession {
   id: string;
   ownerUserId: Snowflake;
+  ownerUsername?: string;
+  ownerNickname?: string;
   channelId: Snowflake;
+  channelName?: string;
   threadId: Snowflake;
+  threadName?: string;
   gatewaySessionId?: string;
   status: SessionStatus;
   createdAt: Date;
@@ -163,6 +187,8 @@ const BOT_DELIVERED_FILE_MAX_COUNT = parsePositiveInt(
 );
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_LINES = 8;
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS = 720;
+const CONTEXT_DISCORD_RECENT_MESSAGE_MAX = 8;
+const CONTEXT_DISCORD_MESSAGE_MAX_CHARS = 280;
 
 function createDiscordClient(): Client {
   return new Client({
@@ -337,6 +363,7 @@ interface GatewayRunContextEnvelopePayload {
     retryHint?: string;
     attachmentSources: GatewayAttachmentSource[];
   };
+  discord: ContextEnvelopeDiscordPayload;
 }
 
 interface GatewayRunRequestPayload {
@@ -1047,6 +1074,7 @@ async function ensureGatewayTaskForRun(
   session: MockSession,
   prompt: string,
   attachmentNames: string[],
+  discord: ContextEnvelopeDiscordPayload,
 ): Promise<void> {
   if (!session.gatewaySessionId) {
     await sendOperationLog(session.threadId, "gateway.mentions.start", [
@@ -1056,8 +1084,12 @@ async function ensureGatewayTaskForRun(
       `- request=${toOperationLogJson(
         {
           userId: session.ownerUserId,
+          username: discord.username,
+          nickname: discord.nickname,
           channelId: session.channelId,
+          channelName: discord.channelName,
           threadId: session.threadId,
+          threadName: discord.threadName,
           prompt,
           attachmentNames,
         },
@@ -1069,8 +1101,12 @@ async function ensureGatewayTaskForRun(
       "/v1/discord/mentions/start",
       {
         userId: session.ownerUserId,
+        username: discord.username,
+        nickname: discord.nickname,
         channelId: session.channelId,
+        channelName: discord.channelName,
         threadId: session.threadId,
+        threadName: discord.threadName,
         prompt,
         attachmentNames,
       },
@@ -1092,8 +1128,12 @@ async function ensureGatewayTaskForRun(
     `- request=${toOperationLogJson(
       {
         userId: session.ownerUserId,
+        username: discord.username,
+        nickname: discord.nickname,
         prompt,
         attachmentNames,
+        channelName: discord.channelName,
+        threadName: discord.threadName,
       },
       BOT_OPERATION_LOG_MAX_FIELD_CHARS,
     )}`,
@@ -1103,8 +1143,12 @@ async function ensureGatewayTaskForRun(
     `/v1/threads/${session.threadId}/messages`,
     {
       userId: session.ownerUserId,
+      username: discord.username,
+      nickname: discord.nickname,
       prompt,
       attachmentNames,
+      channelName: discord.channelName,
+      threadName: discord.threadName,
     },
   );
   session.currentTaskId = task.taskId;
@@ -1171,6 +1215,157 @@ function createRuntimeFeedbackState(): RuntimeFeedbackState {
   };
 }
 
+function normalizeContextMessageValue(value: string, maxChars: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxChars - 3)}...`;
+}
+
+function extractThreadDisplayName(thread: AnyThreadChannel): string | undefined {
+  const name = thread.name?.trim();
+  return name && name.length > 0 ? name : undefined;
+}
+
+function extractThreadParentName(thread: AnyThreadChannel): string | undefined {
+  const parent = thread.parent;
+  if (!parent) {
+    return undefined;
+  }
+  const name = parent.name?.trim();
+  return name && name.length > 0 ? name : undefined;
+}
+
+function resolveDiscordUsername(
+  thread: AnyThreadChannel,
+  userId: string,
+): string | undefined {
+  const member = thread.members.cache.get(userId);
+  const username = member?.user?.username?.trim();
+  if (username && username.length > 0) {
+    return username;
+  }
+  const guildMember = thread.guild.members.cache.get(userId);
+  const guildUsername = guildMember?.user.username?.trim();
+  return guildUsername && guildUsername.length > 0 ? guildUsername : undefined;
+}
+
+function resolveDiscordNickname(
+  thread: AnyThreadChannel,
+  userId: string,
+): string | undefined {
+  const guildMember = thread.guild.members.cache.get(userId);
+  const nickname =
+    guildMember?.nickname?.trim() ??
+    guildMember?.displayName?.trim();
+  return nickname && nickname.length > 0 ? nickname : undefined;
+}
+
+async function buildRecentDiscordMessages(
+  thread: AnyThreadChannel,
+  includeAssistant: boolean,
+): Promise<ContextEnvelopeDiscordRecentMessagePayload[]> {
+  const fetched = await thread.messages.fetch({ limit: 30 });
+  const chronological = Array.from(fetched.values()).sort(
+    (left, right) => left.createdTimestamp - right.createdTimestamp,
+  );
+  const result: ContextEnvelopeDiscordRecentMessagePayload[] = [];
+  for (const message of chronological) {
+    if (message.author.bot) {
+      if (!includeAssistant) {
+        continue;
+      }
+      if (message.author.id !== client.user?.id) {
+        continue;
+      }
+      const content = normalizeContextMessageValue(
+        message.content,
+        CONTEXT_DISCORD_MESSAGE_MAX_CHARS,
+      );
+      if (!content) {
+        continue;
+      }
+      result.push({
+        role: "assistant",
+        userId: message.author.id,
+        username: message.author.username,
+        nickname: undefined,
+        content,
+        timestamp: new Date(message.createdTimestamp).toISOString(),
+      });
+      continue;
+    }
+    const content = normalizeContextMessageValue(
+      message.content,
+      CONTEXT_DISCORD_MESSAGE_MAX_CHARS,
+    );
+    if (!content) {
+      continue;
+    }
+    result.push({
+      role: "user",
+      userId: message.author.id,
+      username: message.author.username,
+      nickname:
+        message.member?.nickname ??
+        message.member?.displayName ??
+        undefined,
+      content,
+      timestamp: new Date(message.createdTimestamp).toISOString(),
+    });
+  }
+  if (result.length <= CONTEXT_DISCORD_RECENT_MESSAGE_MAX) {
+    return result;
+  }
+  return result.slice(result.length - CONTEXT_DISCORD_RECENT_MESSAGE_MAX);
+}
+
+async function buildDiscordContextPayload(
+  session: MockSession,
+): Promise<ContextEnvelopeDiscordPayload> {
+  const channel = await client.channels.fetch(session.threadId);
+  if (!isThreadChannel(channel)) {
+    throw new Error("session_thread_not_found");
+  }
+  const username = resolveDiscordUsername(channel, session.ownerUserId);
+  const nickname = resolveDiscordNickname(channel, session.ownerUserId);
+  const recentMessages = await buildRecentDiscordMessages(channel, true);
+  return {
+    userId: session.ownerUserId,
+    username: session.ownerUsername ?? username,
+    nickname: session.ownerNickname ?? nickname,
+    channelId: session.channelId,
+    channelName: session.channelName ?? extractThreadParentName(channel),
+    threadId: session.threadId,
+    threadName: session.threadName ?? extractThreadDisplayName(channel),
+    recentMessages,
+  };
+}
+
+async function resolveDiscordContextPayloadForRun(
+  session: MockSession,
+): Promise<ContextEnvelopeDiscordPayload> {
+  try {
+    return await buildDiscordContextPayload(session);
+  } catch (error) {
+    await sendOperationLog(session.threadId, "context.discord.fallback", [
+      "- reason=failed_to_fetch_discord_context",
+      `- detail=${truncateOperationLogValue(summarizeError(error), BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
+    ]);
+    return {
+      userId: session.ownerUserId,
+      username: session.ownerUsername,
+      nickname: session.ownerNickname,
+      channelId: session.channelId,
+      channelName: session.channelName,
+      threadId: session.threadId,
+      threadName: session.threadName,
+      recentMessages: [],
+    };
+  }
+}
+
 function toContextEnvelopeSessionStatus(status: SessionStatus): string {
   return status;
 }
@@ -1228,6 +1423,7 @@ function buildAttachmentSources(attachments: Message["attachments"]): GatewayAtt
 function buildRunContextEnvelopePayload(
   session: MockSession,
   attachmentSources: GatewayAttachmentSource[],
+  discord: ContextEnvelopeDiscordPayload,
 ): GatewayRunContextEnvelopePayload {
   return {
     behavior: {
@@ -1245,6 +1441,7 @@ function buildRunContextEnvelopePayload(
       retryHint: session.runtimeFeedback.retryHint,
       attachmentSources: [...attachmentSources],
     },
+    discord,
   };
 }
 
@@ -1253,6 +1450,7 @@ function buildRunRequestPayload(
   prompt: string,
   attachments: GatewayAttachmentSource[],
   toolCalls: GatewayAgentToolCall[],
+  discord: ContextEnvelopeDiscordPayload,
 ): GatewayRunRequestPayload {
   const attachmentNames = attachments.map((attachment) => attachment.name);
   return {
@@ -1261,7 +1459,7 @@ function buildRunRequestPayload(
     userId: session.ownerUserId,
     prompt,
     attachmentNames,
-    contextEnvelope: buildRunContextEnvelopePayload(session, attachments),
+    contextEnvelope: buildRunContextEnvelopePayload(session, attachments, discord),
     toolCalls,
   };
 }
@@ -2185,15 +2383,22 @@ async function runAgentTaskAttempt(
   prompt: string,
   attachments: GatewayAttachmentSource[],
   toolCalls: GatewayAgentToolCall[],
+  discord: ContextEnvelopeDiscordPayload,
   runSequence: number,
 ): Promise<GatewayAgentTaskStatusResponse> {
   const attachmentNames = attachments.map((attachment) => attachment.name);
-  await ensureGatewayTaskForRun(session, prompt, attachmentNames);
+  await ensureGatewayTaskForRun(session, prompt, attachmentNames, discord);
   if (!session.gatewaySessionId || !session.currentTaskId) {
     throw new Error("Gateway task is not initialized.");
   }
 
-  const runPayload = buildRunRequestPayload(session, prompt, attachments, toolCalls);
+  const runPayload = buildRunRequestPayload(
+    session,
+    prompt,
+    attachments,
+    toolCalls,
+    discord,
+  );
   await sendOperationLog(session.threadId, "gateway.agent.run.request", [
     `- run_sequence=${runSequence}`,
     `- session_id=${runPayload.sessionId}`,
@@ -2232,6 +2437,7 @@ async function waitForAgentTaskWithToolProgress(
   prompt: string,
   attachments: GatewayAttachmentSource[],
   toolCalls: GatewayAgentToolCall[],
+  discord: ContextEnvelopeDiscordPayload,
   runSequence: number,
 ): Promise<GatewayAgentTaskStatusResponse> {
   const terminalPromise = runAgentTaskAttempt(
@@ -2239,6 +2445,7 @@ async function waitForAgentTaskWithToolProgress(
     prompt,
     attachments,
     toolCalls,
+    discord,
     runSequence,
   );
   while (true) {
@@ -2417,6 +2624,7 @@ async function runAgentTask(
   };
 
   try {
+    const discordContext = await resolveDiscordContextPayloadForRun(session);
     if (attachmentNames.length > 0) {
       await sendToThread(
         session.threadId,
@@ -2468,6 +2676,7 @@ async function runAgentTask(
         prompt,
         attachments,
         toolCalls,
+        discordContext,
         runSequence,
       );
       clearTyping();
@@ -2813,11 +3022,18 @@ async function startSessionFromMention(message: Message): Promise<void> {
   });
 
   const now = new Date();
+  const channelName = message.channel?.isTextBased()
+    ? (message.channel as { name?: string }).name
+    : undefined;
   const session: MockSession = {
     id: newId("ses"),
     ownerUserId: message.author.id,
+    ownerUsername: message.author.username,
+    ownerNickname: message.member?.nickname ?? message.member?.displayName ?? undefined,
     channelId: message.channelId,
+    channelName: channelName && channelName.trim().length > 0 ? channelName : undefined,
     threadId: thread.id,
+    threadName: thread.name,
     status: "running",
     createdAt: now,
     updatedAt: now,
@@ -2974,6 +3190,13 @@ async function handleThreadMessage(message: Message): Promise<void> {
   }
 
   touchSession(session);
+  session.ownerUsername = message.author.username;
+  session.ownerNickname = message.member?.nickname ?? message.member?.displayName ?? undefined;
+  session.threadName = message.channel.name;
+  const parentName = message.channel.parent?.name;
+  if (parentName && parentName.trim().length > 0) {
+    session.channelName = parentName;
+  }
 
   if (session.status === "closed_by_user") {
     await message.reply("このセッションは `/close` で終了済みです。");

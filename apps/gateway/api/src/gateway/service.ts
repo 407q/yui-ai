@@ -9,6 +9,7 @@ import {
   buildPromptWithContextEnvelope,
   type ContextEnvelopeAttachmentRuntimeInput,
   type ContextEnvelopeBotMode,
+  type ContextEnvelopeDiscordInput,
   type ContextEnvelopeInfrastructureStatus,
   type ContextEnvelopeTaskTerminalStatus,
 } from "../prompt/contextEnvelope.js";
@@ -35,8 +36,12 @@ export interface GatewayApiServiceOptions {
 
 export interface MentionStartInput {
   userId: string;
+  username?: string;
+  nickname?: string;
   channelId: string;
+  channelName?: string;
   threadId: string;
+  threadName?: string;
   prompt: string;
   attachmentNames: string[];
 }
@@ -44,6 +49,10 @@ export interface MentionStartInput {
 export interface ThreadMessageInput {
   threadId: string;
   userId: string;
+  username?: string;
+  nickname?: string;
+  channelName?: string;
+  threadName?: string;
   prompt: string;
   attachmentNames: string[];
 }
@@ -96,6 +105,23 @@ export interface AgentTaskRunInput {
       retryHint?: string;
       attachmentSources?: AgentTaskAttachment[];
     };
+    discord?: {
+      userId: string;
+      username?: string;
+      nickname?: string;
+      channelId: string;
+      channelName?: string;
+      threadId: string;
+      threadName?: string;
+      recentMessages?: Array<{
+        role: "user" | "assistant";
+        userId?: string;
+        username?: string;
+        nickname?: string;
+        content: string;
+        timestamp?: string;
+      }>;
+    };
   };
   toolCalls?: AgentRuntimeToolCall[];
 }
@@ -109,6 +135,11 @@ interface AgentTaskStagedAttachmentFile {
   name: string;
   path: string;
   bytes: number;
+}
+
+interface AgentTaskRuntimeResult {
+  final_answer: string;
+  tool_results: unknown[];
 }
 
 export interface AgentTaskStatusInput {
@@ -174,9 +205,29 @@ export class GatewayApiService {
         prompt: input.prompt,
         attachmentNames: input.attachmentNames,
         requestedBy: input.userId,
+        username: input.username ?? null,
+        nickname: input.nickname ?? null,
+        channelName: input.channelName ?? null,
+        threadName: input.threadName ?? null,
       },
       timestamp: now,
     });
+    const normalizedPrompt = normalizeDiscordMessageContent(input.prompt);
+    if (normalizedPrompt.length > 0) {
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId,
+        eventType: "discord.message.logged",
+        payloadJson: {
+          role: "user",
+          userId: input.userId,
+          username: input.username ?? null,
+          nickname: input.nickname ?? null,
+          content: normalizedPrompt,
+        },
+        timestamp: now,
+      });
+    }
 
     return {
       session,
@@ -227,10 +278,30 @@ export class GatewayApiService {
         prompt: input.prompt,
         attachmentNames: input.attachmentNames,
         requestedBy: input.userId,
+        username: input.username ?? null,
+        nickname: input.nickname ?? null,
+        channelName: input.channelName ?? null,
+        threadName: input.threadName ?? null,
         resumedFromIdle,
       },
       timestamp: now,
     });
+    const normalizedPrompt = normalizeDiscordMessageContent(input.prompt);
+    if (normalizedPrompt.length > 0) {
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: task.taskId,
+        eventType: "discord.message.logged",
+        payloadJson: {
+          role: "user",
+          userId: input.userId,
+          username: input.username ?? null,
+          nickname: input.nickname ?? null,
+          content: normalizedPrompt,
+        },
+        timestamp: now,
+      });
+    }
 
     return {
       session: {
@@ -785,6 +856,7 @@ export class GatewayApiService {
     try {
       const behavior = input.contextEnvelope?.behavior;
       const runtimeFeedbackInput = input.contextEnvelope?.runtimeFeedback;
+      const discordInput = input.contextEnvelope?.discord;
       const runtimeFeedback =
         runtimeFeedbackInput &&
         (runtimeFeedbackInput.previousTaskTerminalStatus !== undefined ||
@@ -795,6 +867,31 @@ export class GatewayApiService {
                 runtimeFeedbackInput.previousTaskTerminalStatus,
               previousToolErrors: runtimeFeedbackInput.previousToolErrors ?? [],
               retryHint: runtimeFeedbackInput.retryHint,
+            }
+          : undefined;
+      const discord: ContextEnvelopeDiscordInput | undefined =
+        discordInput &&
+        discordInput.userId.trim().length > 0 &&
+        discordInput.channelId.trim().length > 0 &&
+        discordInput.threadId.trim().length > 0
+          ? {
+              userId: discordInput.userId,
+              username: discordInput.username,
+              nickname: discordInput.nickname,
+              channelId: discordInput.channelId,
+              channelName: discordInput.channelName,
+              threadId: discordInput.threadId,
+              threadName: discordInput.threadName,
+              recentMessages: (discordInput.recentMessages ?? [])
+                .map((message) => ({
+                  role: message.role,
+                  userId: message.userId,
+                  username: message.username,
+                  nickname: message.nickname,
+                  content: message.content,
+                  timestamp: message.timestamp,
+                }))
+                .filter((message) => message.content.trim().length > 0),
             }
           : undefined;
       const attachmentRuntimeInput = attachmentRuntime ?? {
@@ -819,6 +916,7 @@ export class GatewayApiService {
           executionContract: "no_external_mcp, no_unapproved_host_ops",
         },
         runtimeFeedback,
+        discord,
       });
     } catch (error) {
       await this.repository.appendAuditLog({
@@ -835,6 +933,7 @@ export class GatewayApiService {
           hasBehaviorContext: input.contextEnvelope?.behavior !== undefined,
           hasRuntimeFeedback:
             input.contextEnvelope?.runtimeFeedback !== undefined,
+          hasDiscordContext: input.contextEnvelope?.discord !== undefined,
         },
       });
       return input.prompt;
@@ -900,7 +999,12 @@ export class GatewayApiService {
     }
 
     const agentTask = await runtimeClient.getTaskStatus(task.taskId);
-    const updated = await this.syncTaskStatusFromRuntime(task, session, agentTask.status);
+    const updated = await this.syncTaskStatusFromRuntime(
+      task,
+      session,
+      agentTask.status,
+      agentTask.result ?? null,
+    );
 
     let taskEvents: TaskEventRecord[] | undefined;
     if (input.includeTaskEvents) {
@@ -988,7 +1092,12 @@ export class GatewayApiService {
       timestamp: new Date(),
     });
 
-    const updated = await this.syncTaskStatusFromRuntime(task, session, canceled.status);
+    const updated = await this.syncTaskStatusFromRuntime(
+      task,
+      session,
+      canceled.status,
+      canceled.result ?? null,
+    );
     return {
       session: updated.session,
       task: updated.task,
@@ -1074,6 +1183,7 @@ export class GatewayApiService {
     task: TaskRecord,
     session: SessionRecord,
     runtimeStatus: AgentRuntimeTaskStatus,
+    runtimeResult?: AgentTaskRuntimeResult | null,
   ): Promise<{ session: SessionRecord; task: TaskRecord }> {
     const now = new Date();
     const mappedTaskStatus = this.mapRuntimeStatusToTaskStatus(runtimeStatus);
@@ -1092,6 +1202,27 @@ export class GatewayApiService {
         },
         timestamp: now,
       });
+      if (runtimeStatus === "completed") {
+        const answer = normalizeDiscordMessageContent(
+          runtimeResult?.final_answer ?? "",
+          8000,
+        );
+        if (answer.length > 0) {
+          await this.repository.appendTaskEvent({
+            eventId: newId("event"),
+            taskId: task.taskId,
+            eventType: "discord.message.logged",
+            payloadJson: {
+              role: "assistant",
+              userId: "assistant",
+              username: "assistant",
+              nickname: null,
+              content: answer,
+            },
+            timestamp: now,
+          });
+        }
+      }
     }
 
     if (mappedSessionStatus !== session.status) {
@@ -1193,6 +1324,17 @@ function summarizeError(error: unknown): string {
   } catch {
     return String(error);
   }
+}
+
+function normalizeDiscordMessageContent(
+  value: string,
+  maxLength = 4000,
+): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 3)}...`;
 }
 
 function toAgentRuntimeAttachmentSources(

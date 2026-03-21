@@ -100,3 +100,17 @@ export interface MemoryBacklinkRecord {
   relation: string;
   createdAt: Date;
 }
+
+export interface DiscordRecentMessageRecord {
+  eventId: string;
+  sessionId: string;
+  taskId: string;
+  threadId: string;
+  channelId: string;
+  userId: string;
+  username: string | null;
+  nickname: string | null;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+}

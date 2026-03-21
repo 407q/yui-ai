@@ -9,14 +9,22 @@ const threadParamsSchema = z.object({
 
 const mentionStartBodySchema = z.object({
   userId: z.string().min(1),
+  username: z.string().min(1).optional(),
+  nickname: z.string().min(1).optional(),
   channelId: z.string().min(1),
+  channelName: z.string().min(1).optional(),
   threadId: z.string().min(1),
+  threadName: z.string().min(1).optional(),
   prompt: z.string().min(1),
   attachmentNames: z.array(z.string().min(1)).optional().default([]),
 });
 
 const threadMessageBodySchema = z.object({
   userId: z.string().min(1),
+  username: z.string().min(1).optional(),
+  nickname: z.string().min(1).optional(),
+  channelName: z.string().min(1).optional(),
+  threadName: z.string().min(1).optional(),
   prompt: z.string().min(1),
   attachmentNames: z.array(z.string().min(1)).optional().default([]),
 });
@@ -100,9 +108,30 @@ const contextEnvelopeRuntimeFeedbackSchema = z.object({
   attachmentSources: z.array(agentAttachmentSchema).optional().default([]),
 });
 
+const contextEnvelopeDiscordRecentMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  userId: z.string().min(1).optional(),
+  username: z.string().min(1).optional(),
+  nickname: z.string().min(1).optional(),
+  content: z.string().min(1),
+  timestamp: z.string().optional(),
+});
+
+const contextEnvelopeDiscordSchema = z.object({
+  userId: z.string().min(1),
+  username: z.string().min(1).optional(),
+  nickname: z.string().min(1).optional(),
+  channelId: z.string().min(1),
+  channelName: z.string().optional(),
+  threadId: z.string().min(1),
+  threadName: z.string().optional(),
+  recentMessages: z.array(contextEnvelopeDiscordRecentMessageSchema).optional().default([]),
+});
+
 const contextEnvelopeSchema = z.object({
   behavior: contextEnvelopeBehaviorSchema.optional(),
   runtimeFeedback: contextEnvelopeRuntimeFeedbackSchema.optional(),
+  discord: contextEnvelopeDiscordSchema.optional(),
 });
 
 const agentRunBodySchema = z.object({

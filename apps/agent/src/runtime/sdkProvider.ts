@@ -193,6 +193,21 @@ const memoryDeleteSchema = z.object({
   key: z.string().min(1),
 });
 
+const discordProfileGetSchema = z.object({
+  includeRecentMessages: z.boolean().optional().default(true),
+  recentLimit: z.number().int().min(1).max(20).optional().default(8),
+});
+
+const discordThreadHistorySchema = z.object({
+  limit: z.number().int().min(1).max(50).optional().default(20),
+  role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+});
+
+const discordChannelHistorySchema = z.object({
+  limit: z.number().int().min(1).max(50).optional().default(20),
+  role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+});
+
 const HYBRID_BUILTIN_TOOL_ALLOWLIST = [
   "read_file",
   "edit_file",
@@ -732,6 +747,27 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         "Delete a memory entry from the Gateway memory store.",
         memoryDeleteSchema,
         "delete memory entry",
+      ),
+      this.defineGatewayTool(
+        state,
+        "discord.profile_get",
+        "Get Discord profile context for the current session user (user_id / username / nickname / thread and recent messages).",
+        discordProfileGetSchema,
+        "get discord profile context",
+      ),
+      this.defineGatewayTool(
+        state,
+        "discord.thread_history",
+        "Get recent Discord conversation history in the current session thread.",
+        discordThreadHistorySchema,
+        "get discord thread history",
+      ),
+      this.defineGatewayTool(
+        state,
+        "discord.channel_history",
+        "Get recent Discord conversation history in the current session channel.",
+        discordChannelHistorySchema,
+        "get discord channel history",
       ),
     ];
   }

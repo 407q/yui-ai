@@ -4,7 +4,12 @@ import { z } from "zod";
 import type { GatewayRepository } from "../gateway/repository.js";
 import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
-import type { ToolCallRequest, ToolCallResult } from "./types.js";
+import type {
+  DiscordHistoryEntryRecord,
+  DiscordProfileRecord,
+  ToolCallRequest,
+  ToolCallResult,
+} from "./types.js";
 
 const containerFileReadSchema = z.object({
   path: z.string().min(1),
@@ -76,6 +81,21 @@ const memorySearchSchema = z.object({
 const memoryDeleteSchema = z.object({
   namespace: z.string().min(1),
   key: z.string().min(1),
+});
+
+const discordProfileGetSchema = z.object({
+  includeRecentMessages: z.boolean().optional().default(true),
+  recentLimit: z.number().int().min(1).max(20).optional().default(8),
+});
+
+const discordThreadHistorySchema = z.object({
+  limit: z.number().int().min(1).max(50).optional().default(20),
+  role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+});
+
+const discordChannelHistorySchema = z.object({
+  limit: z.number().int().min(1).max(50).optional().default(20),
+  role: z.enum(["all", "user", "assistant"]).optional().default("all"),
 });
 
 export interface McpToolServiceOptions {
@@ -449,6 +469,85 @@ export class McpToolService {
         await this.repository.deleteMemory(userId, args.namespace, args.key);
         return { deleted: true };
       }
+      case "discord.profile_get": {
+        const args = parseToolArgs(discordProfileGetSchema, input.arguments);
+        const session = await this.repository.findSessionById(input.sessionId);
+        if (!session) {
+          throw new McpToolError(
+            "invalid_tool_arguments",
+            "Session is not found for discord.profile_get.",
+            {
+              session_id: input.sessionId,
+            },
+          );
+        }
+        const messages = await this.repository.listDiscordRecentMessages({
+          threadId: session.threadId,
+          limit: Math.max(args.recentLimit, 8),
+        });
+        const latestByUser = [...messages]
+          .reverse()
+          .find((entry) => entry.role === "user");
+        const profile: DiscordProfileRecord = {
+          userId: session.userId,
+          username: latestByUser?.username ?? null,
+          nickname: latestByUser?.nickname ?? null,
+          channelId: session.channelId,
+          channelName: null,
+          threadId: session.threadId,
+          threadName: null,
+          updatedAt: session.updatedAt.toISOString(),
+        };
+        return {
+          profile,
+          recent_messages: args.includeRecentMessages
+            ? toDiscordHistoryEntries(messages, "all", args.recentLimit)
+            : [],
+        };
+      }
+      case "discord.thread_history": {
+        const args = parseToolArgs(discordThreadHistorySchema, input.arguments);
+        const session = await this.repository.findSessionById(input.sessionId);
+        if (!session) {
+          throw new McpToolError(
+            "invalid_tool_arguments",
+            "Session is not found for discord.thread_history.",
+            {
+              session_id: input.sessionId,
+            },
+          );
+        }
+        const messages = await this.repository.listDiscordRecentMessages({
+          threadId: session.threadId,
+          limit: args.limit,
+        });
+        return {
+          thread_id: session.threadId,
+          channel_id: session.channelId,
+          entries: toDiscordHistoryEntries(messages, args.role, args.limit),
+        };
+      }
+      case "discord.channel_history": {
+        const args = parseToolArgs(discordChannelHistorySchema, input.arguments);
+        const session = await this.repository.findSessionById(input.sessionId);
+        if (!session) {
+          throw new McpToolError(
+            "invalid_tool_arguments",
+            "Session is not found for discord.channel_history.",
+            {
+              session_id: input.sessionId,
+            },
+          );
+        }
+        const messages = await this.repository.listDiscordRecentMessages({
+          channelId: session.channelId,
+          limit: args.limit,
+        });
+        return {
+          channel_id: session.channelId,
+          entries: toDiscordHistoryEntries(messages, args.role, args.limit),
+        };
+      }
       default:
         throw new McpToolError(
           "invalid_tool_arguments",
@@ -696,4 +795,34 @@ function resolveMimeTypeFromPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+function toDiscordHistoryEntries(
+  records: Array<{
+    eventId: string;
+    sessionId: string;
+    taskId: string;
+    role: "user" | "assistant";
+    userId: string;
+    username: string | null;
+    nickname: string | null;
+    content: string;
+    timestamp: Date;
+  }>,
+  role: "all" | "user" | "assistant",
+  limit: number,
+): DiscordHistoryEntryRecord[] {
+  const filtered = records.filter((entry) => role === "all" || entry.role === role);
+  const sliced = filtered.slice(Math.max(filtered.length - limit, 0));
+  return sliced.map((entry) => ({
+    eventId: entry.eventId,
+    sessionId: entry.sessionId,
+    taskId: entry.taskId,
+    role: entry.role,
+    userId: entry.userId,
+    username: entry.username,
+    nickname: entry.nickname,
+    content: entry.content,
+    timestamp: entry.timestamp.toISOString(),
+  }));
 }

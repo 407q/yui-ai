@@ -66,8 +66,12 @@ async function main(): Promise<void> {
       url: "/v1/discord/mentions/start",
       payload: {
         userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
         channelId,
+        channelName: "smoke-channel",
         threadId,
+        threadName: "smoke-thread",
         prompt: "P3 smoke start",
         attachmentNames: ["sample.txt"],
       },
@@ -79,8 +83,12 @@ async function main(): Promise<void> {
       url: "/v1/discord/mentions/start",
       payload: {
         userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
         channelId,
+        channelName: "smoke-channel",
         threadId,
+        threadName: "smoke-thread",
         prompt: "P3 smoke start",
         attachmentNames: ["sample.txt"],
       },
@@ -125,6 +133,32 @@ async function main(): Promise<void> {
               },
             ],
           },
+          discord: {
+            userId,
+            username: "smoke-user",
+            nickname: "smoke-nick",
+            channelId,
+            channelName: "smoke-channel",
+            threadId,
+            threadName: "smoke-thread",
+            recentMessages: [
+              {
+                role: "user",
+                userId,
+                username: "smoke-user",
+                nickname: "smoke-nick",
+                content: "直前の依頼です",
+                timestamp: new Date().toISOString(),
+              },
+              {
+                role: "assistant",
+                userId: "assistant",
+                username: "assistant",
+                content: "了解しました",
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          },
         },
         toolCalls: [
           {
@@ -164,6 +198,11 @@ async function main(): Promise<void> {
                   sourceUrl: "https://example.invalid/sample.txt",
                 },
               ],
+            },
+            discord: {
+              userId,
+              threadId,
+              channelId,
             },
           },
           toolCalls: [
@@ -212,6 +251,14 @@ async function main(): Promise<void> {
     assert(
       runtimeAnswer.includes("[Behavior Context]"),
       "runtime prompt should include behavior context envelope",
+    );
+    assert(
+      runtimeAnswer.includes("[Discord Context]"),
+      "runtime prompt should include discord context envelope",
+    );
+    assert(
+      runtimeAnswer.includes(`discord_user_id: ${userId}`),
+      "runtime prompt should include discord user id",
     );
     assert(
       runtimeAnswer.includes(
@@ -637,11 +684,99 @@ async function main(): Promise<void> {
     });
     assert(memoryDeleteResult.status === "ok", "memory.delete should succeed");
 
+    const discordProfileResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.profile_get",
+      execution_target: "gateway_adapter",
+      arguments: {
+        includeRecentMessages: true,
+        recentLimit: 6,
+      },
+      reason: "discord profile",
+    });
+    assert(discordProfileResult.status === "ok", "discord.profile_get should succeed");
+    const discordProfilePayload = discordProfileResult.result as {
+      profile: { userId: string };
+      recent_messages: unknown[];
+    };
+    assert(
+      discordProfilePayload.profile.userId === userId,
+      "discord.profile_get should return current session user",
+    );
+    assert(
+      Array.isArray(discordProfilePayload.recent_messages),
+      "discord.profile_get should return recent messages array",
+    );
+
+    const discordThreadHistoryResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.thread_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 10,
+        role: "all",
+      },
+      reason: "discord thread history",
+    });
+    assert(
+      discordThreadHistoryResult.status === "ok",
+      "discord.thread_history should succeed",
+    );
+    const discordThreadHistoryPayload = discordThreadHistoryResult.result as {
+      thread_id: string;
+      entries: unknown[];
+    };
+    assert(
+      discordThreadHistoryPayload.thread_id === threadId,
+      "discord.thread_history should return current thread",
+    );
+    assert(
+      Array.isArray(discordThreadHistoryPayload.entries),
+      "discord.thread_history should return entries",
+    );
+
+    const discordChannelHistoryResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 10,
+        role: "all",
+      },
+      reason: "discord channel history",
+    });
+    assert(
+      discordChannelHistoryResult.status === "ok",
+      "discord.channel_history should succeed",
+    );
+    const discordChannelHistoryPayload = discordChannelHistoryResult.result as {
+      channel_id: string;
+      entries: unknown[];
+    };
+    assert(
+      discordChannelHistoryPayload.channel_id === channelId,
+      "discord.channel_history should return current channel",
+    );
+    assert(
+      Array.isArray(discordChannelHistoryPayload.entries),
+      "discord.channel_history should return entries",
+    );
+
     const messageResponse = await app.inject({
       method: "POST",
       url: `/v1/threads/${threadId}/messages`,
       payload: {
         userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
+        channelName: "smoke-channel",
+        threadName: "smoke-thread",
         prompt: "follow-up prompt",
         attachmentNames: [],
       },
@@ -653,6 +788,10 @@ async function main(): Promise<void> {
       url: `/v1/threads/${threadId}/messages`,
       payload: {
         userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
+        channelName: "smoke-channel",
+        threadName: "smoke-thread",
         prompt: "follow-up prompt",
         attachmentNames: [],
       },

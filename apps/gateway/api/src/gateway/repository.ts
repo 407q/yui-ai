@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import type {
   ApprovalRecord,
   ApprovalStatus,
+  DiscordRecentMessageRecord,
   MemoryBacklinkRecord,
   MemoryEntryRecord,
   SessionRecord,
@@ -84,6 +85,12 @@ export interface ResolveMemoryBacklinkInput {
   key: string;
 }
 
+export interface ListDiscordRecentMessagesInput {
+  threadId?: string;
+  channelId?: string;
+  limit: number;
+}
+
 export interface GatewayRepository {
   ping(): Promise<void>;
   createSessionAndTask(
@@ -155,6 +162,9 @@ export interface GatewayRepository {
     input: ResolveMemoryBacklinkInput,
   ): Promise<MemoryBacklinkRecord[]>;
   deleteMemory(userId: string, namespace: string, key: string): Promise<void>;
+  listDiscordRecentMessages(
+    input: ListDiscordRecentMessagesInput,
+  ): Promise<DiscordRecentMessageRecord[]>;
   listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]>;
 }
 
@@ -830,6 +840,43 @@ export class PostgresGatewayRepository implements GatewayRepository {
     );
   }
 
+  async listDiscordRecentMessages(
+    input: ListDiscordRecentMessagesInput,
+  ): Promise<DiscordRecentMessageRecord[]> {
+    const normalizedLimit = Math.min(Math.max(input.limit, 1), 50);
+    const threadId = input.threadId?.trim();
+    const channelId = input.channelId?.trim();
+    if (!threadId && !channelId) {
+      return [];
+    }
+    const { rows } = await this.pool.query<DiscordRecentMessageRow>(
+      `
+      SELECT
+        e.event_id,
+        e.task_id,
+        t.session_id,
+        s.thread_id,
+        s.channel_id,
+        (e.payload_json ->> 'userId') AS user_id,
+        NULLIF(e.payload_json ->> 'username', '') AS username,
+        NULLIF(e.payload_json ->> 'nickname', '') AS nickname,
+        COALESCE(NULLIF(e.payload_json ->> 'role', ''), 'assistant') AS role,
+        COALESCE(e.payload_json ->> 'content', '') AS content,
+        e."timestamp"
+      FROM task_events e
+      INNER JOIN tasks t ON t.task_id = e.task_id
+      INNER JOIN sessions s ON s.session_id = t.session_id
+      WHERE e.event_type = 'discord.message.logged'
+        AND ($1::text IS NULL OR s.thread_id = $1)
+        AND ($2::text IS NULL OR s.channel_id = $2)
+      ORDER BY e."timestamp" DESC
+      LIMIT $3
+      `,
+      [threadId ?? null, channelId ?? null, normalizedLimit],
+    );
+    return rows.map(toDiscordRecentMessageRecord).reverse();
+  }
+
   async listSessionsByUser(userId: string, limit: number): Promise<SessionRecord[]> {
     const { rows } = await this.pool.query<SessionRow>(
       `
@@ -969,6 +1016,20 @@ interface MemoryBacklinkRow {
   created_at: Date;
 }
 
+interface DiscordRecentMessageRow {
+  event_id: string;
+  session_id: string;
+  task_id: string;
+  thread_id: string;
+  channel_id: string;
+  user_id: string;
+  username: string | null;
+  nickname: string | null;
+  role: string;
+  content: string;
+  timestamp: Date;
+}
+
 function toSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.session_id,
@@ -1052,6 +1113,24 @@ function toMemoryBacklinkRecord(row: MemoryBacklinkRow): MemoryBacklinkRecord {
     sourceKey: row.source_key,
     relation: row.relation,
     createdAt: row.created_at,
+  };
+}
+
+function toDiscordRecentMessageRecord(
+  row: DiscordRecentMessageRow,
+): DiscordRecentMessageRecord {
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    taskId: row.task_id,
+    threadId: row.thread_id,
+    channelId: row.channel_id,
+    userId: row.user_id,
+    username: row.username,
+    nickname: row.nickname,
+    role: row.role === "user" ? "user" : "assistant",
+    content: row.content,
+    timestamp: row.timestamp,
   };
 }
 
