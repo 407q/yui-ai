@@ -66,6 +66,7 @@ COPILOT_SDK_LOG_LEVEL=info
 - Discord 文脈取得ツールとして `discord.profile_get` / `discord.channel_history`
   を Gateway custom tool 経由で利用できます（スレッド履歴はセッション履歴を標準参照）。
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
+- host 操作が必要な場合は、LM が口頭確認を先に求めるのではなく `host.*` ツールを呼び、`approval_required` を起点に Gateway 承認フローを発火させます。
 
 ## Persona / Policy 設定（PR-1）
 

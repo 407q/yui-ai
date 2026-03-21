@@ -161,6 +161,7 @@ function buildBehaviorLines(behavior: ContextEnvelopeBehaviorInput): string[] {
     `- infrastructure_status: ${normalizeInline(behavior.infrastructureStatus)}`,
     `- tool_routing_policy: ${normalizeInline(behavior.toolRoutingPolicy)}`,
     `- approval_policy: ${normalizeInline(behavior.approvalPolicy)}`,
+    "- approval_trigger_rule: for explicit host requests, call host.* tools directly so gateway approval flow can trigger via approval_required",
     `- response_contract: ${normalizeInline(behavior.responseContract)}`,
     `- execution_contract: ${normalizeInline(behavior.executionContract)}`,
   ];

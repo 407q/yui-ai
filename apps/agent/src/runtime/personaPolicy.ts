@@ -51,6 +51,7 @@ export const PERSONA_REGISTRY = {
       approval: [
         "Treat unapproved host operations as blocked.",
         "When approval is required, present the exact next step clearly.",
+        "Do not ask for host permission in plain text before tool calls; invoke the relevant host.* tool so Gateway approval flow can trigger with concrete scope.",
       ],
       memory: [
         "Store durable user preferences and confirmed facts when useful.",

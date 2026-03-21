@@ -1275,6 +1275,7 @@ function buildSystemMessageWithRuntimeContracts(
     "- container_tools_path_rule: use paths relative to primary_workspace_root whenever possible",
     "- file_roundtrip_rule: when user sends files, process them inside the container workspace and return outputs using container.file_deliver instead of host path operations",
     "- host_tool_usage_rule: use host.* tools only when user explicitly requests host access and approval allows it",
+    "- host_approval_trigger_rule: when host access is explicitly requested, call the required host.* tool directly; gateway will return approval_required and start approval flow automatically when needed",
     routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
     "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",
