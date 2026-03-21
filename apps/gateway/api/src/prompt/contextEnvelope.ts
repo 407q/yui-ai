@@ -133,6 +133,9 @@ function buildAttachmentRuntimeLines(
   lines.push(
     "- working_directory_contract: use_session_workspace_root_as_primary_cwd",
   );
+  lines.push(
+    "- file_roundtrip_contract: process_user_supplied_files_inside_container_workspace_and_return_outputs_via_container_file_deliver",
+  );
   return lines;
 }
 

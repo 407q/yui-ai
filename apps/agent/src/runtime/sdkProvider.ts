@@ -1227,6 +1227,7 @@ function buildSystemMessageWithRuntimeContracts(
     "- attachment_search_priority: attachment_mount_path > primary_workspace_root > avoid_/root/.copilot/session-state",
     "- workspace_default_rule: treat file operations and cli tasks as container workspace operations by default",
     "- container_tools_path_rule: use paths relative to primary_workspace_root whenever possible",
+    "- file_roundtrip_rule: when user sends files, process them inside the container workspace and return outputs using container.file_deliver instead of host path operations",
     "- host_tool_usage_rule: use host.* tools only when user explicitly requests host access and approval allows it",
     routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",

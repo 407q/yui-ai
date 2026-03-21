@@ -79,6 +79,7 @@ Agent Runtime への `runtime_policy.tool_routing.mode` は
 - コンテナ内ファイル探索/編集は Copilot built-in tools（allowlist）を許可
 - host 操作・memory 操作・承認フローは Gateway custom tools を継続利用
 - 境界制御は System Message 依存ではなく、`availableTools` 制約と SDK hooks で機械的に強制
+- 受領ファイルはコンテナ内で処理し、返却時は `container.file_deliver` を優先（不要な host パス変更を回避）
 
 ## 実行
 
