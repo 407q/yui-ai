@@ -3225,9 +3225,9 @@ async function runAgentTask(
       }
     }
 
-    let attempt = 0;
+    let approvalRetryCount = 0;
     let terminal: GatewayAgentTaskStatusResponse | null = null;
-    while (attempt <= AGENT_APPROVAL_RETRY_MAX) {
+    while (approvalRetryCount <= AGENT_APPROVAL_RETRY_MAX) {
       if (isRunCanceled(session, runSequence)) {
         throw new SessionRunCanceledError("run canceled before agent execution");
       }
@@ -3265,18 +3265,18 @@ async function runAgentTask(
         break;
       }
 
-      if (attempt >= AGENT_APPROVAL_RETRY_MAX) {
-        throw new Error(
-          `approval retry limit reached (${AGENT_APPROVAL_RETRY_MAX})`,
-        );
-      }
-
       for (const approvalRequest of approvalRequests) {
+        if (approvalRetryCount >= AGENT_APPROVAL_RETRY_MAX) {
+          throw new Error(
+            `approval retry limit reached (${AGENT_APPROVAL_RETRY_MAX})`,
+          );
+        }
         const approvalDecision = await requestApproval(session, approvalRequest);
         session.pendingApprovalId = undefined;
         touchSession(session);
 
         if (approvalDecision === "approved") {
+          approvalRetryCount += 1;
           continue;
         }
 
@@ -3301,7 +3301,6 @@ async function runAgentTask(
         throw new SessionRunCanceledError("run canceled while waiting approval");
       }
 
-      attempt += 1;
       updateRuntimeFeedbackRetryHint(
         session,
         "previous run stopped by approval_required; approved and retrying",
