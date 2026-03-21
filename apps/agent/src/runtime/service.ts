@@ -236,6 +236,7 @@ export class AgentRuntimeService {
           request: PermissionRequestInput,
         ): Promise<PermissionRequestResult> =>
           this.handlePermissionRequest(input, request),
+        systemMemoryRefs: input.system_memory_refs ?? [],
         __toolRoutingMode:
           input.runtime_policy?.tool_routing?.mode ?? "gateway_only",
       };
@@ -264,6 +265,7 @@ export class AgentRuntimeService {
         session_id: input.session_id,
         sdk_session_id: sdkSession.sdk_session_id,
         prompt: input.prompt,
+        system_memory_refs: input.system_memory_refs ?? [],
         tool_calls: input.tool_calls ?? [],
         callbacks,
         signal: state.abortController.signal,

@@ -68,6 +68,7 @@ COPILOT_SDK_LOG_LEVEL=info
 - `discord.*` は承認制のため、必要時はツールを直接呼び出して `approval_required` を起点に Gateway 承認フローを開始します。
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
 - host 操作が必要な場合は、LM が口頭確認を先に求めるのではなく `host.*` ツールを呼び、`approval_required` を起点に Gateway 承認フローを発火させます。
+- PR-4 では `system_memory_refs` を run payload に含め、Agent は実行ごとに `memory.get` で `system.*` を先読みしてから推論します（既定: `system.persona/active_profile`, `system.policy/core_rules`, `system.tooling/routing_contract`）。
 
 ## Persona / Policy 設定（PR-1）
 
@@ -77,6 +78,7 @@ Persona/Policy は環境変数ではなくコード定義で管理します。
 - `PERSONA_REGISTRY` に persona/policy を versioned に保持
 - `ACTIVE_PERSONA_ID` で有効な persona を選択
 - `buildActiveSystemMessage()` を `sdkProvider.ts` から参照し、Copilot session の `systemMessage` に注入
+- `runtime contract` として system memory 参照義務（`system_memory_refs` の mandatory preload）を明示
 
 これにより、実行時の暗黙的な上書きを避けつつ、レビュー可能な形で振る舞いを固定できます。
 

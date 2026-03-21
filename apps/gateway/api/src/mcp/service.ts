@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 import type { GatewayRepository } from "../gateway/repository.js";
+import {
+  RECOMMENDED_MEMORY_NAMESPACES,
+  isSystemMemoryNamespace,
+} from "../gateway/memoryPolicy.js";
 import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
 import type { ToolCallRequest, ToolCallResult } from "./types.js";
@@ -103,13 +107,6 @@ export interface McpToolServiceOptions {
   discordGuildId?: string;
   discordApiBaseUrl?: string;
 }
-
-const RECOMMENDED_MEMORY_NAMESPACES = [
-  "profile.person",
-  "conversation.fact",
-  "knowledge.note",
-  "task.preference",
-] as const;
 
 export class McpToolService {
   private readonly containerAdapter: ContainerToolAdapter;
@@ -389,6 +386,15 @@ export class McpToolService {
       case "memory.upsert": {
         const args = parseToolArgs(memoryUpsertSchema, input.arguments);
         this.validateMemoryNamespace(args.namespace, input.callId);
+        if (isSystemMemoryNamespace(args.namespace)) {
+          throw new McpToolError(
+            "memory_system_entry_read_only",
+            "System memory entries are read-only for normal tool calls.",
+            {
+              namespace: args.namespace,
+            },
+          );
+        }
         const stored = await this.repository.upsertMemory({
           memoryId: newId("mem"),
           userId,
@@ -410,7 +416,9 @@ export class McpToolService {
       case "memory.get": {
         const args = parseToolArgs(memoryGetSchema, input.arguments);
         this.validateMemoryNamespace(args.namespace, input.callId);
-        const found = await this.repository.getMemory(userId, args.namespace, args.key);
+        const found = await this.repository.getMemory(userId, args.namespace, args.key, {
+          includeSystemEntry: true,
+        });
         return {
           found: found !== null,
           entry:
@@ -418,10 +426,12 @@ export class McpToolService {
               ? null
               : {
                   memoryId: found.memoryId,
+                  userId: found.userId,
                   namespace: found.namespace,
                   key: found.key,
                   value: found.valueJson,
                   tags: found.tagsJson,
+                  is_system: found.isSystem,
                   backlinks:
                     found.backlinks?.map((backlink) => ({
                       source_memory_id: backlink.sourceMemoryId,
@@ -442,14 +452,17 @@ export class McpToolService {
           namespace: args.namespace,
           query: args.query,
           limit: args.limit,
+          includeSystemEntries: true,
         });
         return {
           entries: results.map((entry) => ({
             memoryId: entry.memoryId,
+            userId: entry.userId,
             namespace: entry.namespace,
             key: entry.key,
             value: entry.valueJson,
             tags: entry.tagsJson,
+            is_system: entry.isSystem,
             backlinks:
               entry.backlinks?.map((backlink) => ({
                 source_memory_id: backlink.sourceMemoryId,
@@ -465,6 +478,15 @@ export class McpToolService {
       case "memory.delete": {
         const args = parseToolArgs(memoryDeleteSchema, input.arguments);
         this.validateMemoryNamespace(args.namespace, input.callId);
+        if (isSystemMemoryNamespace(args.namespace)) {
+          throw new McpToolError(
+            "memory_system_entry_read_only",
+            "System memory entries are read-only for normal tool calls.",
+            {
+              namespace: args.namespace,
+            },
+          );
+        }
         await this.repository.deleteMemory(userId, args.namespace, args.key);
         return { deleted: true };
       }

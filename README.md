@@ -95,6 +95,7 @@ yarn api:smoke
 - `discord.*` ツールは承認制（`approval_required`）として運用
 - `container.file_deliver` でコンテナ内ファイルを base64 返却し、Bot が Discord 添付として送信可能
 - `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加
+- `system.*` memory を導入（`memory.get/search` で参照可、`memory.upsert/delete` は read-only 拒否）
 
 ## P6 Agent Runtime（API/コマンド追加）
 
@@ -113,6 +114,7 @@ yarn api:smoke
 - `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
 - `BOT_MODE=mock` では mock provider を利用（`agent:smoke` 回帰維持）
 - runtime policy は `hybrid_container_builtin_gateway_host` を標準化し、コンテナ内 built-in tools と host Gateway tools を分離
+- Agent は `system_memory_refs` を run payload で受け取り、`memory.get` による先読みを実行契約として強制
 
 ## P7 システム統合（Bot主導）
 

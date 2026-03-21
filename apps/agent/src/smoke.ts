@@ -106,6 +106,18 @@ async function main(): Promise<void> {
       completed1.send_and_wait_count === 1,
       "first run should execute sendAndWait exactly once",
     );
+    const hasSystemMemoryPreload =
+      completed1.result?.tool_results?.some(
+        (result) =>
+          result.status === "ok" &&
+          result.tool_name === "memory.get" &&
+          (result.arguments as { namespace?: string } | undefined)?.namespace ===
+            "system.persona",
+      ) ?? false;
+    assert(
+      hasSystemMemoryPreload,
+      "first run should preload system memory via memory.get",
+    );
 
     const taskId2 = `task_${randomUUID()}`;
     const runResponse2 = await app.inject({
@@ -243,6 +255,13 @@ async function waitUntilTerminal(
   status: string;
   bootstrap_mode: string;
   send_and_wait_count: number;
+  result?: {
+    tool_results?: Array<{
+      status: string;
+      tool_name?: string;
+      arguments?: Record<string, unknown>;
+    }>;
+  } | null;
 }> {
   const maxAttempts = 50;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -255,6 +274,13 @@ async function waitUntilTerminal(
       status: string;
       bootstrap_mode: string;
       send_and_wait_count: number;
+      result?: {
+        tool_results?: Array<{
+          status: string;
+          tool_name?: string;
+          arguments?: Record<string, unknown>;
+        }>;
+      } | null;
     };
     if (
       body.status === "completed" ||

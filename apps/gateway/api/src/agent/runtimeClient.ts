@@ -36,6 +36,11 @@ export interface AgentRuntimeRunTaskInput {
       allow_external_mcp: boolean;
     };
   };
+  system_memory_refs?: Array<{
+    namespace: string;
+    key: string;
+    reason: string;
+  }>;
   tool_calls?: AgentRuntimeToolCall[];
 }
 

@@ -27,6 +27,11 @@ export interface ContextEnvelopeRuntimeFeedbackInput {
   previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
   previousToolErrors?: string[];
   retryHint?: string;
+  systemMemoryReferences?: Array<{
+    namespace: string;
+    key: string;
+    reason: string;
+  }>;
 }
 
 export interface ContextEnvelopeDiscordInput {
@@ -183,11 +188,24 @@ function buildRuntimeFeedbackLines(
     runtimeFeedback?.retryHint && runtimeFeedback.retryHint.trim().length > 0
       ? normalizeInline(runtimeFeedback.retryHint)
       : "none";
+  const systemMemoryRefs = (runtimeFeedback?.systemMemoryReferences ?? [])
+    .map((entry) => {
+      const namespace = normalizeInline(entry.namespace);
+      const key = normalizeInline(entry.key);
+      const reason = normalizeInline(entry.reason);
+      if (!namespace || !key) {
+        return null;
+      }
+      return `${namespace}/${key} (${reason || "required"})`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .slice(0, MAX_TOOL_ERROR_LINES);
 
   return [
     `- previous_task_terminal_status: ${terminalStatus}`,
     `- previous_tool_errors: ${toolErrors.length > 0 ? toolErrors.join(" | ") : "none"}`,
     `- retry_hint: ${retryHint}`,
+    `- system_memory_refs: ${systemMemoryRefs.length > 0 ? systemMemoryRefs.join(" | ") : "default_required_set"}`,
   ];
 }
 

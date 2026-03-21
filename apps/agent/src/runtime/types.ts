@@ -52,6 +52,11 @@ export interface AgentRunRequest {
   session_workspace_root?: string;
   attachment_mount_path?: string;
   runtime_policy?: AgentRuntimePolicy;
+  system_memory_refs?: Array<{
+    namespace: string;
+    key: string;
+    reason: string;
+  }>;
   tool_calls?: AgentToolCallSpec[];
 }
 

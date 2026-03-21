@@ -217,6 +217,7 @@ Bot から `contextEnvelope` を受け取る場合、主に次を使用します
 - `runtimeFeedback.previousToolErrors`
 - `runtimeFeedback.retryHint`
 - `runtimeFeedback.attachmentSources[]`（`{ name, sourceUrl }`）
+- `runtimeFeedback.systemMemoryReferences[]`（`{ namespace, key, reason }`）
 - `discord.userId` / `discord.username` / `discord.nickname`
 - `discord.channelId` / `discord.channelName` / `discord.threadId` / `discord.threadName`
 
@@ -244,6 +245,9 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 `discord.*` ツールはすべて承認制で、未承認時は `approval_required` を返します。
 `discord.channel_history` は `channelId` 指定で対象を切り替えられ、Discord API（`/channels/:id/messages`）から取得したメッセージを優先し、失敗時はセッション記録へフォールバックします。
 `discord.channel_list` はサーバー全体のチャンネル一覧取得に利用できます。
+
+`memory.*` には `system.*` namespace が追加されています。  
+`memory.get/search` は system memory を参照可能ですが、`memory.upsert/delete` は `system.*` に対して `memory_system_entry_read_only` で拒否されます。
 
 ### スモークテスト
 

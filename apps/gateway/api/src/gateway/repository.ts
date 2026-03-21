@@ -65,6 +65,7 @@ export interface UpsertMemoryInput {
   key: string;
   valueJson: Record<string, unknown>;
   tagsJson?: string[];
+  isSystem?: boolean;
   backlinks?: Array<{
     namespace: string;
     key: string;
@@ -77,6 +78,7 @@ export interface SearchMemoryInput {
   namespace: string;
   query?: string;
   limit: number;
+  includeSystemEntries?: boolean;
 }
 
 export interface ResolveMemoryBacklinkInput {
@@ -166,12 +168,16 @@ export interface GatewayRepository {
     userId: string,
     namespace: string,
     key: string,
+    options?: {
+      includeSystemEntry?: boolean;
+    },
   ): Promise<MemoryEntryRecord | null>;
   searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]>;
   resolveMemoryBacklinks(
     input: ResolveMemoryBacklinkInput,
   ): Promise<MemoryBacklinkRecord[]>;
   deleteMemory(userId: string, namespace: string, key: string): Promise<void>;
+  getSystemMemoryEntries(): Promise<MemoryEntryRecord[]>;
   listKnownDiscordChannels(
     input: ListKnownDiscordChannelsInput,
   ): Promise<DiscordKnownChannelRecord[]>;
@@ -601,13 +607,15 @@ export class PostgresGatewayRepository implements GatewayRepository {
           "key",
           value_json,
           tags_json,
+          is_system,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
         ON CONFLICT (user_id, namespace, "key")
         DO UPDATE SET
           value_json = EXCLUDED.value_json,
           tags_json = EXCLUDED.tags_json,
+          is_system = EXCLUDED.is_system,
           updated_at = NOW()
         RETURNING *
         `,
@@ -618,6 +626,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
           input.key,
           JSON.stringify(input.valueJson),
           JSON.stringify(input.tagsJson ?? []),
+          input.isSystem ?? false,
         ],
       );
       const stored = toMemoryEntryRecord(requireRow(rows[0], "upserted memory entry"));
@@ -719,16 +728,22 @@ export class PostgresGatewayRepository implements GatewayRepository {
     userId: string,
     namespace: string,
     key: string,
+    options?: {
+      includeSystemEntry?: boolean;
+    },
   ): Promise<MemoryEntryRecord | null> {
+    const includeSystem = options?.includeSystemEntry ?? false;
     const { rows } = await this.pool.query<MemoryEntryRow>(
       `
       SELECT *
       FROM memory_entries
-      WHERE user_id = $1
-        AND namespace = $2
-        AND "key" = $3
+      WHERE namespace = $1
+        AND "key" = $2
+        AND (user_id = $3 OR (is_system = true AND $4::boolean = true))
+      ORDER BY (user_id = $3) DESC, is_system DESC, updated_at DESC
+      LIMIT 1
       `,
-      [userId, namespace, key],
+      [namespace, key, userId, includeSystem],
     );
     if (rows.length === 0) {
       return null;
@@ -747,17 +762,18 @@ export class PostgresGatewayRepository implements GatewayRepository {
 
   async searchMemory(input: SearchMemoryInput): Promise<MemoryEntryRecord[]> {
     const normalizedLimit = Math.min(Math.max(input.limit, 1), 100);
+    const includeSystem = input.includeSystemEntries ?? false;
     if (!input.query || input.query.trim().length === 0) {
       const { rows } = await this.pool.query<MemoryEntryRow>(
         `
         SELECT *
         FROM memory_entries
-        WHERE user_id = $1
-          AND namespace = $2
+        WHERE namespace = $1
+          AND (user_id = $2 OR (is_system = true AND $3::boolean = true))
         ORDER BY updated_at DESC
-        LIMIT $3
+        LIMIT $4
         `,
-        [input.userId, input.namespace, normalizedLimit],
+        [input.namespace, input.userId, includeSystem, normalizedLimit],
       );
       const entries = rows.map(toMemoryEntryRecord);
       return this.attachBacklinks(entries);
@@ -768,17 +784,17 @@ export class PostgresGatewayRepository implements GatewayRepository {
       `
       SELECT *
       FROM memory_entries
-      WHERE user_id = $1
-        AND namespace = $2
+      WHERE namespace = $1
+        AND (user_id = $2 OR (is_system = true AND $3::boolean = true))
         AND (
-          "key" ILIKE $3
-          OR value_json::TEXT ILIKE $3
-          OR tags_json::TEXT ILIKE $3
+          "key" ILIKE $4
+          OR value_json::TEXT ILIKE $4
+          OR tags_json::TEXT ILIKE $4
         )
       ORDER BY updated_at DESC
-      LIMIT $4
+      LIMIT $5
       `,
-      [input.userId, input.namespace, search, normalizedLimit],
+      [input.namespace, input.userId, includeSystem, search, normalizedLimit],
     );
     const entries = rows.map(toMemoryEntryRecord);
     return this.attachBacklinks(entries);
@@ -851,6 +867,18 @@ export class PostgresGatewayRepository implements GatewayRepository {
       `,
       [userId, namespace, key],
     );
+  }
+
+  async getSystemMemoryEntries(): Promise<MemoryEntryRecord[]> {
+    const { rows } = await this.pool.query<MemoryEntryRow>(
+      `
+      SELECT *
+      FROM memory_entries
+      WHERE is_system = true
+      ORDER BY namespace ASC, "key" ASC
+      `,
+    );
+    return rows.map(toMemoryEntryRecord);
   }
 
   async listDiscordRecentMessages(
@@ -1049,6 +1077,7 @@ interface MemoryEntryRow {
   key: string;
   value_json: Record<string, unknown>;
   tags_json: string[];
+  is_system: boolean;
   updated_at: Date;
 }
 
@@ -1152,6 +1181,7 @@ function toMemoryEntryRecord(row: MemoryEntryRow): MemoryEntryRecord {
     key: row.key,
     valueJson: row.value_json,
     tagsJson: row.tags_json,
+    isSystem: row.is_system,
     updatedAt: row.updated_at,
   };
 }

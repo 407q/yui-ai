@@ -64,7 +64,12 @@ export async function runMigrations(
 async function listMigrationFiles(dirPath: string): Promise<string[]> {
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        !entry.name.startsWith(".") &&
+        /^\d+_.*\.sql$/.test(entry.name),
+    )
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
 }

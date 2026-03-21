@@ -13,6 +13,9 @@ import {
   type ContextEnvelopeInfrastructureStatus,
   type ContextEnvelopeTaskTerminalStatus,
 } from "../prompt/contextEnvelope.js";
+import {
+  SYSTEM_MEMORY_REFERENCE_ENTRIES,
+} from "./memoryPolicy.js";
 import { GatewayApiError } from "./errors.js";
 import type {
   GatewayRepository,
@@ -105,6 +108,7 @@ export interface AgentTaskRunInput {
       previousToolErrors?: string[];
       retryHint?: string;
       attachmentSources?: AgentTaskAttachment[];
+      systemMemoryReferences?: AgentTaskSystemMemoryReference[];
     };
     discord?: {
       userId: string;
@@ -124,6 +128,12 @@ export interface AgentTaskAttachment {
   sourceUrl: string;
 }
 
+export interface AgentTaskSystemMemoryReference {
+  namespace: string;
+  key: string;
+  reason?: string;
+}
+
 interface AgentTaskStagedAttachmentFile {
   name: string;
   path: string;
@@ -141,6 +151,12 @@ export interface AgentTaskStatusInput {
   afterTimestamp?: string;
   eventTypes?: string[];
   eventsLimit?: number;
+}
+
+interface NormalizedSystemMemoryReference {
+  namespace: string;
+  key: string;
+  reason: string;
 }
 
 export interface AgentTaskCancelInput {
@@ -731,6 +747,9 @@ export class GatewayApiService {
       input.attachmentMountPath ??
       `/agent/session/${session.sessionId}`;
     const sessionWorkspaceRoot = `/agent/session/${session.sessionId}`;
+    const systemMemoryRefs = normalizeSystemMemoryReferences(
+      input.contextEnvelope?.runtimeFeedback?.systemMemoryReferences,
+    );
     const attachmentNames = input.attachmentNames ?? [];
     const attachmentsToStage = toAgentRuntimeAttachmentSources(
       attachmentNames,
@@ -780,6 +799,7 @@ export class GatewayApiService {
       input,
       session,
       task,
+      systemMemoryRefs,
       {
         sessionWorkspaceRoot,
         attachmentMountPath,
@@ -802,6 +822,7 @@ export class GatewayApiService {
           allow_external_mcp: false,
         },
       },
+      system_memory_refs: systemMemoryRefs,
       tool_calls: input.toolCalls ?? [],
     });
 
@@ -811,6 +832,7 @@ export class GatewayApiService {
       eventType: "agent.run.accepted",
       payloadJson: {
         bootstrapMode: agentTask.bootstrap_mode,
+        systemMemoryRefs,
       },
       timestamp: new Date(),
     });
@@ -844,6 +866,7 @@ export class GatewayApiService {
     input: AgentTaskRunInput,
     session: SessionRecord,
     task: TaskRecord,
+    systemMemoryRefs: NormalizedSystemMemoryReference[],
     attachmentRuntime: ContextEnvelopeAttachmentRuntimeInput,
   ): Promise<string> {
     try {
@@ -860,6 +883,7 @@ export class GatewayApiService {
                 runtimeFeedbackInput.previousTaskTerminalStatus,
               previousToolErrors: runtimeFeedbackInput.previousToolErrors ?? [],
               retryHint: runtimeFeedbackInput.retryHint,
+              systemMemoryReferences: systemMemoryRefs,
             }
           : undefined;
       const discord: ContextEnvelopeDiscordInput | undefined =
@@ -917,6 +941,8 @@ export class GatewayApiService {
           hasRuntimeFeedback:
             input.contextEnvelope?.runtimeFeedback !== undefined,
           hasDiscordContext: input.contextEnvelope?.discord !== undefined,
+          systemMemoryReferenceCount:
+            input.contextEnvelope?.runtimeFeedback?.systemMemoryReferences?.length ?? 0,
         },
       });
       return input.prompt;
@@ -1355,4 +1381,34 @@ function toAgentRuntimeAttachmentSources(
     });
   }
   return result;
+}
+
+function normalizeSystemMemoryReferences(
+  refs: AgentTaskSystemMemoryReference[] | undefined,
+): NormalizedSystemMemoryReference[] {
+  const source = refs && refs.length > 0 ? refs : [...SYSTEM_MEMORY_REFERENCE_ENTRIES];
+  const seen = new Set<string>();
+  const normalized: NormalizedSystemMemoryReference[] = [];
+  for (const ref of source) {
+    const namespace = ref.namespace.trim();
+    const key = ref.key.trim();
+    const reason =
+      ref.reason && ref.reason.trim().length > 0
+        ? ref.reason.trim()
+        : "load required system memory";
+    if (!namespace || !key) {
+      continue;
+    }
+    const dedupe = `${namespace}\u0000${key}`;
+    if (seen.has(dedupe)) {
+      continue;
+    }
+    seen.add(dedupe);
+    normalized.push({
+      namespace,
+      key,
+      reason,
+    });
+  }
+  return normalized;
 }

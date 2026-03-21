@@ -106,6 +106,16 @@ const contextEnvelopeRuntimeFeedbackSchema = z.object({
   previousToolErrors: z.array(z.string()).optional(),
   retryHint: z.string().optional(),
   attachmentSources: z.array(agentAttachmentSchema).optional().default([]),
+  systemMemoryReferences: z
+    .array(
+      z.object({
+        namespace: z.string().min(1),
+        key: z.string().min(1),
+        reason: z.string().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
 });
 
 const contextEnvelopeDiscordSchema = z.object({

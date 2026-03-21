@@ -63,6 +63,16 @@ const runTaskBodySchema: z.ZodType<AgentRunRequest> = z.object({
         allow_external_mcp: false,
       },
     }),
+  system_memory_refs: z
+    .array(
+      z.object({
+        namespace: z.string().min(1),
+        key: z.string().min(1),
+        reason: z.string().min(1),
+      }),
+    )
+    .optional()
+    .default([]),
   tool_calls: z
     .array(
       z.object({

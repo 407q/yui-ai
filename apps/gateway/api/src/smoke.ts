@@ -39,8 +39,43 @@ async function main(): Promise<void> {
     `host-smoke-${randomUUID()}.txt`,
   );
   let sessionId: string | null = null;
+  let dbMigrated = false;
 
   try {
+    await pool.query(`
+      ALTER TABLE memory_entries
+      ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false
+    `);
+    dbMigrated = true;
+    await pool.query(
+      `
+      INSERT INTO memory_entries (
+        memory_id,
+        user_id,
+        namespace,
+        "key",
+        value_json,
+        tags_json,
+        is_system,
+        updated_at
+      )
+      VALUES ($1, '__system__', 'system.policy', 'core_rules_smoke', $2::jsonb, '["system","policy"]'::jsonb, true, NOW())
+      ON CONFLICT (user_id, namespace, "key")
+      DO UPDATE SET
+        value_json = EXCLUDED.value_json,
+        tags_json = EXCLUDED.tags_json,
+        is_system = true,
+        updated_at = NOW()
+      `,
+      [
+        "sys_policy_core_rules_smoke",
+        JSON.stringify({
+          execution: ["complete tasks safely"],
+          safety: ["deny harmful requests"],
+        }),
+      ],
+    );
+
     await fs.mkdir(path.dirname(hostFilePath), { recursive: true });
     await fs.writeFile(hostFilePath, "host smoke content", "utf8");
     console.log("[api:smoke] request/response summary:");
@@ -238,6 +273,10 @@ async function main(): Promise<void> {
     assert(
       runtimeAnswer.includes("[Discord Context]"),
       "runtime prompt should include discord context envelope",
+    );
+    assert(
+      runtimeAnswer.includes("system_memory_refs"),
+      "runtime prompt should include system memory refs in runtime feedback context",
     );
     assert(
       runtimeAnswer.includes(`discord_user_id: ${userId}`),
@@ -666,6 +705,99 @@ async function main(): Promise<void> {
       reason: "memory delete",
     });
     assert(memoryDeleteResult.status === "ok", "memory.delete should succeed");
+
+    const systemMemoryGetResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "memory.get",
+      execution_target: "gateway_adapter",
+      arguments: {
+        namespace: "system.policy",
+        key: "core_rules_smoke",
+      },
+      reason: "system memory get",
+    });
+    assert(systemMemoryGetResult.status === "ok", "memory.get should read system memory");
+    const systemMemoryGetPayload = systemMemoryGetResult.result as {
+      found: boolean;
+      entry: {
+        namespace: string;
+        key: string;
+        is_system: boolean;
+      } | null;
+    };
+    assert(systemMemoryGetPayload.found, "system memory entry should be found");
+    assert(
+      systemMemoryGetPayload.entry?.is_system === true,
+      "memory.get should expose is_system=true for system entry",
+    );
+
+    const systemMemorySearchResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "memory.search",
+      execution_target: "gateway_adapter",
+      arguments: {
+        namespace: "system.policy",
+        query: "core_rules_smoke",
+        limit: 5,
+      },
+      reason: "system memory search",
+    });
+    assert(
+      systemMemorySearchResult.status === "ok",
+      "memory.search should include system memory entries",
+    );
+    const systemMemorySearchPayload = systemMemorySearchResult.result as {
+      entries: Array<{ key: string; is_system: boolean }>;
+    };
+    assert(
+      systemMemorySearchPayload.entries.some(
+        (entry) => entry.key === "core_rules_smoke" && entry.is_system === true,
+      ),
+      "memory.search should return system entry with is_system=true",
+    );
+
+    const systemMemoryUpsertDenied = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "memory.upsert",
+      execution_target: "gateway_adapter",
+      arguments: {
+        namespace: "system.policy",
+        key: "core_rules_smoke",
+        value: {
+          execution: ["tamper"],
+        },
+      },
+      reason: "system memory upsert denied",
+    });
+    assert(
+      systemMemoryUpsertDenied.status === "error" &&
+        systemMemoryUpsertDenied.error_code === "memory_system_entry_read_only",
+      "memory.upsert should reject writes to system memory",
+    );
+
+    const systemMemoryDeleteDenied = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "memory.delete",
+      execution_target: "gateway_adapter",
+      arguments: {
+        namespace: "system.policy",
+        key: "core_rules_smoke",
+      },
+      reason: "system memory delete denied",
+    });
+    assert(
+      systemMemoryDeleteDenied.status === "error" &&
+        systemMemoryDeleteDenied.error_code === "memory_system_entry_read_only",
+      "memory.delete should reject deletes of system memory",
+    );
 
     const discordChannelHistoryResult = await callMcpTool(app, reporter, {
       task_id: startBody.taskId,
@@ -1128,6 +1260,11 @@ async function main(): Promise<void> {
 
     console.log("[api:smoke] gateway API checks passed.");
   } finally {
+    if (dbMigrated) {
+      await pool.query(
+        "DELETE FROM memory_entries WHERE user_id = '__system__' AND namespace = 'system.policy' AND key = 'core_rules_smoke'",
+      );
+    }
     if (sessionId) {
       await pool.query("DELETE FROM sessions WHERE session_id = $1", [sessionId]);
     }

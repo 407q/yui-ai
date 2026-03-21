@@ -31,6 +31,11 @@ export interface SdkSessionCallbacks {
   onPermissionRequest: (
     input: PermissionRequestInput,
   ) => Promise<PermissionRequestResult>;
+  systemMemoryRefs?: Array<{
+    namespace: string;
+    key: string;
+    reason: string;
+  }>;
   __toolRoutingMode?: ToolRoutingMode;
 }
 
@@ -45,6 +50,11 @@ export interface SendAndWaitInput {
   session_id: string;
   sdk_session_id: string;
   prompt: string;
+  system_memory_refs?: Array<{
+    namespace: string;
+    key: string;
+    reason: string;
+  }>;
   tool_calls: AgentToolCallSpec[];
   signal: AbortSignal;
   callbacks: SdkSessionCallbacks;
@@ -193,6 +203,12 @@ const memoryDeleteSchema = z.object({
   key: z.string().min(1),
 });
 
+const systemMemoryFetchSchema = z.object({
+  namespace: z.string().min(1),
+  key: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+
 const discordChannelHistorySchema = z.object({
   channelId: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(50).optional().default(20),
@@ -210,6 +226,24 @@ const HYBRID_BUILTIN_TOOL_ALLOWLIST = [
   "grep",
   "glob",
   "view",
+] as const;
+
+const DEFAULT_SYSTEM_MEMORY_REFS = [
+  {
+    namespace: "system.persona",
+    key: "active_profile",
+    reason: "load active persona profile",
+  },
+  {
+    namespace: "system.policy",
+    key: "core_rules",
+    reason: "load core behavior and safety rules",
+  },
+  {
+    namespace: "system.tooling",
+    key: "routing_contract",
+    reason: "load tool routing contract",
+  },
 ] as const;
 
 const GATEWAY_ONLY_BUILTIN_BLOCKLIST: ReadonlySet<string> = new Set([
@@ -278,7 +312,11 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       );
     }
 
-    const declaredToolExecution = await executeDeclaredToolCalls(input);
+    const systemMemoryToolCalls = buildSystemMemoryToolCalls(input.system_memory_refs);
+    const declaredToolExecution = await executeDeclaredToolCalls({
+      ...input,
+      tool_calls: [...systemMemoryToolCalls, ...input.tool_calls],
+    });
     const activeSend: ActiveSendContext = {
       input,
       runtimeToolResults: [],
@@ -287,7 +325,10 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       builtinToolByCallId: new Map(),
     };
     state.activeSend = activeSend;
-    state.callbacks = input.callbacks;
+    state.callbacks = {
+      ...input.callbacks,
+      systemMemoryRefs: normalizeSystemMemoryRefs(input.system_memory_refs),
+    };
 
     try {
       if (!state.session) {
@@ -732,7 +773,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       this.defineGatewayTool(
         state,
         "memory.search",
-        "Search entries in the Gateway memory store. For knowledge-heavy questions, consult this before fallback assumptions.",
+        "Search entries in the Gateway memory store. For knowledge-heavy questions, always consult memory.search/get (including system.*) before fallback assumptions.",
         memorySearchSchema,
         "search memory entries",
       ),
@@ -1035,7 +1076,11 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
     assertCallbacks(input.callbacks);
     assertNotAborted(input.signal);
 
-    const declaredToolExecution = await executeDeclaredToolCalls(input);
+    const systemMemoryToolCalls = buildSystemMemoryToolCalls(input.system_memory_refs);
+    const declaredToolExecution = await executeDeclaredToolCalls({
+      ...input,
+      tool_calls: [...systemMemoryToolCalls, ...input.tool_calls],
+    });
     const toolResults = declaredToolExecution.toolResults;
 
     const succeeded = toolResults.filter((result) => result.status === "ok").length;
@@ -1169,6 +1214,71 @@ async function executeDeclaredToolCalls(
   };
 }
 
+function normalizeSystemMemoryRefs(
+  refs:
+    | Array<{
+        namespace: string;
+        key: string;
+        reason: string;
+      }>
+    | undefined,
+): Array<{
+  namespace: string;
+  key: string;
+  reason: string;
+}> {
+  const source = refs && refs.length > 0 ? refs : [...DEFAULT_SYSTEM_MEMORY_REFS];
+  const parsed = source
+    .map((entry) => systemMemoryFetchSchema.safeParse(entry))
+    .filter(
+      (
+        result,
+      ): result is { success: true; data: z.infer<typeof systemMemoryFetchSchema> } =>
+        result.success,
+    )
+    .map((result) => ({
+      namespace: result.data.namespace.trim(),
+      key: result.data.key.trim(),
+      reason:
+        result.data.reason && result.data.reason.trim().length > 0
+          ? result.data.reason.trim()
+          : "load required system memory",
+    }))
+    .filter((entry) => entry.namespace.length > 0 && entry.key.length > 0);
+  const seen = new Set<string>();
+  const deduped: Array<{ namespace: string; key: string; reason: string }> = [];
+  for (const entry of parsed) {
+    const key = `${entry.namespace}\u0000${entry.key}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
+function buildSystemMemoryToolCalls(
+  refs:
+    | Array<{
+        namespace: string;
+        key: string;
+        reason: string;
+      }>
+    | undefined,
+): AgentToolCallSpec[] {
+  const normalized = normalizeSystemMemoryRefs(refs);
+  return normalized.map((entry) => ({
+    tool_name: "memory.get",
+    execution_target: "gateway_adapter",
+    arguments: {
+      namespace: entry.namespace,
+      key: entry.key,
+    },
+    reason: `system memory preload: ${entry.reason}`,
+  }));
+}
+
 function mapDeclaredToolCalls(
   toolCalls: AgentToolCallSpec[],
 ): Map<string, AgentToolCallSpec> {
@@ -1280,6 +1390,8 @@ function buildSystemMessageWithRuntimeContracts(
     "- host_tool_usage_rule: use host.* tools only when user explicitly requests host access and approval allows it",
     "- host_approval_trigger_rule: when host access is explicitly requested, call the required host.* tool directly; gateway will return approval_required and start approval flow automatically when needed",
     "- discord_tool_usage_rule: discord.* tools are approval-gated; call the required discord.* tool directly so gateway can trigger approval_required flow with concrete scope",
+    "- system_memory_contract: treat provided system_memory_refs as mandatory context; execute memory.get for each ref before other knowledge-heavy reasoning",
+    "- system_memory_write_guard: do not attempt to update/delete system.* entries; they are read-only",
     routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
     "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",

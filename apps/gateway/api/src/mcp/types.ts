@@ -44,6 +44,7 @@ export interface MemoryEntryRecord {
   key: string;
   valueJson: Record<string, unknown>;
   tagsJson: string[];
+  isSystem: boolean;
   backlinks?: MemoryBacklinkRecord[];
   updatedAt: Date;
 }
