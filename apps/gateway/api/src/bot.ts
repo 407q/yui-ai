@@ -118,6 +118,7 @@ interface PendingApproval {
     toolName: string;
     operationCode: ApprovalOperationCode;
     target: string;
+    targetLine?: string;
   };
 }
 
@@ -2441,6 +2442,67 @@ function resolveApprovalTargetLine(request: {
   }
 }
 
+function resolveApprovalTargetLineFromRequest(request: {
+  operationCode: ApprovalOperationCode;
+  target: string;
+  targetLine?: string;
+}): string {
+  const cachedTargetLine = request.targetLine?.trim();
+  if (cachedTargetLine && cachedTargetLine.length > 0) {
+    return cachedTargetLine;
+  }
+  return resolveApprovalTargetLine(request);
+}
+
+async function resolveDiscordChannelNameById(channelId: string): Promise<string | undefined> {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !("name" in channel)) {
+      return undefined;
+    }
+    const name = typeof channel.name === "string" ? channel.name.trim() : "";
+    return name.length > 0 ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveApprovalTargetLineForSession(
+  session: MockSession,
+  request: {
+    operationCode: ApprovalOperationCode;
+    target: string;
+  },
+): Promise<string> {
+  if (request.operationCode !== "discord_channel_history") {
+    return resolveApprovalTargetLine(request);
+  }
+  const scopeChannelId = parseScopeSuffix(request.target, "discord_channel:");
+  if (scopeChannelId === "__session_channel__" || request.target === "session channel") {
+    return `チャンネル履歴参照: ${formatDiscordChannelTarget(
+      session.channelName,
+      session.channelId,
+    )}`;
+  }
+  if (!scopeChannelId) {
+    return resolveApprovalTargetLine(request);
+  }
+  if (scopeChannelId === session.channelId) {
+    return `チャンネル履歴参照: ${formatDiscordChannelTarget(
+      session.channelName,
+      session.channelId,
+    )}`;
+  }
+  if (scopeChannelId === session.threadId) {
+    return `チャンネル履歴参照: ${formatDiscordChannelTarget(
+      session.threadName,
+      session.threadId,
+    )}`;
+  }
+  const resolvedName = await resolveDiscordChannelNameById(scopeChannelId);
+  return `チャンネル履歴参照: ${formatDiscordChannelTarget(resolvedName, scopeChannelId)}`;
+}
+
 function resolveApprovalDecisionLine(decision: ApprovalDecision): string {
   switch (decision) {
     case "approved":
@@ -2460,15 +2522,17 @@ function buildApprovalRequestMessageContent(input: {
   toolName: string;
   operationCode: ApprovalOperationCode;
   target: string;
+  targetLine?: string;
 }): string {
   const request = {
     operationCode: input.operationCode,
     target: input.target,
+    targetLine: input.targetLine,
   };
   const lines = [
     "🛂 承認リクエスト",
     input.toolName,
-    resolveApprovalTargetLine(request),
+    resolveApprovalTargetLineFromRequest(request),
     "この操作を実行しますか？",
   ];
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
@@ -2478,16 +2542,18 @@ function buildApprovalResultMessageContent(input: {
   toolName: string;
   operationCode: ApprovalOperationCode;
   target: string;
+  targetLine?: string;
   decision: ApprovalDecision;
 }): string {
   const request = {
     operationCode: input.operationCode,
     target: input.target,
+    targetLine: input.targetLine,
   };
   const lines = [
     "🛂 承認結果",
     input.toolName,
-    resolveApprovalTargetLine(request),
+    resolveApprovalTargetLineFromRequest(request),
     resolveApprovalDecisionLine(input.decision),
   ];
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
@@ -2504,7 +2570,7 @@ function buildApprovalSyncFailureMessageContent(
   const lines = [
     "🛂 承認結果の反映",
     pending.request.toolName,
-    resolveApprovalTargetLine(pending.request),
+    resolveApprovalTargetLineFromRequest(pending.request),
     "❌ 失敗",
     systemMessage,
   ];
@@ -2612,6 +2678,10 @@ async function syncPendingApprovalMessage(
     `approval requested: ${pending.toolName} ${pending.operationCode} ${pending.target}`,
   );
   touchSession(session);
+  const targetLine = await resolveApprovalTargetLineForSession(session, {
+    operationCode: pending.operationCode,
+    target: pending.target,
+  });
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -2629,6 +2699,7 @@ async function syncPendingApprovalMessage(
       toolName: pending.toolName,
       operationCode: pending.operationCode,
       target: pending.target,
+      targetLine,
     })}`,
     components: [row],
   });
@@ -2641,6 +2712,7 @@ async function syncPendingApprovalMessage(
       toolName: pending.toolName,
       operationCode: pending.operationCode,
       target: pending.target,
+      targetLine,
     },
   });
 }
@@ -2671,6 +2743,7 @@ async function syncPendingApprovalResolution(
         toolName: localPending.request.toolName,
         operationCode: localPending.request.operationCode,
         target: localPending.request.target,
+        targetLine: localPending.request.targetLine,
         decision,
       }),
       components: [],
@@ -3487,6 +3560,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
       toolName: pending.request.toolName,
       operationCode: pending.request.operationCode,
       target: pending.request.target,
+      targetLine: pending.request.targetLine,
       decision,
     }),
     components: [],
