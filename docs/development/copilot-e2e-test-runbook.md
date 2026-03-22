@@ -39,6 +39,8 @@ COPILOT_SEND_TIMEOUT_MS=180000
 COPILOT_SDK_LOG_LEVEL=info
 ```
 
+`COPILOT_SEND_TIMEOUT_MS` は、送信開始時刻ではなく「最後のツール実行アクティビティから `session.idle` まで」の待機時間として扱う。
+
 ---
 
 ## 3. 事前準備

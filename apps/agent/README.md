@@ -56,6 +56,7 @@ COPILOT_SDK_LOG_LEVEL=info
 - `BOT_MODE=standard` では Node.js 22 以上が必要です（`node:sqlite` を利用）。
 - `COPILOT_GITHUB_TOKEN` は必須です（未設定時は起動失敗）。
 - `COPILOT_MODEL` は任意（既定: `claude-sonnet-4.6`）。
+- `COPILOT_SEND_TIMEOUT_MS` は「最後のツール実行アクティビティから `session.idle` まで」の許容待機時間（ミリ秒）です。
 - `COPILOT_WORKING_DIRECTORY` が存在しない場合、Agent は自動で `process.cwd()` にフォールバックします。
 - Copilot provider は Runtime callback を維持し、tool callback を常に Gateway MCP に委譲します。
 - Gateway API からの `runtime_policy.tool_routing.mode=hybrid_container_builtin_gateway_host` では、

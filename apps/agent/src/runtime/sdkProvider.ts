@@ -97,6 +97,7 @@ interface ActiveSendContext {
   runtimeToolEvents: ToolProgressEvent[];
   declaredToolMap: Map<string, AgentToolCallSpec>;
   builtinToolByCallId: Map<string, BuiltInToolInvocation>;
+  sendTimeoutLastToolActivityAtMs: number;
 }
 
 interface SdkSessionState {
@@ -323,6 +324,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       runtimeToolEvents: [],
       declaredToolMap: mapDeclaredToolCalls(input.tool_calls),
       builtinToolByCallId: new Map(),
+      sendTimeoutLastToolActivityAtMs: Date.now(),
     };
     state.activeSend = activeSend;
     state.callbacks = {
@@ -343,6 +345,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           declaredToolExecution.toolResults,
         ),
         input.signal,
+        activeSend,
       );
 
       const mergedToolResults = [
@@ -839,6 +842,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     const reason = declaredToolSpec?.reason ?? input.defaultReason;
     const delayMs = declaredToolSpec?.delay_ms ?? 0;
     const callId = `call_${randomUUID()}`;
+    this.markSendToolExecutionActivity(activeSend);
     activeSend.runtimeToolEvents.push(
       createToolProgressStartEvent({
         callId,
@@ -855,191 +859,230 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     }
     assertNotAborted(activeSend.input.signal);
 
-    let permission: PermissionRequestResult;
     try {
-      permission = await activeSend.input.callbacks.onPermissionRequest({
-        task_id: activeSend.input.task_id,
-        session_id: activeSend.input.session_id,
-        tool_name: input.toolName,
-        reason,
-        arguments: input.arguments,
-        execution_target: executionTarget,
-        approval_scope: resolveApprovalScopeFromGatewayToolCall(
-          input.toolName,
-          input.arguments,
-        ),
-      });
-    } catch (error) {
-      const message = `permission request failed: ${error instanceof Error ? error.message : String(error)}`;
-      const failedResult: ToolCallResult = {
-        task_id: activeSend.input.task_id,
-        call_id: callId,
-        tool_name: input.toolName,
-        execution_target: executionTarget,
-        reason,
-        arguments: input.arguments,
-        status: "error",
-        error_code: "permission_request_failed",
-        message,
-      };
-      activeSend.runtimeToolResults.push(failedResult);
+      let permission: PermissionRequestResult;
+      try {
+        permission = await activeSend.input.callbacks.onPermissionRequest({
+          task_id: activeSend.input.task_id,
+          session_id: activeSend.input.session_id,
+          tool_name: input.toolName,
+          reason,
+          arguments: input.arguments,
+          execution_target: executionTarget,
+          approval_scope: resolveApprovalScopeFromGatewayToolCall(
+            input.toolName,
+            input.arguments,
+          ),
+        });
+      } catch (error) {
+        const message = `permission request failed: ${error instanceof Error ? error.message : String(error)}`;
+        const failedResult: ToolCallResult = {
+          task_id: activeSend.input.task_id,
+          call_id: callId,
+          tool_name: input.toolName,
+          execution_target: executionTarget,
+          reason,
+          arguments: input.arguments,
+          status: "error",
+          error_code: "permission_request_failed",
+          message,
+        };
+        activeSend.runtimeToolResults.push(failedResult);
+        activeSend.runtimeToolEvents.push(
+          createToolProgressResultEvent({
+            callId,
+            toolName: input.toolName,
+            executionTarget,
+            status: "error",
+            errorCode: failedResult.error_code,
+            message: failedResult.message,
+            details: { error: message },
+          }),
+        );
+        return {
+          resultType: "failure",
+          textResultForLlm: message,
+          error: message,
+        };
+      }
+
+      if (permission.decision === "deny") {
+        const deniedResult: ToolCallResult = {
+          task_id: activeSend.input.task_id,
+          call_id: callId,
+          tool_name: input.toolName,
+          execution_target: executionTarget,
+          reason,
+          arguments: input.arguments,
+          status: "error",
+          error_code: "permission_denied",
+          message: permission.reason,
+        };
+        activeSend.runtimeToolResults.push(deniedResult);
+        activeSend.runtimeToolEvents.push(
+          createToolProgressResultEvent({
+            callId,
+            toolName: input.toolName,
+            executionTarget,
+            status: "error",
+            errorCode: deniedResult.error_code,
+            message: deniedResult.message,
+            details: { reason: permission.reason },
+          }),
+        );
+        return {
+          resultType: "denied",
+          textResultForLlm: permission.reason,
+          error: permission.reason,
+        };
+      }
+
+      let toolResult: ToolCallResult;
+      try {
+        toolResult = await activeSend.input.onToolCall({
+          task_id: activeSend.input.task_id,
+          session_id: activeSend.input.session_id,
+          call_id: callId,
+          tool_name: input.toolName,
+          execution_target: executionTarget,
+          arguments: input.arguments,
+          reason,
+        });
+      } catch (error) {
+        const message = `tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
+        const failedResult: ToolCallResult = {
+          task_id: activeSend.input.task_id,
+          call_id: callId,
+          tool_name: input.toolName,
+          execution_target: executionTarget,
+          reason,
+          arguments: input.arguments,
+          status: "error",
+          error_code: "tool_execution_failed",
+          message,
+        };
+        activeSend.runtimeToolResults.push(failedResult);
+        activeSend.runtimeToolEvents.push(
+          createToolProgressResultEvent({
+            callId,
+            toolName: input.toolName,
+            executionTarget,
+            status: "error",
+            errorCode: failedResult.error_code,
+            message: failedResult.message,
+            details: { error: message },
+          }),
+        );
+        return {
+          resultType: "failure",
+          textResultForLlm: message,
+          error: message,
+        };
+      }
+      const enrichedToolResult: ToolCallResult =
+        toolResult.status === "ok"
+          ? {
+              ...toolResult,
+              tool_name: input.toolName,
+              execution_target: executionTarget,
+              reason,
+              arguments: input.arguments,
+            }
+          : {
+              ...toolResult,
+              tool_name: input.toolName,
+              execution_target: executionTarget,
+              reason,
+              arguments: input.arguments,
+            };
+      activeSend.runtimeToolResults.push(enrichedToolResult);
       activeSend.runtimeToolEvents.push(
         createToolProgressResultEvent({
           callId,
           toolName: input.toolName,
           executionTarget,
-          status: "error",
-          errorCode: failedResult.error_code,
-          message: failedResult.message,
-          details: { error: message },
+          status: enrichedToolResult.status,
+          errorCode:
+            enrichedToolResult.status === "error"
+              ? enrichedToolResult.error_code
+              : undefined,
+          message:
+            enrichedToolResult.status === "error"
+              ? enrichedToolResult.message
+              : undefined,
+          result:
+            enrichedToolResult.status === "ok"
+              ? enrichedToolResult.result
+              : undefined,
+          details:
+            enrichedToolResult.status === "error"
+              ? enrichedToolResult.details
+              : undefined,
         }),
       );
-      return {
-        resultType: "failure",
-        textResultForLlm: message,
-        error: message,
-      };
-    }
 
-    if (permission.decision === "deny") {
-      const deniedResult: ToolCallResult = {
-        task_id: activeSend.input.task_id,
-        call_id: callId,
-        tool_name: input.toolName,
-        execution_target: executionTarget,
-        reason,
-        arguments: input.arguments,
-        status: "error",
-        error_code: "permission_denied",
-        message: permission.reason,
-      };
-      activeSend.runtimeToolResults.push(deniedResult);
-      activeSend.runtimeToolEvents.push(
-        createToolProgressResultEvent({
-          callId,
-          toolName: input.toolName,
-          executionTarget,
-          status: "error",
-          errorCode: deniedResult.error_code,
-          message: deniedResult.message,
-          details: { reason: permission.reason },
-        }),
-      );
-      return {
-        resultType: "denied",
-        textResultForLlm: permission.reason,
-        error: permission.reason,
-      };
-    }
+      if (enrichedToolResult.status === "ok") {
+        const text = safeJsonStringify(enrichedToolResult.result);
+        return {
+          resultType: "success",
+          textResultForLlm: text,
+          sessionLog: text,
+        };
+      }
 
-    let toolResult: ToolCallResult;
-    try {
-      toolResult = await activeSend.input.onToolCall({
-        task_id: activeSend.input.task_id,
-        session_id: activeSend.input.session_id,
-        call_id: callId,
-        tool_name: input.toolName,
-        execution_target: executionTarget,
-        arguments: input.arguments,
-        reason,
-      });
-    } catch (error) {
-      const message = `tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
-      const failedResult: ToolCallResult = {
-        task_id: activeSend.input.task_id,
-        call_id: callId,
-        tool_name: input.toolName,
-        execution_target: executionTarget,
-        reason,
-        arguments: input.arguments,
-        status: "error",
-        error_code: "tool_execution_failed",
-        message,
-      };
-      activeSend.runtimeToolResults.push(failedResult);
-      activeSend.runtimeToolEvents.push(
-        createToolProgressResultEvent({
-          callId,
-          toolName: input.toolName,
-          executionTarget,
-          status: "error",
-          errorCode: failedResult.error_code,
-          message: failedResult.message,
-          details: { error: message },
-        }),
-      );
       return {
-        resultType: "failure",
-        textResultForLlm: message,
-        error: message,
+        resultType: mapToolErrorToResultType(enrichedToolResult.error_code),
+        textResultForLlm: `${enrichedToolResult.error_code}: ${enrichedToolResult.message}`,
+        error: enrichedToolResult.message,
       };
+    } finally {
+      this.markSendToolExecutionActivity(activeSend);
     }
-    const enrichedToolResult: ToolCallResult =
-      toolResult.status === "ok"
-        ? {
-            ...toolResult,
-            tool_name: input.toolName,
-            execution_target: executionTarget,
-            reason,
-            arguments: input.arguments,
-          }
-        : {
-            ...toolResult,
-            tool_name: input.toolName,
-            execution_target: executionTarget,
-            reason,
-            arguments: input.arguments,
-          };
-    activeSend.runtimeToolResults.push(enrichedToolResult);
-    activeSend.runtimeToolEvents.push(
-      createToolProgressResultEvent({
-        callId,
-        toolName: input.toolName,
-        executionTarget,
-        status: enrichedToolResult.status,
-        errorCode:
-          enrichedToolResult.status === "error"
-            ? enrichedToolResult.error_code
-            : undefined,
-        message:
-          enrichedToolResult.status === "error"
-            ? enrichedToolResult.message
-            : undefined,
-        result:
-          enrichedToolResult.status === "ok"
-            ? enrichedToolResult.result
-            : undefined,
-        details:
-          enrichedToolResult.status === "error"
-            ? enrichedToolResult.details
-            : undefined,
-      }),
-    );
-
-    if (enrichedToolResult.status === "ok") {
-      const text = safeJsonStringify(enrichedToolResult.result);
-      return {
-        resultType: "success",
-        textResultForLlm: text,
-        sessionLog: text,
-      };
-    }
-
-    return {
-      resultType: mapToolErrorToResultType(enrichedToolResult.error_code),
-      textResultForLlm: `${enrichedToolResult.error_code}: ${enrichedToolResult.message}`,
-      error: enrichedToolResult.message,
-    };
   }
 
   private async sendAndWaitWithAbort(
     session: CopilotSession,
     prompt: string,
     signal: AbortSignal,
+    activeSend: ActiveSendContext,
   ): Promise<AssistantMessageEvent | undefined> {
     assertNotAborted(signal);
 
     let removeAbortListener: (() => void) | undefined;
+    let removeSessionListener: (() => void) | undefined;
+    let timeoutWatcher: ReturnType<typeof setInterval> | undefined;
+    let waitingForCurrentSend = false;
+    let latestAssistantMessage: AssistantMessageEvent | undefined;
+
+    const completionPromise = new Promise<AssistantMessageEvent | undefined>(
+      (resolve, reject) => {
+        const onSessionEvent = (event: SessionEvent) => {
+          if (!waitingForCurrentSend) {
+            return;
+          }
+          if (event.type === "assistant.message") {
+            latestAssistantMessage = event;
+            return;
+          }
+          if (event.type === "session.idle") {
+            resolve(latestAssistantMessage);
+          }
+        };
+        removeSessionListener = session.on(onSessionEvent);
+
+        timeoutWatcher = setInterval(() => {
+          if (!waitingForCurrentSend) {
+            return;
+          }
+          const elapsed = Date.now() - activeSend.sendTimeoutLastToolActivityAtMs;
+          if (elapsed <= this.options.sendTimeoutMs) {
+            return;
+          }
+          reject(createSendTimeoutError(this.options.sendTimeoutMs));
+        }, 200);
+      },
+    );
+
     const abortPromise = new Promise<never>((_resolve, reject) => {
       const onAbort = () => {
         void session.abort().catch(() => undefined);
@@ -1052,13 +1095,25 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     });
 
     try {
+      activeSend.sendTimeoutLastToolActivityAtMs = Date.now();
+      waitingForCurrentSend = true;
+      await Promise.race([session.send({ prompt }), abortPromise]);
       return (await Promise.race([
-        session.sendAndWait({ prompt }, this.options.sendTimeoutMs),
+        completionPromise,
         abortPromise,
       ])) as AssistantMessageEvent | undefined;
     } finally {
+      waitingForCurrentSend = false;
+      if (timeoutWatcher) {
+        clearInterval(timeoutWatcher);
+      }
+      removeSessionListener?.();
       removeAbortListener?.();
     }
+  }
+
+  private markSendToolExecutionActivity(activeSend: ActiveSendContext): void {
+    activeSend.sendTimeoutLastToolActivityAtMs = Date.now();
   }
 }
 
@@ -1119,6 +1174,10 @@ function createAbortError(): Error {
   const error = new Error("Task execution aborted.");
   error.name = "AbortError";
   return error;
+}
+
+function createSendTimeoutError(timeoutMs: number): Error {
+  return new Error(`Timeout after ${timeoutMs}ms waiting for session.idle`);
 }
 
 async function executeDeclaredToolCalls(
@@ -1884,6 +1943,7 @@ function onSessionEvent(state: SdkSessionState, event: SessionEvent): void {
   if (!isHybridBuiltInTool(toolName)) {
     return;
   }
+  activeSend.sendTimeoutLastToolActivityAtMs = Date.now();
   const args = toRecord(event.data.arguments);
   activeSend.runtimeToolEvents.push(
     createToolProgressStartEvent({
