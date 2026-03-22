@@ -360,7 +360,14 @@ interface GatewayRunRequestPayload {
 interface GatewayThreadStatusResponse {
   session: {
     sessionId: string;
+    userId: string;
+    channelId: string;
+    threadId: string;
     status: string;
+    lastThreadActivityAt?: string;
+    idleDeadlineAt?: string | null;
+    createdAt?: string;
+    updatedAt?: string;
   };
   latestTask: {
     taskId: string;
@@ -1763,6 +1770,19 @@ function attachSessionToUser(session: MockSession): void {
   sessionIdsByUserId.set(session.ownerUserId, current);
 }
 
+function detachSessionFromUser(session: MockSession): void {
+  const current = sessionIdsByUserId.get(session.ownerUserId);
+  if (!current) {
+    return;
+  }
+  current.delete(session.id);
+  if (current.size === 0) {
+    sessionIdsByUserId.delete(session.ownerUserId);
+    return;
+  }
+  sessionIdsByUserId.set(session.ownerUserId, current);
+}
+
 function setSessionStatus(
   session: MockSession,
   status: SessionStatus,
@@ -1778,6 +1798,32 @@ function createRuntimeFeedbackState(): RuntimeFeedbackState {
     previousToolErrors: [],
     attachmentSources: [],
   };
+}
+
+function parseDateOrFallback(
+  value: string | null | undefined,
+  fallback: Date,
+): Date {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function syncIdleTimerForSession(session: MockSession): void {
+  clearIdleTimer(session.id);
+  if (session.status === "closed_by_user" || !shouldTrackIdle(session)) {
+    return;
+  }
+  const delayMs = Math.max(1, session.idleDeadlineAt.getTime() - Date.now());
+  const timer = setTimeout(() => {
+    void handleIdleTimeout(session.id);
+  }, delayMs);
+  idleTimerBySessionId.set(session.id, timer);
 }
 
 function extractThreadDisplayName(thread: AnyThreadChannel): string | undefined {
@@ -1817,6 +1863,144 @@ function resolveDiscordNickname(
     guildMember?.nickname?.trim() ??
     guildMember?.displayName?.trim();
   return nickname && nickname.length > 0 ? nickname : undefined;
+}
+
+async function fetchThreadStatusFromGateway(
+  threadId: Snowflake,
+): Promise<GatewayThreadStatusResponse | null> {
+  try {
+    return await gatewayApiRequest<GatewayThreadStatusResponse>(
+      "GET",
+      `/v1/threads/${threadId}/status`,
+    );
+  } catch (error) {
+    if (
+      error instanceof GatewayApiRequestError &&
+      error.statusCode === 404
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function upsertSessionFromGatewayStatus(input: {
+  thread: AnyThreadChannel;
+  status: GatewayThreadStatusResponse;
+  ownerUsername?: string;
+  ownerNickname?: string;
+}): MockSession {
+  const gatewaySessionId = input.status.session.sessionId;
+  const existingByThread = resolveSessionByThreadId(input.thread.id);
+  const existingByGateway = [...sessionsById.values()].find(
+    (candidate) => candidate.gatewaySessionId === gatewaySessionId,
+  );
+  const now = new Date();
+  const parsedLastThreadActivityAt = parseDateOrFallback(
+    input.status.session.lastThreadActivityAt,
+    now,
+  );
+  const parsedCreatedAt = parseDateOrFallback(
+    input.status.session.createdAt,
+    parsedLastThreadActivityAt,
+  );
+  const parsedUpdatedAt = parseDateOrFallback(
+    input.status.session.updatedAt,
+    now,
+  );
+  const parsedIdleDeadlineAt = parseDateOrFallback(
+    input.status.session.idleDeadlineAt ?? undefined,
+    new Date(parsedLastThreadActivityAt.getTime() + IDLE_TIMEOUT_SEC * 1000),
+  );
+  const status = mapGatewaySessionStatus(input.status.session.status);
+  const pendingApprovalId =
+    input.status.pendingApproval?.status === "requested"
+      ? input.status.pendingApproval.approvalId
+      : undefined;
+  const threadName = extractThreadDisplayName(input.thread) ?? input.thread.name;
+  const channelName = extractThreadParentName(input.thread);
+  const ownerUserId = input.status.session.userId as Snowflake;
+  const channelId = input.status.session.channelId as Snowflake;
+
+  let session = existingByThread ?? existingByGateway;
+  if (!session) {
+    session = {
+      id: newId("ses"),
+      ownerUserId,
+      ownerUsername: input.ownerUsername,
+      ownerNickname: input.ownerNickname,
+      channelId,
+      channelName,
+      threadId: input.thread.id,
+      threadName,
+      gatewaySessionId,
+      status,
+      createdAt: parsedCreatedAt,
+      updatedAt: parsedUpdatedAt,
+      lastActivityAt: parsedLastThreadActivityAt,
+      idleDeadlineAt: parsedIdleDeadlineAt,
+      currentTaskId: input.status.latestTask?.taskId,
+      pendingApprovalId,
+      runSequence: 0,
+      cancelRequested: false,
+      lastEvent: `status synced: ${input.status.session.status}`,
+      runtimeFeedback: createRuntimeFeedbackState(),
+      lastTaskEventTimestamp: undefined,
+      lastToolEventTimestamp: undefined,
+    };
+    sessionsById.set(session.id, session);
+    sessionIdByThreadId.set(input.thread.id, session.id);
+    attachSessionToUser(session);
+    syncIdleTimerForSession(session);
+    return session;
+  }
+
+  if (session.ownerUserId !== ownerUserId) {
+    detachSessionFromUser(session);
+    session.ownerUserId = ownerUserId;
+  }
+  if (input.ownerUsername && input.ownerUsername.trim().length > 0) {
+    session.ownerUsername = input.ownerUsername.trim();
+  }
+  if (input.ownerNickname !== undefined) {
+    session.ownerNickname = input.ownerNickname;
+  }
+  session.channelId = channelId;
+  session.channelName = channelName ?? session.channelName;
+  session.threadId = input.thread.id;
+  session.threadName = threadName ?? session.threadName;
+  session.gatewaySessionId = gatewaySessionId;
+  session.status = status;
+  session.createdAt = parsedCreatedAt;
+  session.updatedAt = parsedUpdatedAt;
+  session.lastActivityAt = parsedLastThreadActivityAt;
+  session.idleDeadlineAt = parsedIdleDeadlineAt;
+  session.currentTaskId = input.status.latestTask?.taskId;
+  session.pendingApprovalId = pendingApprovalId;
+  session.lastEvent = `status synced: ${input.status.session.status}`;
+
+  sessionsById.set(session.id, session);
+  sessionIdByThreadId.set(input.thread.id, session.id);
+  attachSessionToUser(session);
+  syncIdleTimerForSession(session);
+  return session;
+}
+
+async function restoreSessionFromGatewayThread(input: {
+  thread: AnyThreadChannel;
+}): Promise<MockSession | undefined> {
+  const status = await fetchThreadStatusFromGateway(input.thread.id);
+  if (!status) {
+    return undefined;
+  }
+  const ownerUsername = resolveDiscordUsername(input.thread, status.session.userId);
+  const ownerNickname = resolveDiscordNickname(input.thread, status.session.userId);
+  return upsertSessionFromGatewayStatus({
+    thread: input.thread,
+    status,
+    ownerUsername,
+    ownerNickname,
+  });
 }
 
 async function buildDiscordContextPayload(
@@ -3021,6 +3205,19 @@ function buildGatewayApiErrorLogLines(error: unknown): string[] {
   ];
 }
 
+function readGatewayApiErrorCode(error: unknown): string | null {
+  if (!(error instanceof GatewayApiRequestError)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(error.responseText);
+    const record = asRecord(parsed);
+    return readString(record, "error");
+  } catch {
+    return null;
+  }
+}
+
 async function waitForAgentTaskTerminalStatus(
   session: MockSession,
   taskId: string,
@@ -3272,10 +3469,10 @@ async function syncCloseWithGateway(
 }
 
 async function refreshSessionFromGateway(session: MockSession): Promise<void> {
-  const status = await gatewayApiRequest<GatewayThreadStatusResponse>(
-    "GET",
-    `/v1/threads/${session.threadId}/status`,
-  );
+  const status = await fetchThreadStatusFromGateway(session.threadId);
+  if (!status) {
+    throw new Error("gateway_session_not_found");
+  }
   session.gatewaySessionId = status.session.sessionId;
   session.currentTaskId = status.latestTask?.taskId;
   session.pendingApprovalId =
@@ -3287,6 +3484,15 @@ async function refreshSessionFromGateway(session: MockSession): Promise<void> {
     mapGatewaySessionStatus(status.session.status),
     `status synced: ${status.session.status}`,
   );
+  session.lastActivityAt = parseDateOrFallback(
+    status.session.lastThreadActivityAt,
+    session.lastActivityAt,
+  );
+  session.idleDeadlineAt = parseDateOrFallback(
+    status.session.idleDeadlineAt ?? undefined,
+    new Date(session.lastActivityAt.getTime() + IDLE_TIMEOUT_SEC * 1000),
+  );
+  syncIdleTimerForSession(session);
 }
 
 async function runAgentTask(
@@ -3604,6 +3810,10 @@ function formatSessionControlMessage(command: "/close" | "/exit" | "/reboot"): s
   return `⚠️ \`${command}\` を受け付けました。セッションを終了します。`;
 }
 
+function formatSessionResumeMessage(): string {
+  return "▶️ `/resume` でセッションを再開しました。メッセージを送ると処理を再開します。";
+}
+
 async function closeAllSessions(by: Snowflake): Promise<number> {
   let closedCount = 0;
   for (const session of sessionsById.values()) {
@@ -3670,6 +3880,24 @@ async function executeSystemControl(
   setTimeout(() => {
     process.exit(0);
   }, 50);
+}
+
+async function syncResumeWithGateway(
+  session: MockSession,
+  userId: Snowflake,
+): Promise<void> {
+  await sendOperationLog(session.threadId, "gateway.resume.request", [
+    `- session_id=${session.gatewaySessionId ?? "unknown"}`,
+    `- task_id=${session.currentTaskId ?? "none"}`,
+    `- user_id=${userId}`,
+  ]);
+  await gatewayApiRequest("POST", `/v1/threads/${session.threadId}/resume`, {
+    userId,
+  });
+  await sendOperationLog(session.threadId, "gateway.resume.thread", [
+    `- thread_id=${session.threadId}`,
+    "- status=accepted",
+  ]);
 }
 
 async function startSessionFromMention(message: Message): Promise<void> {
@@ -3768,7 +3996,22 @@ async function handleSlashCommand(
     return;
   }
 
-  const session = resolveSessionByThreadId(interaction.channel.id);
+  const thread = interaction.channel;
+  let session = resolveSessionByThreadId(thread.id);
+  if (!session) {
+    try {
+      session = await restoreSessionFromGatewayThread({ thread });
+    } catch (error) {
+      console.error(`${LOG_PREFIX} session restore failed`, error);
+      await interaction.reply({
+        content:
+          "Gateway API からセッション状態の復元に失敗しました。しばらく待ってから再試行してください。",
+        ephemeral: true,
+      });
+      return;
+    }
+  }
+
   if (!session) {
     await interaction.reply({
       content: "このスレッドに対応するセッションが見つかりません。",
@@ -3841,6 +4084,46 @@ async function handleSlashCommand(
 
     closeSession(session, interaction.user.id);
     await interaction.reply({ content: formatSessionControlMessage("/close") });
+  } else if (commandName === "resume") {
+    try {
+      await syncResumeWithGateway(session, interaction.user.id);
+      await refreshSessionFromGateway(session);
+    } catch (error) {
+      const errorCode = readGatewayApiErrorCode(error);
+      console.error(`${LOG_PREFIX} resume sync failed`, error);
+      if (errorCode === "session_not_resumable") {
+        await interaction.reply({
+          content:
+            "このセッションはすでに稼働中です。必要なら `/status` で状態を確認してください。",
+          ephemeral: true,
+        });
+        return;
+      }
+      if (errorCode === "session_not_found") {
+        await interaction.reply({
+          content:
+            "このスレッドに対応する Gateway セッションが見つかりませんでした。新しく開始してください。",
+          ephemeral: true,
+        });
+        return;
+      }
+      await interaction.reply({
+        content:
+          "Gateway API への再開反映に失敗しました。しばらく待ってから再試行してください。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    clearRuntimeFeedback(session);
+    clearToolProgressMessagesForSession(session.id);
+    session.cancelRequested = false;
+    session.queuedRun = undefined;
+    session.runSequence += 1;
+    session.pendingApprovalId = undefined;
+    setSessionStatus(session, "idle_waiting", `resumed by <@${interaction.user.id}>`);
+    touchSession(session);
+    await interaction.reply({ content: formatSessionResumeMessage() });
   } else {
     await interaction.reply({
       content: "未対応のコマンドです。",
@@ -3854,9 +4137,21 @@ async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
 
-  const session = resolveSessionByThreadId(message.channel.id);
+  const thread = message.channel;
+  let session = resolveSessionByThreadId(thread.id);
   if (!session) {
-    return;
+    try {
+      session = await restoreSessionFromGatewayThread({ thread });
+    } catch (error) {
+      console.error(`${LOG_PREFIX} session restore failed for message`, error);
+      await message.reply(
+        "Gateway API からセッション状態の復元に失敗しました。しばらく待ってから再試行してください。",
+      );
+      return;
+    }
+    if (!session) {
+      return;
+    }
   }
 
   if (message.author.id !== session.ownerUserId) {

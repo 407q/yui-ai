@@ -24,6 +24,9 @@ const commands = [
     .setName("close")
     .setDescription("このスレッドのセッションを終了します"),
   new SlashCommandBuilder()
+    .setName("resume")
+    .setDescription("このスレッドのセッションを再開します"),
+  new SlashCommandBuilder()
     .setName("exit")
     .setDescription("全セッションを終了し、Botシステム全体を終了します"),
   new SlashCommandBuilder()

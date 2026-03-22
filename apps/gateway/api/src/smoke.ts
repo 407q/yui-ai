@@ -1506,6 +1506,118 @@ async function main(): Promise<void> {
     };
     assert(closeBody.session.status === "closed_by_user", "close should set closed status");
 
+    const closedMessageRejectedResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/messages`,
+      payload: {
+        userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
+        channelName: "smoke-channel",
+        threadName: "smoke-thread",
+        prompt: "message while closed",
+        attachmentNames: [],
+      },
+    });
+    const closedMessageRejectedBody = parseJsonBody(
+      closedMessageRejectedResponse.body,
+    ) as {
+      error?: string;
+    };
+    reporter.logHttp({
+      label: "threads/messages(closed)",
+      method: "POST",
+      url: `/v1/threads/${threadId}/messages`,
+      payload: {
+        userId,
+        prompt: "message while closed",
+      },
+      statusCode: closedMessageRejectedResponse.statusCode,
+      responseBody: closedMessageRejectedBody,
+    });
+    assertStatusCode(
+      closedMessageRejectedResponse.statusCode,
+      409,
+      "threads/messages(closed)",
+    );
+    assert(
+      closedMessageRejectedBody.error === "session_closed",
+      "closed session should reject thread messages",
+    );
+
+    const resumeResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/resume`,
+      payload: { userId },
+    });
+    const resumeResponseBody = parseJsonBody(resumeResponse.body);
+    reporter.logHttp({
+      label: "threads/resume",
+      method: "POST",
+      url: `/v1/threads/${threadId}/resume`,
+      payload: { userId },
+      statusCode: resumeResponse.statusCode,
+      responseBody: resumeResponseBody,
+    });
+    assertStatusCode(resumeResponse.statusCode, 200, "threads/resume");
+    const resumeBody = resumeResponseBody as {
+      session: { status: string; closedReason: string | null; closedAt: string | null };
+    };
+    assert(
+      resumeBody.session.status === "idle_waiting",
+      "resume should move session to idle_waiting",
+    );
+    assert(
+      resumeBody.session.closedReason === null && resumeBody.session.closedAt === null,
+      "resume should clear close metadata",
+    );
+
+    const resumedMessageAcceptedResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/messages`,
+      payload: {
+        userId,
+        username: "smoke-user",
+        nickname: "smoke-nick",
+        channelName: "smoke-channel",
+        threadName: "smoke-thread",
+        prompt: "message after resume",
+        attachmentNames: [],
+      },
+    });
+    const resumedMessageAcceptedBody = parseJsonBody(
+      resumedMessageAcceptedResponse.body,
+    ) as {
+      session?: { status?: string };
+      taskId?: string;
+      resumedFromIdle?: boolean;
+    };
+    reporter.logHttp({
+      label: "threads/messages(resumed)",
+      method: "POST",
+      url: `/v1/threads/${threadId}/messages`,
+      payload: {
+        userId,
+        prompt: "message after resume",
+      },
+      statusCode: resumedMessageAcceptedResponse.statusCode,
+      responseBody: resumedMessageAcceptedBody,
+    });
+    assertStatusCode(
+      resumedMessageAcceptedResponse.statusCode,
+      200,
+      "threads/messages(resumed)",
+    );
+    assert(
+      typeof resumedMessageAcceptedBody.taskId === "string" &&
+        resumedMessageAcceptedBody.taskId.length > 0,
+      "resumed session should accept new thread message",
+    );
+    assert(
+      resumedMessageAcceptedBody.session?.status === "running",
+      "resumed session message should transition to running",
+    );
+
     const listResponse = await app.inject({
       method: "GET",
       url: `/v1/sessions?userId=${encodeURIComponent(userId)}`,

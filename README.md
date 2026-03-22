@@ -120,7 +120,7 @@ yarn api:smoke
 ## P7 システム統合（Bot主導）
 
 - Discord Bot が `POST /v1/agent/tasks/run` / `GET /v1/agent/tasks/:taskId/status` / `POST /v1/agent/tasks/:taskId/cancel` を利用
-- `/cancel` `/close` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
+- `/cancel` `/close` `/resume` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
 - `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
 - `#host-read` は承認後に同一 path / operation の permission が付与され、再試行で承認ループしない
 - `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能

@@ -70,6 +70,11 @@ export interface ThreadCloseInput {
   userId: string;
 }
 
+export interface ThreadResumeInput {
+  threadId: string;
+  userId: string;
+}
+
 export interface ApprovalRequestInput {
   threadId: string;
   userId: string;
@@ -680,6 +685,62 @@ export class GatewayApiService {
         status: "closed_by_user",
         closedReason: "closed_by_user",
         closedAt: now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  async resumeThreadSession(input: ThreadResumeInput): Promise<{
+    session: SessionRecord;
+  }> {
+    let session = await this.requireSessionByThreadId(input.threadId);
+    session = await this.refreshIdleStatusIfNeeded(session);
+    if (session.status === "running" || session.status === "waiting_approval") {
+      throw new GatewayApiError(
+        409,
+        "session_not_resumable",
+        "The session is already active.",
+        {
+          sessionId: session.sessionId,
+          threadId: session.threadId,
+          status: session.status,
+        },
+      );
+    }
+    const now = new Date();
+    const idleDeadlineAt = this.calculateIdleDeadline(now);
+    const wasClosedByUser = session.status === "closed_by_user";
+    const nextStatus: SessionStatus = "idle_waiting";
+
+    await this.repository.updateSessionStatus(session.sessionId, nextStatus, {
+      closedReason: null,
+      closedAt: null,
+    });
+    await this.repository.updateSessionActivity(session.sessionId, now, idleDeadlineAt);
+
+    const latestTask = await this.repository.findLatestTaskBySessionId(session.sessionId);
+    if (latestTask) {
+      await this.repository.appendTaskEvent({
+        eventId: newId("event"),
+        taskId: latestTask.taskId,
+        eventType: "thread.session.resumed",
+        payloadJson: {
+          requestedBy: input.userId,
+          resumedFrom: session.status,
+          wasClosedByUser,
+        },
+        timestamp: now,
+      });
+    }
+
+    return {
+      session: {
+        ...session,
+        status: nextStatus,
+        lastThreadActivityAt: now,
+        idleDeadlineAt,
+        closedReason: null,
+        closedAt: null,
         updatedAt: now,
       },
     };

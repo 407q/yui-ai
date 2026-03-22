@@ -258,6 +258,24 @@ export async function registerGatewayRoutes(
     return result;
   });
 
+  app.post("/v1/threads/:threadId/resume", async (request) => {
+    const params = parseOrThrow(
+      threadParamsSchema,
+      request.params,
+      "invalid_thread_params",
+    );
+    const body = parseOrThrow(
+      threadActionBodySchema,
+      request.body,
+      "invalid_thread_resume_request",
+    );
+    const result = await service.resumeThreadSession({
+      threadId: params.threadId,
+      userId: body.userId,
+    });
+    return result;
+  });
+
   app.post("/v1/threads/:threadId/approvals/request", async (request) => {
     const params = parseOrThrow(
       threadParamsSchema,
