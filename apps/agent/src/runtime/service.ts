@@ -289,7 +289,7 @@ export class AgentRuntimeService {
 
   private async handlePermissionRequest(
     input: AgentRunRequest,
-    _request: PermissionRequestInput,
+    request: PermissionRequestInput,
   ): Promise<PermissionRequestResult> {
     const mode = input.runtime_policy?.tool_routing?.mode ?? "gateway_only";
     const allowExternal =
@@ -303,9 +303,51 @@ export class AgentRuntimeService {
       };
     }
 
+    if (request.execution_target !== "gateway_adapter") {
+      return {
+        decision: "allow",
+        reason: "non_gateway_execution_target",
+      };
+    }
+
+    if (!request.approval_scope) {
+      return {
+        decision: "allow",
+        reason: "no_approval_required",
+      };
+    }
+
+    const timeoutSec = resolveApprovalTimeoutSec();
+    const approvalResult = await this.gatewayMcpClient.requestApprovalAndWait({
+      task_id: request.task_id,
+      session_id: request.session_id,
+      tool_name: request.tool_name,
+      operation: request.approval_scope.operation,
+      path: request.approval_scope.path,
+      timeout_sec: timeoutSec,
+    });
+    if (approvalResult.decision === "approved") {
+      return {
+        decision: "allow",
+        reason: "approval_granted",
+      };
+    }
+
+    if (approvalResult.decision === "rejected") {
+      return {
+        decision: "deny",
+        reason: "approval_rejected",
+      };
+    }
+    if (approvalResult.decision === "timeout") {
+      return {
+        decision: "deny",
+        reason: "approval_timeout",
+      };
+    }
     return {
-      decision: "allow",
-      reason: "delegated_to_gateway_mcp",
+      decision: "deny",
+      reason: "approval_canceled",
     };
   }
 
@@ -447,6 +489,18 @@ function resolveMaxAttachmentBytes(): number {
   const parsed = Number.parseInt(configured, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return DEFAULT_MAX_ATTACHMENT_BYTES;
+  }
+  return parsed;
+}
+
+function resolveApprovalTimeoutSec(): number {
+  const configured = process.env.BOT_APPROVAL_TIMEOUT_SEC;
+  if (!configured) {
+    return 120;
+  }
+  const parsed = Number.parseInt(configured, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 120;
   }
   return parsed;
 }

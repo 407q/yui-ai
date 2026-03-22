@@ -6,48 +6,120 @@ export interface GatewayMcpClientOptions {
   timeoutSec: number;
 }
 
+export interface ApprovalRequestAndWaitInput {
+  task_id: string;
+  session_id: string;
+  tool_name?: string;
+  operation: string;
+  path: string;
+  timeout_sec: number;
+}
+
+export interface ApprovalRequestAndWaitResult {
+  decision: "approved" | "rejected" | "timeout" | "canceled";
+  approval: {
+    approval_id: string;
+    status: string;
+    operation: string;
+    path: string;
+  } | null;
+}
+
 export class GatewayMcpClient {
   constructor(private readonly options: GatewayMcpClientOptions) {}
 
   async toolCall(input: ToolCallRequestPayload): Promise<ToolCallResult> {
+    const payload = await this.requestWithTimeout(
+      "POST",
+      "/v1/mcp/tool-call",
+      input,
+      this.options.timeoutSec,
+      {
+        nonSuccessCode: "gateway_mcp_error",
+        nonSuccessMessage: "Gateway MCP endpoint returned non-success response.",
+        timeoutCode: "gateway_mcp_timeout",
+        timeoutMessage: "Gateway MCP request timed out.",
+        unreachableCode: "gateway_mcp_unreachable",
+        unreachableMessage: "Gateway MCP endpoint is unreachable.",
+      },
+    );
+    return payload as ToolCallResult;
+  }
+
+  async requestApprovalAndWait(
+    input: ApprovalRequestAndWaitInput,
+  ): Promise<ApprovalRequestAndWaitResult> {
+    const timeoutSec = Math.max(this.options.timeoutSec, input.timeout_sec + 5);
+    const payload = await this.requestWithTimeout(
+      "POST",
+      "/v1/agent/approvals/request-and-wait",
+      input,
+      timeoutSec,
+      {
+        nonSuccessCode: "gateway_approval_error",
+        nonSuccessMessage:
+          "Gateway approval endpoint returned non-success response.",
+        timeoutCode: "gateway_approval_timeout",
+        timeoutMessage: "Gateway approval request timed out.",
+        unreachableCode: "gateway_approval_unreachable",
+        unreachableMessage: "Gateway approval endpoint is unreachable.",
+      },
+    );
+    return payload as ApprovalRequestAndWaitResult;
+  }
+
+  private async requestWithTimeout(
+    method: "GET" | "POST",
+    pathname: string,
+    payload: unknown,
+    timeoutSec: number,
+    errorSpec: {
+      nonSuccessCode: string;
+      nonSuccessMessage: string;
+      timeoutCode: string;
+      timeoutMessage: string;
+      unreachableCode: string;
+      unreachableMessage: string;
+    },
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
-    }, this.options.timeoutSec * 1000);
+    }, timeoutSec * 1000);
 
     try {
-      const response = await fetch(`${this.options.baseUrl}/v1/mcp/tool-call`, {
-        method: "POST",
+      const response = await fetch(`${this.options.baseUrl}${pathname}`, {
+        method,
         headers: {
           "content-type": "application/json; charset=utf-8",
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
-      const payload = await parseJson(response);
+      const responsePayload = await parseJson(response);
       if (!response.ok) {
         throw new AgentRuntimeError(
           502,
-          "gateway_mcp_error",
-          "Gateway MCP endpoint returned non-success response.",
+          errorSpec.nonSuccessCode,
+          errorSpec.nonSuccessMessage,
           {
             status: response.status,
             status_text: response.statusText,
-            payload,
+            payload: responsePayload,
           },
         );
       }
 
-      return payload as ToolCallResult;
+      return responsePayload;
     } catch (error) {
       if (isAbortError(error)) {
         throw new AgentRuntimeError(
           504,
-          "gateway_mcp_timeout",
-          "Gateway MCP request timed out.",
+          errorSpec.timeoutCode,
+          errorSpec.timeoutMessage,
           {
-            timeout_sec: this.options.timeoutSec,
+            timeout_sec: timeoutSec,
           },
         );
       }
@@ -58,8 +130,8 @@ export class GatewayMcpClient {
 
       throw new AgentRuntimeError(
         502,
-        "gateway_mcp_unreachable",
-        "Gateway MCP endpoint is unreachable.",
+        errorSpec.unreachableCode,
+        errorSpec.unreachableMessage,
         {
           message: toErrorMessage(error),
         },

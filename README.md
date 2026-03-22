@@ -92,9 +92,9 @@ yarn api:smoke
 - `POST /v1/mcp/tool-call`
 - `container.*` / `host.*` / `memory.*` を Gateway で実行
 - `discord.channel_history` / `discord.channel_list` を Gateway で実行
-- `discord.*` ツールは承認制（`approval_required`）として運用
+- `discord.*` ツールは承認制（Permission Hook の実行前承認）として運用
 - `container.file_deliver` でコンテナ内ファイルを base64 返却し、Bot が Discord 添付として送信可能
-- `api:smoke` に P5（approval_required, container scope, memory CRUD）検証を追加
+- `api:smoke` に P5（approval flow, container scope, memory CRUD）検証を追加
 - `system.*` memory を導入（`memory.get/search` で参照可、`memory.upsert/delete` は read-only 拒否）
 
 ## P6 Agent Runtime（API/コマンド追加）

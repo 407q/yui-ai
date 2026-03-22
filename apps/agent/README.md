@@ -65,9 +65,9 @@ COPILOT_SDK_LOG_LEVEL=info
   base64 payload として返却できるようにしました（最終的な Discord 送信は Bot 側で実施）。
 - Discord 文脈取得ツールとして `discord.channel_history` / `discord.channel_list`
   を Gateway custom tool 経由で利用できます。
-- `discord.*` は承認制のため、必要時はツールを直接呼び出して `approval_required` を起点に Gateway 承認フローを開始します。
+- `discord.*` は承認制です。Permission Hook 経由で承認が完了した後にのみ実行されます。
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
-- host 操作が必要な場合は、LM が口頭確認を先に求めるのではなく `host.*` ツールを呼び、`approval_required` を起点に Gateway 承認フローを発火させます。
+- host 操作が必要な場合は、LM が口頭確認を先に求めるのではなく `host.*` ツールを呼び、Permission Hook の実行前承認フローに委ねます。
 - PR-4 では `system_memory_refs` を run payload に含め、Agent は実行ごとに `memory.get` で `system.*` を先読みしてから推論します（既定: `system.persona/active_profile`, `system.policy/core_rules`, `system.tooling/routing_contract`）。
 
 ## Persona / Policy 設定（PR-1）

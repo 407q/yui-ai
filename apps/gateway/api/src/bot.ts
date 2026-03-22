@@ -44,7 +44,8 @@ type ApprovalOperationCode =
   | "exec"
   | "http_request"
   | "discord_channel_history"
-  | "discord_channel_list";
+  | "discord_channel_list"
+  | "unknown";
 
 interface RuntimeFeedbackState {
   previousTaskTerminalStatus?: ContextEnvelopeTaskTerminalStatus;
@@ -82,19 +83,6 @@ interface DeliveredContainerFile {
   contentBase64: string;
 }
 
-interface ToolApprovalRequest {
-  tool: string;
-  operationCode: ApprovalOperationCode;
-  operationLabel: string;
-  target: string;
-}
-
-interface ToolApprovalRequestDisplay {
-  request: ToolApprovalRequest;
-  index: number | null;
-  total: number | null;
-}
-
 interface MockSession {
   id: string;
   ownerUserId: Snowflake;
@@ -126,11 +114,11 @@ interface PendingApproval {
   sessionId: string;
   threadId: Snowflake;
   messageId: Snowflake | null;
-  request: ToolApprovalRequest;
-  requestIndex: number | null;
-  requestTotal: number | null;
-  timeout: NodeJS.Timeout;
-  resolve: (decision: ApprovalDecision) => void;
+  request: {
+    toolName: string;
+    operationCode: ApprovalOperationCode;
+    target: string;
+  };
 }
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -164,10 +152,6 @@ const ORCHESTRATOR_COMPOSE_BUILD =
 const ORCHESTRATOR_ENABLED = process.env.BOT_ORCHESTRATOR_ENABLED !== "false";
 
 const IDLE_TIMEOUT_SEC = parsePositiveInt(process.env.BOT_IDLE_TIMEOUT_SEC, 600);
-const APPROVAL_TIMEOUT_SEC = parsePositiveInt(
-  process.env.BOT_APPROVAL_TIMEOUT_SEC,
-  120,
-);
 const AGENT_STATUS_TIMEOUT_SEC = parsePositiveInt(
   process.env.BOT_AGENT_STATUS_TIMEOUT_SEC,
   180,
@@ -175,10 +159,6 @@ const AGENT_STATUS_TIMEOUT_SEC = parsePositiveInt(
 const AGENT_POLL_INTERVAL_MS = parsePositiveInt(
   process.env.BOT_AGENT_POLL_INTERVAL_MS,
   800,
-);
-const AGENT_APPROVAL_RETRY_MAX = parsePositiveInt(
-  process.env.BOT_AGENT_APPROVAL_RETRY_MAX,
-  3,
 );
 const TYPING_PULSE_MS = 7000;
 const BOT_OPERATION_LOG_ENABLED = process.env.BOT_OPERATION_LOG_ENABLED !== "false";
@@ -266,21 +246,6 @@ interface GatewayThreadMessageResponse {
   resumedFromIdle: boolean;
 }
 
-interface GatewayApprovalRequestResponse {
-  approval: {
-    approvalId: string;
-    status: string;
-  };
-  session: {
-    sessionId: string;
-    status: string;
-  };
-  task: {
-    taskId: string;
-    status: string;
-  };
-}
-
 interface GatewayAgentToolCall {
   toolName: string;
   executionTarget?: string;
@@ -350,6 +315,12 @@ interface GatewayAgentTaskStatusResponse {
     status: string;
   };
   agentTask: GatewayAgentTaskSnapshot;
+  pendingApproval?: {
+    approvalId: string;
+    status: string;
+    operation: string;
+    path: string;
+  } | null;
   taskEvents?: GatewayTaskEvent[];
 }
 
@@ -416,7 +387,7 @@ interface ToolProgressMessageState {
   reason: string | null;
   argumentsPayload: Record<string, unknown> | null;
   detail: string | null;
-  status: "pending" | "waiting_approval" | "ok" | "error";
+  status: "pending" | "ok" | "error";
   messageId: Snowflake;
 }
 
@@ -1217,7 +1188,7 @@ function buildToolProgressMessageContent(input: {
   reason?: string | null;
   argumentsPayload?: Record<string, unknown> | null;
   detail: string | null;
-  status: "pending" | "waiting_approval" | "ok" | "error";
+  status: "pending" | "ok" | "error";
   resultPayload?: Record<string, unknown> | null;
   detailsPayload?: Record<string, unknown> | null;
   errorCode?: string | null;
@@ -1240,11 +1211,6 @@ function buildToolProgressMessageContent(input: {
         ? `理由: ${truncateOperationLogValue(sanitizeToolProgressContent(input.reason), 96)}`
         : "実行を開始しました";
     lines.push(reason);
-    return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
-  }
-  if (input.status === "waiting_approval") {
-    lines.push("🛂 承認待ち");
-    lines.push(`${targetLine} の実行には承認が必要です`);
     return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
   }
   if (input.status === "ok") {
@@ -1489,10 +1455,7 @@ async function updateToolProgressResultMessage(
   }
   const errorCode = readString(eventPayload, "error_code");
   const errorMessage = readString(eventPayload, "message");
-  const displayStatus: "waiting_approval" | "ok" | "error" =
-    status === "error" && errorCode === "approval_required"
-      ? "waiting_approval"
-      : status;
+  const displayStatus: "ok" | "error" = status;
   const resultPayload = readRecord(eventPayload, "result");
   const detailsPayload = readRecord(eventPayload, "details");
   const logExcerpt =
@@ -1502,7 +1465,7 @@ async function updateToolProgressResultMessage(
   const shouldUseRawSystemMessage =
     errorCode === "tool_execution_failed" || errorCode === "unknown_error";
   const mergedError =
-    displayStatus === "error" || displayStatus === "waiting_approval"
+    displayStatus === "error"
       ? shouldUseRawSystemMessage
         ? (errorMessage ?? "tool execution failed")
         : (errorMessage ?? "tool execution failed")
@@ -1536,7 +1499,17 @@ async function syncToolProgressMessages(
   const queryParts: string[] = [];
   queryParts.push("includeTaskEvents=true");
   queryParts.push(
-    `eventTypes=${encodeURIComponent("mcp.tool.call,mcp.tool.result")}`,
+    `eventTypes=${encodeURIComponent(
+      [
+        "mcp.tool.call",
+        "mcp.tool.result",
+        "approval.requested",
+        "approval.approved",
+        "approval.rejected",
+        "approval.timeout",
+        "approval.canceled",
+      ].join(","),
+    )}`,
   );
   queryParts.push("eventsLimit=100");
   const eventAfterTimestamp = session.lastTaskEventTimestamp;
@@ -1561,6 +1534,8 @@ async function syncToolProgressMessages(
     mapGatewaySessionStatus(statusResponse.session.status),
     `agent task ${statusResponse.agentTask.status}`,
   );
+  await syncPendingApprovalResolution(session, statusResponse);
+
   const toolEvents = statusResponse.agentTask.tool_events ?? [];
   for (const toolEvent of toolEvents) {
     const phase = toolEvent.phase;
@@ -2064,6 +2039,10 @@ function mapGatewaySessionStatus(status: string): SessionStatus {
   return "running";
 }
 
+function shouldBlockNewInputWhileActive(session: MockSession): boolean {
+  return session.status === "running" || session.status === "waiting_approval";
+}
+
 function isIgnorableTaskCancelError(error: unknown): boolean {
   if (!(error instanceof GatewayApiRequestError)) {
     return false;
@@ -2244,10 +2223,6 @@ function resetRuntimeStateForReboot(): void {
   }
   idleTimerBySessionId.clear();
 
-  for (const approval of pendingApprovals.values()) {
-    clearTimeout(approval.timeout);
-    approval.resolve("canceled");
-  }
   pendingApprovals.clear();
 
   sessionsById.clear();
@@ -2283,7 +2258,7 @@ async function handleIdleTimeout(sessionId: string): Promise<void> {
   );
   session.runSequence += 1;
   if (session.pendingApprovalId) {
-    settleApproval(session.pendingApprovalId, "canceled");
+    settleApproval(session.pendingApprovalId);
     session.pendingApprovalId = undefined;
   }
 
@@ -2395,15 +2370,18 @@ function buildListEmbed(userId: Snowflake): EmbedBuilder {
     .setDescription(description);
 }
 
-function settleApproval(approvalId: string, decision: ApprovalDecision): boolean {
+function settleApproval(approvalId: string): boolean {
   const pending = pendingApprovals.get(approvalId);
   if (!pending) {
     return false;
   }
 
-  clearTimeout(pending.timeout);
   pendingApprovals.delete(approvalId);
-  pending.resolve(decision);
+  const session = sessionsById.get(pending.sessionId);
+  if (session && session.pendingApprovalId === approvalId) {
+    session.pendingApprovalId = undefined;
+    touchSession(session);
+  }
   return true;
 }
 
@@ -2411,7 +2389,10 @@ function isRunCanceled(session: MockSession, runSequence: number): boolean {
   return session.cancelRequested || runSequence !== session.runSequence;
 }
 
-function resolveApprovalTargetLine(request: ToolApprovalRequest): string {
+function resolveApprovalTargetLine(request: {
+  operationCode: ApprovalOperationCode;
+  target: string;
+}): string {
   const rawTarget = truncateOperationLogValue(
     sanitizeToolProgressContent(request.target),
     120,
@@ -2442,19 +2423,8 @@ function resolveApprovalTargetLine(request: ToolApprovalRequest): string {
     case "discord_channel_list":
       return "チャンネル一覧参照: Guild channels";
     default:
-      return `${request.operationLabel}: ${rawTarget}`;
+      return `承認対象: ${rawTarget}`;
   }
-}
-
-function buildApprovalHeader(
-  label: string,
-  index: number | null,
-  total: number | null,
-): string {
-  if (index === null || total === null || total <= 1) {
-    return label;
-  }
-  return `${label} (${index}/${total})`;
 }
 
 function resolveApprovalDecisionLine(decision: ApprovalDecision): string {
@@ -2472,33 +2442,45 @@ function resolveApprovalDecisionLine(decision: ApprovalDecision): string {
   }
 }
 
-function buildApprovalRequestMessageContent(
-  display: ToolApprovalRequestDisplay,
-): string {
+function buildApprovalRequestMessageContent(input: {
+  toolName: string;
+  operationCode: ApprovalOperationCode;
+  target: string;
+}): string {
+  const request = {
+    operationCode: input.operationCode,
+    target: input.target,
+  };
   const lines = [
-    buildApprovalHeader("🛂 承認リクエスト", display.index, display.total),
-    display.request.tool,
-    resolveApprovalTargetLine(display.request),
-    "⏳ 承認待ち",
+    "🛂 承認リクエスト",
+    input.toolName,
+    resolveApprovalTargetLine(request),
+    "この操作を実行しますか？",
   ];
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
 }
 
-function buildApprovalResultMessageContent(
-  display: ToolApprovalRequestDisplay,
-  decision: ApprovalDecision,
-): string {
+function buildApprovalResultMessageContent(input: {
+  toolName: string;
+  operationCode: ApprovalOperationCode;
+  target: string;
+  decision: ApprovalDecision;
+}): string {
+  const request = {
+    operationCode: input.operationCode,
+    target: input.target,
+  };
   const lines = [
-    buildApprovalHeader("🛂 承認結果", display.index, display.total),
-    display.request.tool,
-    resolveApprovalTargetLine(display.request),
-    resolveApprovalDecisionLine(decision),
+    "🛂 承認結果",
+    input.toolName,
+    resolveApprovalTargetLine(request),
+    resolveApprovalDecisionLine(input.decision),
   ];
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
 }
 
 function buildApprovalSyncFailureMessageContent(
-  display: ToolApprovalRequestDisplay,
+  pending: PendingApproval,
   error: unknown,
 ): string {
   const systemMessage = truncateOperationLogValue(
@@ -2507,111 +2489,184 @@ function buildApprovalSyncFailureMessageContent(
   );
   const lines = [
     "🛂 承認結果の反映",
-    display.request.tool,
-    resolveApprovalTargetLine(display.request),
+    pending.request.toolName,
+    resolveApprovalTargetLine(pending.request),
     "❌ 失敗",
     systemMessage,
   ];
   return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
 }
 
-function toApprovalRequestDisplayFromPending(
-  pending: PendingApproval,
-): ToolApprovalRequestDisplay {
+function toApprovalOperationCode(value: string | null): ApprovalOperationCode {
+  switch (value) {
+    case "read":
+    case "write":
+    case "delete":
+    case "list":
+    case "exec":
+    case "http_request":
+    case "discord_channel_history":
+    case "discord_channel_list":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
+function toApprovalRequestFromPending(status: GatewayAgentTaskStatusResponse): {
+  approvalId: string;
+  toolName: string;
+  operationCode: ApprovalOperationCode;
+  target: string;
+} | null {
+  const pending = status.pendingApproval;
+  if (!pending || pending.status !== "requested") {
+    return null;
+  }
+  const taskEvents = status.taskEvents ?? [];
+  const requestedEvent = [...taskEvents]
+    .reverse()
+    .find(
+      (event) =>
+        event.eventType === "approval.requested" &&
+        readString(asRecord(event.payloadJson), "approvalId") === pending.approvalId,
+    );
+  const requestedPayload = requestedEvent
+    ? asRecord(requestedEvent.payloadJson)
+    : null;
+  const toolName = readString(requestedPayload, "toolName") ?? "host.operation";
   return {
-    request: pending.request,
-    index: pending.requestIndex,
-    total: pending.requestTotal,
+    approvalId: pending.approvalId,
+    toolName,
+    operationCode: toApprovalOperationCode(pending.operation),
+    target: pending.path,
   };
 }
 
-async function requestApproval(
+function resolveApprovalDecisionFromTaskEvents(
+  taskEvents: GatewayTaskEvent[] | undefined,
+  approvalId: string,
+): ApprovalDecision | null {
+  if (!taskEvents || taskEvents.length === 0) {
+    return null;
+  }
+  const resolvedEvent = [...taskEvents]
+    .reverse()
+    .find((event) => {
+      if (
+        event.eventType !== "approval.approved" &&
+        event.eventType !== "approval.rejected" &&
+        event.eventType !== "approval.timeout" &&
+        event.eventType !== "approval.canceled"
+      ) {
+        return false;
+      }
+      const payload = asRecord(event.payloadJson);
+      return readString(payload, "approvalId") === approvalId;
+    });
+  if (!resolvedEvent) {
+    return null;
+  }
+  if (resolvedEvent.eventType === "approval.approved") {
+    return "approved";
+  }
+  if (resolvedEvent.eventType === "approval.rejected") {
+    return "rejected";
+  }
+  if (resolvedEvent.eventType === "approval.timeout") {
+    return "timeout";
+  }
+  return "canceled";
+}
+
+async function syncPendingApprovalMessage(
   session: MockSession,
-  display: ToolApprovalRequestDisplay,
-): Promise<ApprovalDecision> {
-  const request = display.request;
-  const gatewayApproval = await gatewayApiRequest<GatewayApprovalRequestResponse>(
-    "POST",
-    `/v1/threads/${session.threadId}/approvals/request`,
-    {
-      userId: session.ownerUserId,
-      operation: request.operationCode,
-      path: request.target,
-    },
-  );
-  const approvalId = gatewayApproval.approval.approvalId;
-  session.pendingApprovalId = approvalId;
-  session.currentTaskId = gatewayApproval.task.taskId;
+  status: GatewayAgentTaskStatusResponse,
+): Promise<void> {
+  const pending = toApprovalRequestFromPending(status);
+  if (!pending) {
+    return;
+  }
+  if (pendingApprovals.has(pending.approvalId)) {
+    return;
+  }
+
+  session.pendingApprovalId = pending.approvalId;
   setSessionStatus(
     session,
     "waiting_approval",
-    `approval requested: ${request.tool} ${request.operationCode} ${request.target}`,
+    `approval requested: ${pending.toolName} ${pending.operationCode} ${pending.target}`,
   );
   touchSession(session);
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`approval:${approvalId}:approve`)
+      .setCustomId(`approval:${pending.approvalId}:approve`)
       .setLabel("Approve")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`approval:${approvalId}:reject`)
+      .setCustomId(`approval:${pending.approvalId}:reject`)
       .setLabel("Reject")
       .setStyle(ButtonStyle.Danger),
   );
 
   const sent = await sendToThread(session.threadId, {
-    content: `<@${session.ownerUserId}>\n${buildApprovalRequestMessageContent(display)}`,
+    content: `<@${session.ownerUserId}>\n${buildApprovalRequestMessageContent({
+      toolName: pending.toolName,
+      operationCode: pending.operationCode,
+      target: pending.target,
+    })}`,
     components: [row],
   });
-
-  return new Promise<ApprovalDecision>((resolve) => {
-    const timeout = setTimeout(() => {
-      const unresolved = pendingApprovals.get(approvalId);
-      if (!unresolved) {
-        return;
-      }
-
-      pendingApprovals.delete(approvalId);
-      session.pendingApprovalId = undefined;
-      if (unresolved.messageId) {
-        const timeoutContent = buildApprovalResultMessageContent(
-          toApprovalRequestDisplayFromPending(unresolved),
-          "timeout",
-        );
-        void editThreadMessage(unresolved.threadId, unresolved.messageId, {
-          content: timeoutContent,
-          embeds: [],
-          components: [],
-          files: [],
-        }).catch((error: unknown) => {
-          console.error(`${LOG_PREFIX} approval timeout message update failed`, error);
-        });
-      }
-      void gatewayApiRequest(
-        "POST",
-        `/v1/approvals/${approvalId}/respond`,
-        {
-          decision: "timeout",
-        },
-      ).catch((error: unknown) => {
-        console.error(`${LOG_PREFIX} approval timeout sync failed`, error);
-      });
-      resolve("timeout");
-    }, APPROVAL_TIMEOUT_SEC * 1000);
-
-    pendingApprovals.set(approvalId, {
-      approvalId,
-      sessionId: session.id,
-      threadId: session.threadId,
-      messageId: sent?.id ?? null,
-      request,
-      requestIndex: display.index,
-      requestTotal: display.total,
-      timeout,
-      resolve,
-    });
+  pendingApprovals.set(pending.approvalId, {
+    approvalId: pending.approvalId,
+    sessionId: session.id,
+    threadId: session.threadId,
+    messageId: sent?.id ?? null,
+    request: {
+      toolName: pending.toolName,
+      operationCode: pending.operationCode,
+      target: pending.target,
+    },
   });
+}
+
+async function syncPendingApprovalResolution(
+  session: MockSession,
+  status: GatewayAgentTaskStatusResponse,
+): Promise<void> {
+  if (status.pendingApproval?.status === "requested") {
+    await syncPendingApprovalMessage(session, status);
+    return;
+  }
+  if (!session.pendingApprovalId) {
+    return;
+  }
+  const localPending = pendingApprovals.get(session.pendingApprovalId);
+  if (!localPending) {
+    session.pendingApprovalId = undefined;
+    return;
+  }
+  const decision = resolveApprovalDecisionFromTaskEvents(
+    status.taskEvents,
+    localPending.approvalId,
+  );
+  if (decision && localPending.messageId) {
+    await editThreadMessage(localPending.threadId, localPending.messageId, {
+      content: buildApprovalResultMessageContent({
+        toolName: localPending.request.toolName,
+        operationCode: localPending.request.operationCode,
+        target: localPending.request.target,
+        decision,
+      }),
+      components: [],
+      embeds: [],
+      files: [],
+    });
+  }
+  settleApproval(localPending.approvalId);
+  session.pendingApprovalId = undefined;
+  touchSession(session);
 }
 
 function buildAgentToolCalls(prompt: string): GatewayAgentToolCallBuildResult {
@@ -2744,52 +2799,6 @@ function formatToolCallSummary(toolCalls: GatewayAgentToolCall[]): string {
   return listed;
 }
 
-function resolveApprovalRequestsFromResults(
-  toolResults: unknown[],
-  toolCalls: GatewayAgentToolCall[],
-): ToolApprovalRequest[] {
-  const requests: ToolApprovalRequest[] = [];
-  const seenScopes = new Set<string>();
-  for (let index = 0; index < toolResults.length; index += 1) {
-    const result = asRecord(toolResults[index]);
-    if (!result) {
-      continue;
-    }
-
-    if (result.status !== "error" || result.error_code !== "approval_required") {
-      continue;
-    }
-
-    const details = asRecord(result.details);
-    const toolCall = toolCalls[index];
-    const operationCode =
-      toApprovalOperationCode(readString(details, "operation")) ??
-      inferApprovalOperationFromToolCall(toolCall);
-    const target =
-      readString(details, "scope") ?? inferApprovalTargetFromToolCall(toolCall);
-    if (!operationCode || !target) {
-      continue;
-    }
-
-    const scopeKey = `${operationCode}:${target}`;
-    if (seenScopes.has(scopeKey)) {
-      continue;
-    }
-    seenScopes.add(scopeKey);
-
-    requests.push({
-      tool:
-        readString(result, "tool_name") ??
-        toolCall?.toolName ??
-        `host.${operationCode}`,
-      operationCode,
-      operationLabel: describeApprovalOperation(operationCode),
-      target,
-    });
-  }
-
-  return requests;
-}
 
 function summarizeToolErrors(toolResults: unknown[]): string[] {
   const summaries: string[] = [];
@@ -2849,117 +2858,6 @@ function extractDeliveredFilesFromToolResults(toolResults: unknown[]): Delivered
   return delivered.slice(0, BOT_DELIVERED_FILE_MAX_COUNT);
 }
 
-function inferApprovalOperationFromToolCall(
-  toolCall: GatewayAgentToolCall | undefined,
-): ApprovalOperationCode | null {
-  switch (toolCall?.toolName) {
-    case "host.file_read":
-      return "read";
-    case "host.file_write":
-      return "write";
-    case "host.file_delete":
-      return "delete";
-    case "host.file_list":
-      return "list";
-    case "host.cli_exec":
-      return "exec";
-    case "host.http_request":
-      return "http_request";
-    case "discord.channel_history":
-      return "discord_channel_history";
-    case "discord.channel_list":
-      return "discord_channel_list";
-    default:
-      return null;
-  }
-}
-
-function toApprovalOperationCode(value: string | null): ApprovalOperationCode | null {
-  if (!value) {
-    return null;
-  }
-  switch (value) {
-    case "read":
-    case "write":
-    case "delete":
-    case "list":
-    case "exec":
-    case "http_request":
-    case "discord_channel_history":
-    case "discord_channel_list":
-      return value;
-    default:
-      return null;
-  }
-}
-
-function inferApprovalTargetFromToolCall(
-  toolCall: GatewayAgentToolCall | undefined,
-): string | null {
-  if (!toolCall) {
-    return null;
-  }
-
-  if (
-    toolCall.toolName === "host.file_read" ||
-    toolCall.toolName === "host.file_write" ||
-    toolCall.toolName === "host.file_delete" ||
-    toolCall.toolName === "host.file_list"
-  ) {
-    const filePath = readString(toolCall.arguments, "path");
-    return filePath ? path.resolve(filePath) : null;
-  }
-
-  if (toolCall.toolName === "host.cli_exec") {
-    return readString(toolCall.arguments, "command");
-  }
-
-  if (toolCall.toolName === "host.http_request") {
-    const rawUrl = readString(toolCall.arguments, "url");
-    if (!rawUrl) {
-      return null;
-    }
-    try {
-      return new URL(rawUrl).origin;
-    } catch {
-      return rawUrl;
-    }
-  }
-
-  if (toolCall.toolName === "discord.channel_history") {
-    const channelId = readString(toolCall.arguments, "channelId");
-    return channelId ? `discord_channel:${channelId}` : "session channel";
-  }
-
-  if (toolCall.toolName === "discord.channel_list") {
-    return "configured Discord guild channels";
-  }
-
-  return null;
-}
-
-function describeApprovalOperation(operation: ApprovalOperationCode): string {
-  switch (operation) {
-    case "read":
-      return "ファイル内容の読み取り";
-    case "write":
-      return "ファイル内容の書き込み";
-    case "delete":
-      return "ファイル削除";
-    case "list":
-      return "ディレクトリ一覧取得";
-    case "exec":
-      return "CLI コマンド実行";
-    case "http_request":
-      return "HTTP リクエスト送信";
-    case "discord_channel_history":
-      return "Discord チャンネル履歴取得";
-    case "discord_channel_list":
-      return "Discord チャンネル一覧取得";
-    default:
-      return "不明な承認操作";
-  }
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -3359,97 +3257,36 @@ async function runAgentTask(
       }
     }
 
-    let approvalRetryCount = 0;
-    let terminal: GatewayAgentTaskStatusResponse | null = null;
-    while (approvalRetryCount <= AGENT_APPROVAL_RETRY_MAX) {
-      if (isRunCanceled(session, runSequence)) {
-        throw new SessionRunCanceledError("run canceled before agent execution");
-      }
-
-      startTyping();
-      terminal = await waitForAgentTaskWithToolProgress(
-        session,
-        prompt,
-        attachments,
-        toolCalls,
-        discordContext,
-        runSequence,
-      );
-      clearTyping();
-
-      if (terminal.agentTask.status === "canceled") {
-        updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
-        throw new SessionRunCanceledError("agent runtime canceled the task");
-      }
-      if (terminal.agentTask.status === "failed") {
-        const runtimeError = terminal.agentTask.error?.message ?? "agent runtime failed";
-        updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
-        updateRuntimeFeedbackRetryHint(
-          session,
-          `previous runtime failure: ${runtimeError}`,
-        );
-        throw new Error(runtimeError);
-      }
-
-      const approvalRequests = resolveApprovalRequestsFromResults(
-        terminal.agentTask.result?.tool_results ?? [],
-        toolCalls,
-      );
-      if (approvalRequests.length === 0) {
-        break;
-      }
-
-      const approvalDisplayTotal =
-        approvalRequests.length > 1 ? approvalRequests.length : null;
-      for (const [approvalIndex, approvalRequest] of approvalRequests.entries()) {
-        const approvalDisplay: ToolApprovalRequestDisplay = {
-          request: approvalRequest,
-          index: approvalDisplayTotal ? approvalIndex + 1 : null,
-          total: approvalDisplayTotal,
-        };
-        if (approvalRetryCount >= AGENT_APPROVAL_RETRY_MAX) {
-          throw new Error(
-            `approval retry limit reached (${AGENT_APPROVAL_RETRY_MAX})`,
-          );
-        }
-        const approvalDecision = await requestApproval(session, approvalDisplay);
-        session.pendingApprovalId = undefined;
-        touchSession(session);
-
-        if (approvalDecision === "approved") {
-          approvalRetryCount += 1;
-          continue;
-        }
-
-        if (approvalDecision === "rejected") {
-          updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
-          updateRuntimeFeedbackRetryHint(
-            session,
-            "approval rejected in previous attempt",
-          );
-          throw new Error("approval rejected");
-        }
-        if (approvalDecision === "timeout") {
-          updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
-          updateRuntimeFeedbackRetryHint(
-            session,
-            "approval timeout in previous attempt",
-          );
-          throw new Error("approval timeout");
-        }
-        updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
-        clearToolProgressMessagesForSession(session.id);
-        throw new SessionRunCanceledError("run canceled while waiting approval");
-      }
-
-      updateRuntimeFeedbackRetryHint(
-        session,
-        "previous run stopped by approval_required; approved and retrying",
-      );
-      continue;
+    if (isRunCanceled(session, runSequence)) {
+      throw new SessionRunCanceledError("run canceled before agent execution");
     }
 
-    const runtimeResult = terminal?.agentTask.result;
+    startTyping();
+    const terminal = await waitForAgentTaskWithToolProgress(
+      session,
+      prompt,
+      attachments,
+      toolCalls,
+      discordContext,
+      runSequence,
+    );
+    clearTyping();
+    await syncPendingApprovalResolution(session, terminal);
+
+    if (terminal.agentTask.status === "canceled") {
+      updateRuntimeFeedbackFromTerminalStatus(session, "canceled", []);
+      throw new SessionRunCanceledError("agent runtime canceled the task");
+    }
+    if (terminal.agentTask.status === "failed") {
+      const runtimeError = terminal.agentTask.error?.message ?? "agent runtime failed";
+      updateRuntimeFeedbackFromTerminalStatus(session, "failed", []);
+      updateRuntimeFeedbackRetryHint(
+        session,
+        `previous runtime failure: ${runtimeError}`,
+      );
+      throw new Error(runtimeError);
+    }
+    const runtimeResult = terminal.agentTask.result;
     const deliveredFiles = extractDeliveredFilesFromToolResults(
       runtimeResult?.tool_results ?? [],
     );
@@ -3542,7 +3379,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
 
   const session = sessionsById.get(pending.sessionId);
   if (!session) {
-    settleApproval(approvalId, "canceled");
+    settleApproval(approvalId);
     await interaction.reply({
       content: "対応するセッションが見つかりません。",
       ephemeral: true,
@@ -3558,8 +3395,8 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
     return;
   }
 
-  const decision: ApprovalDecision = action === "approve" ? "approved" : "rejected";
-  const approvalDisplay = toApprovalRequestDisplayFromPending(pending);
+  const decision: "approved" | "rejected" =
+    action === "approve" ? "approved" : "rejected";
   try {
     await gatewayApiRequest(
       "POST",
@@ -3572,13 +3409,13 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
   } catch (error) {
     console.error(`${LOG_PREFIX} approval response sync failed`, error);
     await interaction.reply({
-      content: buildApprovalSyncFailureMessageContent(approvalDisplay, error),
+      content: buildApprovalSyncFailureMessageContent(pending, error),
       ephemeral: true,
     });
     return;
   }
 
-  if (!settleApproval(approvalId, decision)) {
+  if (!settleApproval(approvalId)) {
     await interaction.reply({
       content: "この承認は既に処理済みか期限切れです。",
       ephemeral: true,
@@ -3587,7 +3424,12 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
   }
 
   await interaction.update({
-    content: buildApprovalResultMessageContent(approvalDisplay, decision),
+    content: buildApprovalResultMessageContent({
+      toolName: pending.request.toolName,
+      operationCode: pending.request.operationCode,
+      target: pending.request.target,
+      decision,
+    }),
     components: [],
     embeds: [],
     files: [],
@@ -3604,7 +3446,7 @@ function cancelSession(session: MockSession, by: Snowflake): void {
   setSessionStatus(session, "idle_waiting", `task canceled by <@${by}>`);
 
   if (session.pendingApprovalId) {
-    settleApproval(session.pendingApprovalId, "canceled");
+    settleApproval(session.pendingApprovalId);
     session.pendingApprovalId = undefined;
   }
 
@@ -3618,7 +3460,7 @@ function closeSession(session: MockSession, by: Snowflake): void {
   setSessionStatus(session, "closed_by_user", `closed by <@${by}>`);
 
   if (session.pendingApprovalId) {
-    settleApproval(session.pendingApprovalId, "canceled");
+    settleApproval(session.pendingApprovalId);
     session.pendingApprovalId = undefined;
   }
 
@@ -3907,7 +3749,7 @@ async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
 
-  if (session.status === "running" || session.status === "waiting_approval") {
+  if (shouldBlockNewInputWhileActive(session)) {
     await message.reply("現在実行中です。完了を待ってから再送してください。");
     return;
   }
@@ -3933,7 +3775,7 @@ async function handleThreadMessage(message: Message): Promise<void> {
 async function handleClientReady(readyClient: Client<true>): Promise<void> {
   const startupMessage =
     `[bot:${BOT_MODE}] Logged in as ${readyClient.user.tag} | ` +
-    `idle=${IDLE_TIMEOUT_SEC}s | approval=${APPROVAL_TIMEOUT_SEC}s | ` +
+    `idle=${IDLE_TIMEOUT_SEC}s | ` +
     `agent_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
   console.log(startupMessage);
   await sendSystemAlert(`🟢 ${startupMessage}`);

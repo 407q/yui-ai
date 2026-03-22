@@ -242,7 +242,7 @@ Context 生成に失敗した場合は監査ログ（`audit_logs`）へ `context
 - `discord.channel_history`
 - `discord.channel_list`
 
-`discord.*` ツールはすべて承認制で、未承認時は `approval_required` を返します。
+`discord.*` ツールはすべて承認制です。Agent の Permission Hook が Gateway の承認 API（`request-and-wait`）を呼び、承認完了後に実行されます。
 `discord.channel_history` は `channelId` 指定で対象を切り替えられ、Discord API（`/channels/:id/messages`）から取得したメッセージを優先し、失敗時はセッション記録へフォールバックします。  
 返却 `entries[]` には本文に加えて `attachmentUrls`、`reference`（参照元メッセージ）、`replyTo`（返信先）、`forwardFrom`（転送元）を含みます（取得不可時は `null` / 空配列）。
 `discord.channel_list` はサーバー全体のチャンネル一覧取得に利用できます。

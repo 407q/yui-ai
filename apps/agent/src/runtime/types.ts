@@ -169,6 +169,11 @@ export interface PermissionRequestInput {
   tool_name: string;
   reason: string;
   arguments: Record<string, unknown>;
+  execution_target: string;
+  approval_scope: {
+    operation: string;
+    path: string;
+  } | null;
 }
 
 export interface PermissionRequestResult {

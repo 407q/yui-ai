@@ -685,7 +685,11 @@ export class McpToolService {
       sessionId,
       operation,
     );
-    if (grantedPermissions.some((permission) => permission.path === scopeValue)) {
+    if (
+      grantedPermissions.some((permission) =>
+        this.isPermissionMatch(operation, permission.path, scopeValue),
+      )
+    ) {
       return;
     }
 

@@ -48,6 +48,15 @@ const approvalRespondBodySchema = z.object({
   decision: z.enum(["approved", "rejected", "timeout"]),
 });
 
+const agentApprovalRequestAndWaitBodySchema = z.object({
+  taskId: z.string().min(1),
+  sessionId: z.string().min(1),
+  toolName: z.string().min(1).optional(),
+  operation: z.string().min(1),
+  path: z.string().min(1),
+  timeoutSec: z.number().int().min(1).max(600),
+});
+
 const taskParamsSchema = z.object({
   taskId: z.string().min(1),
 });
@@ -296,6 +305,33 @@ export async function registerGatewayRoutes(
       session: result.session,
       task: result.task,
       approval: result.approval,
+    };
+  });
+
+  app.post("/v1/agent/approvals/request-and-wait", async (request) => {
+    const body = parseOrThrow(
+      agentApprovalRequestAndWaitBodySchema,
+      request.body,
+      "invalid_agent_approval_request",
+    );
+    const result = await service.requestAgentApprovalAndWait({
+      taskId: body.taskId,
+      sessionId: body.sessionId,
+      toolName: body.toolName,
+      operation: body.operation,
+      path: body.path,
+      timeoutSec: body.timeoutSec,
+    });
+    return {
+      decision: result.decision,
+      approval: result.approval
+        ? {
+            approval_id: result.approval.approvalId,
+            status: result.approval.status,
+            operation: result.approval.operation,
+            path: result.approval.path,
+          }
+        : null,
     };
   });
 

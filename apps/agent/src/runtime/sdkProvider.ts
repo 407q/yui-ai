@@ -863,6 +863,11 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         tool_name: input.toolName,
         reason,
         arguments: input.arguments,
+        execution_target: executionTarget,
+        approval_scope: resolveApprovalScopeFromGatewayToolCall(
+          input.toolName,
+          input.arguments,
+        ),
       });
     } catch (error) {
       const message = `permission request failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1148,6 +1153,11 @@ async function executeDeclaredToolCalls(
       tool_name: toolCall.tool_name,
       reason: toolCall.reason,
       arguments: toolCall.arguments,
+      execution_target: executionTarget,
+      approval_scope: resolveApprovalScopeFromGatewayToolCall(
+        toolCall.tool_name,
+        toolCall.arguments,
+      ),
     });
 
     if (permission.decision === "deny") {
@@ -1527,6 +1537,151 @@ function normalizePosixPath(value: string): string {
     normalized.push(part);
   }
   return `/${normalized.join("/")}`;
+}
+
+function resolveApprovalScopeFromGatewayToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+): { operation: string; path: string } | null {
+  if (toolName === "host.file_read") {
+    const normalizedPath = normalizeApprovalPathForGatewayToolCall(
+      toolName,
+      args,
+    );
+    if (!normalizedPath) {
+      return null;
+    }
+    return {
+      operation: "read",
+      path: normalizedPath,
+    };
+  }
+  if (toolName === "host.file_write") {
+    const normalizedPath = normalizeApprovalPathForGatewayToolCall(
+      toolName,
+      args,
+    );
+    if (!normalizedPath) {
+      return null;
+    }
+    return {
+      operation: "write",
+      path: normalizedPath,
+    };
+  }
+  if (toolName === "host.file_delete") {
+    const normalizedPath = normalizeApprovalPathForGatewayToolCall(
+      toolName,
+      args,
+    );
+    if (!normalizedPath) {
+      return null;
+    }
+    return {
+      operation: "delete",
+      path: normalizedPath,
+    };
+  }
+  if (toolName === "host.file_list") {
+    const normalizedPath = normalizeApprovalPathForGatewayToolCall(
+      toolName,
+      args,
+    );
+    if (!normalizedPath) {
+      return null;
+    }
+    return {
+      operation: "list",
+      path: normalizedPath,
+    };
+  }
+  if (toolName === "host.cli_exec") {
+    const command = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!command) {
+      return null;
+    }
+    return {
+      operation: "exec",
+      path: command,
+    };
+  }
+  if (toolName === "host.http_request") {
+    const origin = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!origin) {
+      return null;
+    }
+    return {
+      operation: "http_request",
+      path: origin,
+    };
+  }
+  if (toolName === "discord.channel_history") {
+    const channelScope = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!channelScope) {
+      return null;
+    }
+    return {
+      operation: "discord_channel_history",
+      path: channelScope,
+    };
+  }
+  if (toolName === "discord.channel_list") {
+    const guildScope = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!guildScope) {
+      return null;
+    }
+    return {
+      operation: "discord_channel_list",
+      path: guildScope,
+    };
+  }
+  return null;
+}
+
+function normalizeApprovalPathForGatewayToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (
+    toolName === "host.file_read" ||
+    toolName === "host.file_write" ||
+    toolName === "host.file_delete" ||
+    toolName === "host.file_list"
+  ) {
+    const pathValue = readStringFromRecord(args, "path") ?? ".";
+    if (!pathValue) {
+      return null;
+    }
+    return pathValue;
+  }
+  if (toolName === "host.http_request") {
+    const rawUrl = readStringFromRecord(args, "url");
+    if (!rawUrl) {
+      return null;
+    }
+    try {
+      const url = new URL(rawUrl);
+      return url.origin;
+    } catch {
+      return null;
+    }
+  }
+  if (toolName === "discord.channel_history") {
+    const channelId =
+      readStringFromRecord(args, "channelId") ?? "__session_channel__";
+    return `discord_channel:${channelId}`;
+  }
+  if (toolName === "discord.channel_list") {
+    return "discord_guild:__session_guild__";
+  }
+  if (toolName === "host.cli_exec") {
+    const command = readStringFromRecord(args, "command");
+    if (command && command.trim().length > 0) {
+      return command;
+    }
+    return null;
+  }
+  return null;
 }
 
 function readStringFromRecord(
