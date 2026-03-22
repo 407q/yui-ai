@@ -311,3 +311,79 @@
 - [ ] 承認待ちは `🛂 承認待ち` で統一されている
 - [ ] `tool_execution_failed` / `unknown_error` / 不明エラー時に `system_error_message_raw` をそのまま表示する
 - [ ] 4行（必要時のみ補足行）で収まっている
+
+---
+
+## I. 承認リクエスト表示テンプレート（追加）
+
+> ツール実行ログと同じ方針で、承認フローも「短く・分かる・編集しやすい」を維持する。  
+> この節は `requestApproval` / `handleApprovalButton` 系メッセージの表示仕様テンプレートとして扱う。
+
+### I-1. 承認リクエスト（標準4行）
+
+```text
+🛂 承認リクエスト
+<tool_label>
+<target_line>
+⏳ 承認待ち
+```
+
+- `tool_label` 例: `host.file_read`, `discord.channel_history`
+- `target_line` 例:
+  - `ファイル読み取り: /path/to/file`
+  - `#backend (928371)`
+  - `GET https://api.example.com`
+
+### I-2. 複数承認（同一実行内）
+
+```text
+🛂 承認リクエスト ({{index}}/{{total}})
+<tool_label>
+<target_line>
+⏳ 承認待ち
+```
+
+例: `🛂 承認リクエスト (2/3)`
+
+### I-3. 承認結果（簡潔）
+
+| 状態 | 表示 |
+|---|---|
+| approved | `✅ 承認しました` |
+| rejected | `❌ 拒否しました` |
+| timeout | `⏱️ 承認がタイムアウトしました` |
+| canceled | `🛑 承認待ちを終了しました` |
+
+### I-4. 承認結果の詳細（任意1行）
+
+```text
+対象: <tool_label> / <target_line>
+```
+
+必要時のみ表示（通常は不要）。
+
+### I-5. 承認連携エラー（Gateway反映失敗など）
+
+```text
+🛂 承認結果の反映
+<tool_label>
+<target_line>
+❌ 失敗
+{{system_error_message_raw}}
+```
+
+`tool_execution_failed` / `unknown_error` / 辞書未定義と同様、  
+不明系はシステムメッセージをそのまま表示する。
+
+### I-6. 承認 operation ラベル辞書（編集ポイント）
+
+| operationCode | label |
+|---|---|
+| `read` | `ファイル読み取り` |
+| `write` | `ファイル書き込み` |
+| `delete` | `ファイル削除` |
+| `list` | `ファイル一覧` |
+| `exec` | `コマンド実行` |
+| `http_request` | `HTTP リクエスト` |
+| `discord_channel_history` | `チャンネル履歴参照` |
+| `discord_channel_list` | `チャンネル一覧参照` |

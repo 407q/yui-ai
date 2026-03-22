@@ -89,6 +89,12 @@ interface ToolApprovalRequest {
   target: string;
 }
 
+interface ToolApprovalRequestDisplay {
+  request: ToolApprovalRequest;
+  index: number | null;
+  total: number | null;
+}
+
 interface MockSession {
   id: string;
   ownerUserId: Snowflake;
@@ -118,6 +124,11 @@ interface MockSession {
 interface PendingApproval {
   approvalId: string;
   sessionId: string;
+  threadId: Snowflake;
+  messageId: Snowflake | null;
+  request: ToolApprovalRequest;
+  requestIndex: number | null;
+  requestTotal: number | null;
   timeout: NodeJS.Timeout;
   resolve: (decision: ApprovalDecision) => void;
 }
@@ -2400,10 +2411,125 @@ function isRunCanceled(session: MockSession, runSequence: number): boolean {
   return session.cancelRequested || runSequence !== session.runSequence;
 }
 
+function resolveApprovalTargetLine(request: ToolApprovalRequest): string {
+  const rawTarget = truncateOperationLogValue(
+    sanitizeToolProgressContent(request.target),
+    120,
+  );
+  switch (request.operationCode) {
+    case "read":
+      return `ファイル読み取り: ${rawTarget}`;
+    case "write":
+      return `ファイル書き込み: ${rawTarget}`;
+    case "delete":
+      return `ファイル削除: ${rawTarget}`;
+    case "list":
+      return `ファイル一覧: ${rawTarget}`;
+    case "exec":
+      return `$ ${rawTarget}`;
+    case "http_request":
+      return `HTTP リクエスト: ${shortenUrlForDisplay(request.target)}`;
+    case "discord_channel_history": {
+      const channelId = parseScopeSuffix(request.target, "discord_channel:");
+      if (channelId) {
+        return `チャンネル履歴参照: #channel (${shortenIdentifier(channelId)})`;
+      }
+      if (request.target === "session channel") {
+        return "チャンネル履歴参照: #session";
+      }
+      return `チャンネル履歴参照: ${rawTarget}`;
+    }
+    case "discord_channel_list":
+      return "チャンネル一覧参照: Guild channels";
+    default:
+      return `${request.operationLabel}: ${rawTarget}`;
+  }
+}
+
+function buildApprovalHeader(
+  label: string,
+  index: number | null,
+  total: number | null,
+): string {
+  if (index === null || total === null || total <= 1) {
+    return label;
+  }
+  return `${label} (${index}/${total})`;
+}
+
+function resolveApprovalDecisionLine(decision: ApprovalDecision): string {
+  switch (decision) {
+    case "approved":
+      return "✅ 承認しました";
+    case "rejected":
+      return "❌ 拒否しました";
+    case "timeout":
+      return "⏱️ 承認がタイムアウトしました";
+    case "canceled":
+      return "🛑 承認待ちを終了しました";
+    default:
+      return "🛑 承認待ちを終了しました";
+  }
+}
+
+function buildApprovalRequestMessageContent(
+  display: ToolApprovalRequestDisplay,
+): string {
+  const lines = [
+    buildApprovalHeader("🛂 承認リクエスト", display.index, display.total),
+    display.request.tool,
+    resolveApprovalTargetLine(display.request),
+    "⏳ 承認待ち",
+  ];
+  return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+}
+
+function buildApprovalResultMessageContent(
+  display: ToolApprovalRequestDisplay,
+  decision: ApprovalDecision,
+): string {
+  const lines = [
+    buildApprovalHeader("🛂 承認結果", display.index, display.total),
+    display.request.tool,
+    resolveApprovalTargetLine(display.request),
+    resolveApprovalDecisionLine(decision),
+  ];
+  return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+}
+
+function buildApprovalSyncFailureMessageContent(
+  display: ToolApprovalRequestDisplay,
+  error: unknown,
+): string {
+  const systemMessage = truncateOperationLogValue(
+    sanitizeToolProgressContent(summarizeError(error)),
+    220,
+  );
+  const lines = [
+    "🛂 承認結果の反映",
+    display.request.tool,
+    resolveApprovalTargetLine(display.request),
+    "❌ 失敗",
+    systemMessage,
+  ];
+  return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+}
+
+function toApprovalRequestDisplayFromPending(
+  pending: PendingApproval,
+): ToolApprovalRequestDisplay {
+  return {
+    request: pending.request,
+    index: pending.requestIndex,
+    total: pending.requestTotal,
+  };
+}
+
 async function requestApproval(
   session: MockSession,
-  request: ToolApprovalRequest,
+  display: ToolApprovalRequestDisplay,
 ): Promise<ApprovalDecision> {
+  const request = display.request;
   const gatewayApproval = await gatewayApiRequest<GatewayApprovalRequestResponse>(
     "POST",
     `/v1/threads/${session.threadId}/approvals/request`,
@@ -2423,16 +2549,6 @@ async function requestApproval(
   );
   touchSession(session);
 
-  const approvalEmbed = new EmbedBuilder()
-    .setTitle("Tool Approval Request")
-    .setDescription("以下の操作を実行してよいか確認してください。")
-    .setColor(0xffb020)
-    .addFields(
-      { name: "使用したいツール", value: request.tool },
-      { name: "行う操作", value: request.operationLabel },
-      { name: "ターゲットとなる場所", value: request.target },
-    );
-
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`approval:${approvalId}:approve`)
@@ -2444,9 +2560,8 @@ async function requestApproval(
       .setStyle(ButtonStyle.Danger),
   );
 
-  await sendToThread(session.threadId, {
-    content: `<@${session.ownerUserId}> 確認依頼です。`,
-    embeds: [approvalEmbed],
+  const sent = await sendToThread(session.threadId, {
+    content: `<@${session.ownerUserId}>\n${buildApprovalRequestMessageContent(display)}`,
     components: [row],
   });
 
@@ -2459,6 +2574,20 @@ async function requestApproval(
 
       pendingApprovals.delete(approvalId);
       session.pendingApprovalId = undefined;
+      if (unresolved.messageId) {
+        const timeoutContent = buildApprovalResultMessageContent(
+          toApprovalRequestDisplayFromPending(unresolved),
+          "timeout",
+        );
+        void editThreadMessage(unresolved.threadId, unresolved.messageId, {
+          content: timeoutContent,
+          embeds: [],
+          components: [],
+          files: [],
+        }).catch((error: unknown) => {
+          console.error(`${LOG_PREFIX} approval timeout message update failed`, error);
+        });
+      }
       void gatewayApiRequest(
         "POST",
         `/v1/approvals/${approvalId}/respond`,
@@ -2474,6 +2603,11 @@ async function requestApproval(
     pendingApprovals.set(approvalId, {
       approvalId,
       sessionId: session.id,
+      threadId: session.threadId,
+      messageId: sent?.id ?? null,
+      request,
+      requestIndex: display.index,
+      requestTotal: display.total,
       timeout,
       resolve,
     });
@@ -3265,13 +3399,20 @@ async function runAgentTask(
         break;
       }
 
-      for (const approvalRequest of approvalRequests) {
+      const approvalDisplayTotal =
+        approvalRequests.length > 1 ? approvalRequests.length : null;
+      for (const [approvalIndex, approvalRequest] of approvalRequests.entries()) {
+        const approvalDisplay: ToolApprovalRequestDisplay = {
+          request: approvalRequest,
+          index: approvalDisplayTotal ? approvalIndex + 1 : null,
+          total: approvalDisplayTotal,
+        };
         if (approvalRetryCount >= AGENT_APPROVAL_RETRY_MAX) {
           throw new Error(
             `approval retry limit reached (${AGENT_APPROVAL_RETRY_MAX})`,
           );
         }
-        const approvalDecision = await requestApproval(session, approvalRequest);
+        const approvalDecision = await requestApproval(session, approvalDisplay);
         session.pendingApprovalId = undefined;
         touchSession(session);
 
@@ -3304,10 +3445,6 @@ async function runAgentTask(
       updateRuntimeFeedbackRetryHint(
         session,
         "previous run stopped by approval_required; approved and retrying",
-      );
-      await sendToThread(
-        session.threadId,
-        "✅ 承認を確認しました。Agent 実行を再開します。",
       );
       continue;
     }
@@ -3422,6 +3559,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
   }
 
   const decision: ApprovalDecision = action === "approve" ? "approved" : "rejected";
+  const approvalDisplay = toApprovalRequestDisplayFromPending(pending);
   try {
     await gatewayApiRequest(
       "POST",
@@ -3434,8 +3572,7 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
   } catch (error) {
     console.error(`${LOG_PREFIX} approval response sync failed`, error);
     await interaction.reply({
-      content:
-        "承認結果を Gateway API へ反映できませんでした。しばらく待ってから再試行してください。",
+      content: buildApprovalSyncFailureMessageContent(approvalDisplay, error),
       ephemeral: true,
     });
     return;
@@ -3449,9 +3586,11 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
     return;
   }
 
-  await interaction.update({ components: [] });
-  await interaction.followUp({
-    content: decision === "approved" ? "✅ 承認しました。" : "❌ 拒否しました。",
+  await interaction.update({
+    content: buildApprovalResultMessageContent(approvalDisplay, decision),
+    components: [],
+    embeds: [],
+    files: [],
   });
 
   touchSession(session);
