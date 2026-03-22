@@ -1374,11 +1374,14 @@ async function sendToolProgressStartMessage(
   eventPayload: Record<string, unknown>,
 ): Promise<void> {
   const callId = readToolEventCallId(eventPayload);
-  const toolName = readString(eventPayload, "tool_name");
+  const toolName = readStringAny(eventPayload, ["tool_name", "toolName"]);
   if (!callId || !toolName || toolProgressMessageByCallId.has(callId)) {
     return;
   }
-  const executionTarget = readString(eventPayload, "execution_target");
+  const executionTarget = readStringAny(eventPayload, [
+    "execution_target",
+    "executionTarget",
+  ]);
   const reason = readString(eventPayload, "reason");
   const argumentsPayload = readRecord(eventPayload, "arguments");
   if (
@@ -1431,7 +1434,7 @@ async function updateToolProgressResultMessage(
   }
   const state = toolProgressMessageByCallId.get(callId);
   if (!state || state.status !== "pending") {
-    const toolName = readString(eventPayload, "tool_name");
+    const toolName = readStringAny(eventPayload, ["tool_name", "toolName"]);
     if (!toolName) {
       return;
     }
@@ -1453,7 +1456,7 @@ async function updateToolProgressResultMessage(
   if (status !== "ok" && status !== "error") {
     return;
   }
-  const errorCode = readString(eventPayload, "error_code");
+  const errorCode = readStringAny(eventPayload, ["error_code", "errorCode"]);
   const errorMessage = readString(eventPayload, "message");
   const displayStatus: "ok" | "error" = status;
   const resultPayload = readRecord(eventPayload, "result");
@@ -2872,6 +2875,19 @@ function readString(
 ): string | null {
   const value = record?.[key];
   return typeof value === "string" ? value : null;
+}
+
+function readStringAny(
+  record: Record<string, unknown> | null | undefined,
+  keys: string[],
+): string | null {
+  for (const key of keys) {
+    const value = readString(record, key);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
 }
 
 function readNumber(
