@@ -7,12 +7,12 @@ export interface GatewayMcpClientOptions {
 }
 
 export interface ApprovalRequestAndWaitInput {
-  task_id: string;
-  session_id: string;
-  tool_name?: string;
+  taskId: string;
+  sessionId: string;
+  toolName?: string;
   operation: string;
   path: string;
-  timeout_sec: number;
+  timeoutSec: number;
 }
 
 export interface ApprovalRequestAndWaitResult {
@@ -49,7 +49,7 @@ export class GatewayMcpClient {
   async requestApprovalAndWait(
     input: ApprovalRequestAndWaitInput,
   ): Promise<ApprovalRequestAndWaitResult> {
-    const timeoutSec = Math.max(this.options.timeoutSec, input.timeout_sec + 5);
+    const timeoutSec = Math.max(this.options.timeoutSec, input.timeoutSec + 5);
     const payload = await this.requestWithTimeout(
       "POST",
       "/v1/agent/approvals/request-and-wait",

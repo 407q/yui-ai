@@ -5,6 +5,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildAgentServer } from "./server.js";
 
+interface MockMcpServerContext {
+  server: http.Server;
+  approvalRequests: Array<Record<string, unknown>>;
+}
+
 async function main(): Promise<void> {
   process.env.BOT_MODE ??= "mock";
   const sessionRootDir = path.resolve(
@@ -13,7 +18,8 @@ async function main(): Promise<void> {
     "agent-smoke-session-root",
   );
   process.env.AGENT_SESSION_ROOT_DIR = sessionRootDir;
-  const mcpServer = createMockMcpServer();
+  const mockMcp = createMockMcpServer();
+  const mcpServer = mockMcp.server;
   await new Promise<void>((resolve, reject) => {
     mcpServer.listen(0, "127.0.0.1", () => resolve());
     mcpServer.once("error", reject);
@@ -145,6 +151,71 @@ async function main(): Promise<void> {
       "second run should execute sendAndWait exactly once",
     );
 
+    const taskIdApproval = `task_${randomUUID()}`;
+    const runApprovalResponse = await app.inject({
+      method: "POST",
+      url: "/v1/tasks/run",
+      payload: {
+        task_id: taskIdApproval,
+        session_id: sessionId,
+        prompt: "P6 smoke approval request run",
+        runtime_policy: {
+          tool_routing: {
+            mode: "hybrid_container_builtin_gateway_host",
+            allow_external_mcp: false,
+          },
+        },
+        tool_calls: [
+          {
+            tool_name: "discord.channel_history",
+            execution_target: "gateway_adapter",
+            arguments: {
+              channelId: "smoke-channel-id",
+              limit: 5,
+              role: "all",
+            },
+            reason: "approval payload contract check",
+          },
+        ],
+      },
+    });
+    assertStatusCode(
+      runApprovalResponse.statusCode,
+      202,
+      "tasks/run(approval)",
+    );
+
+    const completedApproval = await waitUntilTerminal(app, taskIdApproval);
+    assert(
+      completedApproval.status === "completed",
+      "approval run should complete",
+    );
+    const hasApprovedDiscordToolResult =
+      completedApproval.result?.tool_results?.some(
+        (result) =>
+          result.status === "ok" &&
+          result.tool_name === "discord.channel_history",
+      ) ?? false;
+    assert(
+      hasApprovedDiscordToolResult,
+      "approval run should execute discord.channel_history after approval",
+    );
+    const approvalRequest = mockMcp.approvalRequests.find(
+      (request) =>
+        request.taskId === taskIdApproval && request.sessionId === sessionId,
+    );
+    assert(
+      Boolean(approvalRequest),
+      "approval request should be sent with taskId/sessionId",
+    );
+    assert(
+      approvalRequest !== undefined &&
+        !("task_id" in approvalRequest) &&
+        !("session_id" in approvalRequest) &&
+        !("timeout_sec" in approvalRequest),
+      "approval request payload should not use snake_case keys",
+    );
+
     const taskId3 = `task_${randomUUID()}`;
     const runResponse3 = await app.inject({
       method: "POST",
@@ -201,8 +272,9 @@ async function main(): Promise<void> {
   }
 }
 
-function createMockMcpServer(): http.Server {
-  return http.createServer((request, response) => {
+function createMockMcpServer(): MockMcpServerContext {
+  const approvalRequests: Array<Record<string, unknown>> = [];
+  const server = http.createServer((request, response) => {
     if (!request.url || request.method !== "POST") {
       if (request.url === "/fixtures/sample.txt" && request.method === "GET") {
         response.writeHead(200, {
@@ -217,7 +289,10 @@ function createMockMcpServer(): http.Server {
       return;
     }
 
-    if (request.url !== "/v1/mcp/tool-call") {
+    if (
+      request.url !== "/v1/mcp/tool-call" &&
+      request.url !== "/v1/agent/approvals/request-and-wait"
+    ) {
       writeJson(response, 404, {
         error: "not_found",
       });
@@ -231,6 +306,42 @@ function createMockMcpServer(): http.Server {
     request.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       const payload = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      if (request.url === "/v1/agent/approvals/request-and-wait") {
+        const isValid =
+          typeof payload.taskId === "string" &&
+          payload.taskId.length > 0 &&
+          typeof payload.sessionId === "string" &&
+          payload.sessionId.length > 0 &&
+          typeof payload.operation === "string" &&
+          payload.operation.length > 0 &&
+          typeof payload.path === "string" &&
+          payload.path.length > 0 &&
+          typeof payload.timeoutSec === "number" &&
+          Number.isInteger(payload.timeoutSec) &&
+          payload.timeoutSec > 0;
+        if (!isValid) {
+          writeJson(response, 400, {
+            error: "invalid_agent_approval_request",
+            message: "Invalid request payload.",
+            details: {
+              payload,
+            },
+          });
+          return;
+        }
+        approvalRequests.push(payload);
+        writeJson(response, 200, {
+          decision: "approved",
+          approval: {
+            approval_id: `apr_${randomUUID().slice(0, 8)}`,
+            status: "approved",
+            operation: String(payload.operation),
+            path: String(payload.path),
+          },
+        });
+        return;
+      }
+
       const taskId = String(payload.task_id ?? "");
       const callId = String(payload.call_id ?? "");
       const toolName = String(payload.tool_name ?? "");
@@ -246,6 +357,10 @@ function createMockMcpServer(): http.Server {
       });
     });
   });
+  return {
+    server,
+    approvalRequests,
+  };
 }
 
 async function waitUntilTerminal(

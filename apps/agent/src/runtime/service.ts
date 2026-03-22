@@ -319,12 +319,12 @@ export class AgentRuntimeService {
 
     const timeoutSec = resolveApprovalTimeoutSec();
     const approvalResult = await this.gatewayMcpClient.requestApprovalAndWait({
-      task_id: request.task_id,
-      session_id: request.session_id,
-      tool_name: request.tool_name,
+      taskId: request.task_id,
+      sessionId: request.session_id,
+      toolName: request.tool_name,
       operation: request.approval_scope.operation,
       path: request.approval_scope.path,
-      timeout_sec: timeoutSec,
+      timeoutSec,
     });
     if (approvalResult.decision === "approved") {
       return {
