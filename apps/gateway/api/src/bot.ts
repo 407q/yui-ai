@@ -1325,6 +1325,17 @@ function normalizeTaskEventTimestamp(value: string | null | undefined): string |
   return parsed.toISOString();
 }
 
+function parseTimestampMs(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
 function readToolEventCallId(payload: Record<string, unknown>): string | null {
   return readString(payload, "call_id") ?? readString(payload, "callId");
 }
@@ -2942,9 +2953,12 @@ async function waitForAgentTaskTerminalStatus(
   taskId: string,
   runSequence: number,
 ): Promise<GatewayAgentTaskStatusResponse> {
-  const deadline = Date.now() + AGENT_STATUS_TIMEOUT_SEC * 1000;
+  const inactivityTimeoutMs = AGENT_STATUS_TIMEOUT_SEC * 1000;
+  let lastObservedActivityAtMs = Date.now();
+  let lastObservedTaskEventTimestamp = session.lastTaskEventTimestamp;
+  let lastObservedToolEventTimestamp = session.lastToolEventTimestamp;
   let pollCount = 0;
-  while (Date.now() <= deadline) {
+  while (true) {
     if (isRunCanceled(session, runSequence)) {
       throw new SessionRunCanceledError(
         "run canceled while waiting for agent status",
@@ -2963,6 +2977,32 @@ async function waitForAgentTaskTerminalStatus(
       `agent task ${status.agentTask.status}`,
     );
     pollCount += 1;
+    const statusUpdatedAtMs = parseTimestampMs(status.agentTask.updated_at);
+    if (statusUpdatedAtMs !== null && statusUpdatedAtMs > lastObservedActivityAtMs) {
+      lastObservedActivityAtMs = statusUpdatedAtMs;
+    }
+
+    if (
+      session.lastTaskEventTimestamp &&
+      session.lastTaskEventTimestamp !== lastObservedTaskEventTimestamp
+    ) {
+      const taskEventMs = parseTimestampMs(session.lastTaskEventTimestamp);
+      if (taskEventMs !== null && taskEventMs > lastObservedActivityAtMs) {
+        lastObservedActivityAtMs = taskEventMs;
+      }
+      lastObservedTaskEventTimestamp = session.lastTaskEventTimestamp;
+    }
+
+    if (
+      session.lastToolEventTimestamp &&
+      session.lastToolEventTimestamp !== lastObservedToolEventTimestamp
+    ) {
+      const toolEventMs = parseTimestampMs(session.lastToolEventTimestamp);
+      if (toolEventMs !== null && toolEventMs > lastObservedActivityAtMs) {
+        lastObservedActivityAtMs = toolEventMs;
+      }
+      lastObservedToolEventTimestamp = session.lastToolEventTimestamp;
+    }
 
     if (
       status.agentTask.status === "completed" ||
@@ -2980,12 +3020,15 @@ async function waitForAgentTaskTerminalStatus(
       return status;
     }
 
+    const inactivityElapsedMs = Date.now() - lastObservedActivityAtMs;
+    if (inactivityElapsedMs > inactivityTimeoutMs) {
+      throw new Error(
+        `Agent task status polling timed out after ${AGENT_STATUS_TIMEOUT_SEC} seconds without activity.`,
+      );
+    }
+
     await wait(AGENT_POLL_INTERVAL_MS);
   }
-
-  throw new Error(
-    `Agent task status polling timed out after ${AGENT_STATUS_TIMEOUT_SEC} seconds.`,
-  );
 }
 
 async function runAgentTaskAttempt(
@@ -3792,7 +3835,7 @@ async function handleClientReady(readyClient: Client<true>): Promise<void> {
   const startupMessage =
     `[bot:${BOT_MODE}] Logged in as ${readyClient.user.tag} | ` +
     `idle=${IDLE_TIMEOUT_SEC}s | ` +
-    `agent_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
+    `agent_inactive_timeout=${AGENT_STATUS_TIMEOUT_SEC}s | infra=${getInfrastructureStatusMessage()}`;
   console.log(startupMessage);
   await sendSystemAlert(`🟢 ${startupMessage}`);
 
