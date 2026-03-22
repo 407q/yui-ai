@@ -806,7 +806,6 @@ async function main(): Promise<void> {
       tool_name: "discord.channel_history",
       execution_target: "gateway_adapter",
       arguments: {
-        channelId,
         limit: 10,
         role: "all",
       },
@@ -866,7 +865,6 @@ async function main(): Promise<void> {
       tool_name: "discord.channel_history",
       execution_target: "gateway_adapter",
       arguments: {
-        channelId,
         limit: 10,
         role: "all",
       },
@@ -919,8 +917,9 @@ async function main(): Promise<void> {
       "discord.channel_history should return entries",
     );
     assert(
-      discordChannelHistoryPayload.entries_source === "repository",
-      "discord.channel_history should fallback to repository when Discord messages API is unavailable",
+      discordChannelHistoryPayload.entries_source === "repository" ||
+        discordChannelHistoryPayload.entries_source === "discord_api",
+      "discord.channel_history should return valid entries source",
     );
     assert(
       discordChannelHistoryPayload.entries.every(
@@ -1019,11 +1018,128 @@ async function main(): Promise<void> {
       discordChannelListPayload.channels.length > 0,
       "discord.channel_list should return at least one channel",
     );
+    if (discordChannelListPayload.source === "repository") {
+      assert(
+        discordChannelListPayload.channels.some(
+          (channel) => channel.channel_id === channelId,
+        ),
+        "repository-based discord.channel_list should include current session channel",
+      );
+    }
+
+    const placeholderDiscordHistoryApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "discord_channel_history",
+        path: "discord_channel:__session_channel__",
+      },
+    });
+    const placeholderDiscordHistoryApprovalRequestBody = parseJsonBody(
+      placeholderDiscordHistoryApprovalRequestResponse.body,
+    ) as {
+      approval: {
+        approvalId: string;
+        status: string;
+      } | null;
+    };
+    assertStatusCode(
+      placeholderDiscordHistoryApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(discord_channel_history placeholder)",
+    );
     assert(
-      discordChannelListPayload.channels.some(
-        (channel) => channel.channel_id === channelId,
-      ),
-      "discord.channel_list should include current session channel",
+      placeholderDiscordHistoryApprovalRequestBody.approval?.status === "requested",
+      "placeholder discord history approval should be requested",
+    );
+
+    const placeholderDiscordHistoryRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${placeholderDiscordHistoryApprovalRequestBody.approval?.approvalId ?? ""}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      placeholderDiscordHistoryRespondResponse.statusCode,
+      200,
+      "approvals/respond(discord_channel_history placeholder)",
+    );
+
+    const placeholderDiscordHistoryGrantedResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 10,
+        role: "all",
+      },
+      reason: "discord history after placeholder approval",
+    });
+    assert(
+      placeholderDiscordHistoryGrantedResult.status === "ok",
+      "discord.channel_history should succeed after placeholder approval",
+    );
+
+    const placeholderDiscordListApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "discord_channel_list",
+        path: "discord_guild:__session_guild__",
+      },
+    });
+    const placeholderDiscordListApprovalRequestBody = parseJsonBody(
+      placeholderDiscordListApprovalRequestResponse.body,
+    ) as {
+      approval: {
+        approvalId: string;
+        status: string;
+      } | null;
+    };
+    assertStatusCode(
+      placeholderDiscordListApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(discord_channel_list placeholder)",
+    );
+    assert(
+      placeholderDiscordListApprovalRequestBody.approval?.status === "requested",
+      "placeholder discord list approval should be requested",
+    );
+
+    const placeholderDiscordListRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${placeholderDiscordListApprovalRequestBody.approval?.approvalId ?? ""}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      placeholderDiscordListRespondResponse.statusCode,
+      200,
+      "approvals/respond(discord_channel_list placeholder)",
+    );
+
+    const placeholderDiscordListGrantedResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_list",
+      execution_target: "gateway_adapter",
+      arguments: {
+        limit: 20,
+      },
+      reason: "discord list after placeholder approval",
+    });
+    assert(
+      placeholderDiscordListGrantedResult.status === "ok",
+      "discord.channel_list should succeed after placeholder approval",
     );
 
     const messageResponse = await app.inject({

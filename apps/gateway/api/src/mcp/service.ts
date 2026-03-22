@@ -945,6 +945,18 @@ export class McpToolService {
     scopeValue: string,
   ): boolean {
     if (
+      operation === "discord_channel_history" &&
+      grantedValue === "discord_channel:__session_channel__"
+    ) {
+      return scopeValue.startsWith("discord_channel:");
+    }
+    if (
+      operation === "discord_channel_list" &&
+      grantedValue === "discord_guild:__session_guild__"
+    ) {
+      return scopeValue.startsWith("discord_guild:");
+    }
+    if (
       operation === "read" ||
       operation === "write" ||
       operation === "delete" ||
