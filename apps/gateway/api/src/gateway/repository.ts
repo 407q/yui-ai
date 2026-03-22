@@ -90,7 +90,9 @@ export interface ResolveMemoryBacklinkInput {
 export interface ListDiscordRecentMessagesInput {
   threadId?: string;
   channelId?: string;
-  limit: number;
+  limit?: number;
+  startAt?: Date | null;
+  endAt?: Date | null;
 }
 
 export interface ListKnownDiscordChannelsInput {
@@ -884,9 +886,14 @@ export class PostgresGatewayRepository implements GatewayRepository {
   async listDiscordRecentMessages(
     input: ListDiscordRecentMessagesInput,
   ): Promise<DiscordRecentMessageRecord[]> {
-    const normalizedLimit = Math.min(Math.max(input.limit, 1), 50);
+    const normalizedLimit =
+      typeof input.limit === "number" && Number.isFinite(input.limit)
+        ? Math.min(Math.max(Math.trunc(input.limit), 1), 500)
+        : null;
     const threadId = input.threadId?.trim();
     const channelId = input.channelId?.trim();
+    const startAt = input.startAt ?? null;
+    const endAt = input.endAt ?? null;
     if (!threadId && !channelId) {
       return [];
     }
@@ -910,10 +917,12 @@ export class PostgresGatewayRepository implements GatewayRepository {
       WHERE e.event_type = 'discord.message.logged'
         AND ($1::text IS NULL OR s.thread_id = $1)
         AND ($2::text IS NULL OR s.channel_id = $2)
+        AND ($3::timestamptz IS NULL OR e."timestamp" >= $3)
+        AND ($4::timestamptz IS NULL OR e."timestamp" <= $4)
       ORDER BY e."timestamp" DESC
-      LIMIT $3
+      LIMIT COALESCE($5, 1000000)
       `,
-      [threadId ?? null, channelId ?? null, normalizedLimit],
+      [threadId ?? null, channelId ?? null, startAt, endAt, normalizedLimit],
     );
     return rows.map(toDiscordRecentMessageRecord).reverse();
   }

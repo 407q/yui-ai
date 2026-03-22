@@ -881,7 +881,14 @@ async function main(): Promise<void> {
       source: "discord_api" | "repository";
       entries_source: "discord_api" | "repository";
       fallback_reason: string | null;
+      date_range: {
+        from: string | null;
+        to: string | null;
+      };
       entries: Array<{
+        role: "user" | "assistant";
+        content: string;
+        timestamp: string;
         attachmentUrls: string[];
         reference: {
           messageId: string;
@@ -934,6 +941,118 @@ async function main(): Promise<void> {
     assert(
       discordChannelHistoryPayload.note.includes("non-thread context"),
       "discord.channel_history should explain channel metadata usage",
+    );
+    assert(
+      discordChannelHistoryPayload.date_range.from === null &&
+        discordChannelHistoryPayload.date_range.to === null,
+      "discord.channel_history should expose null date_range when unspecified",
+    );
+
+    const seededRangeMessages = [
+      {
+        role: "user",
+        userId,
+        username: "range-user",
+        nickname: "range-user",
+        content: "range-old",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        role: "assistant",
+        userId: "assistant",
+        username: "assistant",
+        nickname: null,
+        content: "range-mid",
+        timestamp: "2026-01-05T12:00:00.000Z",
+      },
+      {
+        role: "user",
+        userId,
+        username: "range-user",
+        nickname: "range-user",
+        content: "range-new",
+        timestamp: "2026-01-10T00:00:00.000Z",
+      },
+    ] as const;
+    await seedDiscordHistoryEntries({
+      pool,
+      taskId: startBody.taskId,
+      entries: seededRangeMessages,
+    });
+    const discordChannelHistoryRangeResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        role: "all",
+        from: "2026-01-05T00:00:00.000Z",
+        to: "2026-01-06T00:00:00.000Z",
+      },
+      reason: "discord channel history date range",
+    });
+    assert(
+      discordChannelHistoryRangeResult.status === "ok",
+      "discord.channel_history should support date-range filtering",
+    );
+    const discordChannelHistoryRangePayload = (
+      discordChannelHistoryRangeResult as McpResultSuccess
+    ).result as {
+      date_range: {
+        from: string | null;
+        to: string | null;
+      };
+      entries: Array<{
+        content: string;
+      }>;
+    };
+    assert(
+      discordChannelHistoryRangePayload.date_range.from === "2026-01-05T00:00:00.000Z",
+      "discord.channel_history should return normalized date_range.from",
+    );
+    assert(
+      discordChannelHistoryRangePayload.date_range.to === "2026-01-06T00:00:00.000Z",
+      "discord.channel_history should return normalized date_range.to",
+    );
+    assert(
+      discordChannelHistoryRangePayload.entries.length === 1 &&
+        discordChannelHistoryRangePayload.entries[0]?.content === "range-mid",
+      "discord.channel_history should filter entries by date range",
+    );
+
+    const discordChannelHistoryLimitResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "discord.channel_history",
+      execution_target: "gateway_adapter",
+      arguments: {
+        role: "all",
+        limit: 1,
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-01-31T23:59:59.999Z",
+      },
+      reason: "discord channel history limit",
+    });
+    assert(
+      discordChannelHistoryLimitResult.status === "ok",
+      "discord.channel_history with limit should succeed",
+    );
+    const discordChannelHistoryLimitPayload = (
+      discordChannelHistoryLimitResult as McpResultSuccess
+    ).result as {
+      entries: Array<{
+        content: string;
+      }>;
+    };
+    assert(
+      discordChannelHistoryLimitPayload.entries.length === 1,
+      "discord.channel_history limit should cap returned entries",
+    );
+    assert(
+      discordChannelHistoryLimitPayload.entries[0]?.content === "range-new",
+      "discord.channel_history limit should keep newest entry",
     );
 
     const discordChannelListResult = await callMcpTool(app, reporter, {
@@ -1522,6 +1641,53 @@ async function waitForAgentTerminalStatus(
   throw new Error(
     `[api:smoke] agent task ${taskId} did not reach terminal status in time`,
   );
+}
+
+async function seedDiscordHistoryEntries(input: {
+  pool: ReturnType<typeof createGatewayPool>;
+  taskId: string;
+  entries: ReadonlyArray<{
+    role: "user" | "assistant";
+    userId: string;
+    username: string | null;
+    nickname: string | null;
+    content: string;
+    timestamp: string;
+  }>;
+}): Promise<void> {
+  for (const entry of input.entries) {
+    const timestamp = new Date(entry.timestamp);
+    if (Number.isNaN(timestamp.getTime())) {
+      throw new Error(
+        `[api:smoke] invalid seed timestamp: ${entry.timestamp}`,
+      );
+    }
+    const payload = {
+      role: entry.role,
+      userId: entry.userId,
+      username: entry.username,
+      nickname: entry.nickname,
+      content: entry.content,
+    };
+    await input.pool.query(
+      `
+      INSERT INTO task_events (
+        event_id,
+        task_id,
+        event_type,
+        payload_json,
+        "timestamp"
+      )
+      VALUES ($1, $2, 'discord.message.logged', $3::jsonb, $4)
+      `,
+      [
+        `event_${randomUUID()}`,
+        input.taskId,
+        JSON.stringify(payload),
+        timestamp,
+      ],
+    );
+  }
 }
 
 function createMockAgentRuntimeClient(): AgentRuntimeClient {

@@ -85,8 +85,10 @@ const memoryDeleteSchema = z.object({
 
 const discordChannelHistorySchema = z.object({
   channelId: z.string().min(1).optional(),
-  limit: z.number().int().min(1).max(50).optional().default(20),
+  limit: z.number().int().min(1).optional(),
   role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
 });
 
 const discordChannelListSchema = z.object({
@@ -493,6 +495,10 @@ export class McpToolService {
       }
       case "discord.channel_history": {
         const args = parseToolArgs(discordChannelHistorySchema, input.arguments);
+        const dateRange = parseDiscordHistoryDateRange({
+          from: args.from,
+          to: args.to,
+        });
         const session = await this.repository.findSessionById(input.sessionId);
         if (!session) {
           throw new McpToolError(
@@ -530,10 +536,14 @@ export class McpToolService {
         const messages = await this.repository.listDiscordRecentMessages({
           channelId: targetChannelId,
           limit: args.limit,
+          startAt: dateRange.from,
+          endAt: dateRange.to,
         });
         const apiHistory = await this.listDiscordChannelMessages({
           channelId: targetChannelId,
           limit: args.limit,
+          startAt: dateRange.from,
+          endAt: dateRange.to,
           sessionId: input.sessionId,
           taskId: input.taskId,
           sessionUserId: userId,
@@ -545,7 +555,16 @@ export class McpToolService {
         return {
           channel_id: targetChannelId,
           channel_name: matchedChannel?.channelName ?? null,
-          entries: toDiscordHistoryEntries(historyEntries, args.role, args.limit),
+          entries: toDiscordHistoryEntries(historyEntries, {
+            role: args.role,
+            limit: args.limit,
+            from: dateRange.from,
+            to: dateRange.to,
+          }),
+          date_range: {
+            from: dateRange.from ? dateRange.from.toISOString() : null,
+            to: dateRange.to ? dateRange.to.toISOString() : null,
+          },
           source: channelSet.source,
           entries_source: apiHistory.source,
           fallback_reason:
@@ -855,7 +874,9 @@ export class McpToolService {
 
   private async listDiscordChannelMessages(input: {
     channelId: string;
-    limit: number;
+    limit?: number;
+    startAt?: Date | null;
+    endAt?: Date | null;
     sessionId: string;
     taskId: string;
     sessionUserId: string;
@@ -875,52 +896,101 @@ export class McpToolService {
     const apiBaseUrl = this.normalizeDiscordApiBaseUrl(
       this.options.discordApiBaseUrl,
     );
-    const params = new URLSearchParams({
-      limit: String(Math.min(Math.max(input.limit, 1), 50)),
-    });
+    const normalizedLimit =
+      typeof input.limit === "number" && Number.isFinite(input.limit)
+        ? Math.max(Math.trunc(input.limit), 1)
+        : null;
+    const startAtMs = input.startAt ? input.startAt.getTime() : null;
+    const endAtMs = input.endAt ? input.endAt.getTime() : null;
+    const entries: DiscordHistoryEntry[] = [];
+    const seenMessageIds = new Set<string>();
+    let beforeMessageId: string | null = null;
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/channels/${encodeURIComponent(input.channelId)}/messages?${params.toString()}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bot ${token}`,
-          },
-        },
-      );
-      if (!response.ok) {
-        const responseBody = truncate(await response.text(), 400);
-        throw new McpToolError(
-          "tool_execution_failed",
-          "Failed to fetch Discord channel messages.",
+      while (true) {
+        const remaining = normalizedLimit === null ? null : normalizedLimit - entries.length;
+        if (remaining !== null && remaining <= 0) {
+          break;
+        }
+        const pageSize = remaining === null ? 100 : Math.min(100, remaining);
+        const params = new URLSearchParams({
+          limit: String(pageSize),
+        });
+        if (beforeMessageId) {
+          params.set("before", beforeMessageId);
+        }
+        const response = await fetch(
+          `${apiBaseUrl}/channels/${encodeURIComponent(input.channelId)}/messages?${params.toString()}`,
           {
-            status: response.status,
-            channel_id: input.channelId,
-            response: responseBody,
+            method: "GET",
+            headers: {
+              Authorization: `Bot ${token}`,
+            },
           },
         );
-      }
-      const payload: unknown = await response.json();
-      if (!Array.isArray(payload)) {
-        throw new McpToolError(
-          "tool_execution_failed",
-          "Unexpected Discord channel messages response format.",
-          {
-            channel_id: input.channelId,
-          },
-        );
-      }
-      const entries = payload
-        .map((entry) =>
-          parseDiscordChannelMessage(
+        if (!response.ok) {
+          const responseBody = truncate(await response.text(), 400);
+          throw new McpToolError(
+            "tool_execution_failed",
+            "Failed to fetch Discord channel messages.",
+            {
+              status: response.status,
+              channel_id: input.channelId,
+              response: responseBody,
+            },
+          );
+        }
+        const payload: unknown = await response.json();
+        if (!Array.isArray(payload)) {
+          throw new McpToolError(
+            "tool_execution_failed",
+            "Unexpected Discord channel messages response format.",
+            {
+              channel_id: input.channelId,
+            },
+          );
+        }
+        if (payload.length === 0) {
+          break;
+        }
+        let reachedBeforeStartAt = false;
+        for (const entry of payload) {
+          const parsed = parseDiscordChannelMessage(
             entry,
             input.sessionId,
             input.taskId,
             input.sessionUserId,
-          ),
-        )
-        .filter((entry): entry is DiscordHistoryEntry => entry !== null)
-        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+          );
+          if (!parsed || seenMessageIds.has(parsed.eventId)) {
+            continue;
+          }
+          seenMessageIds.add(parsed.eventId);
+          const timestampMs = parsed.timestamp.getTime();
+          if (endAtMs !== null && timestampMs > endAtMs) {
+            continue;
+          }
+          if (startAtMs !== null && timestampMs < startAtMs) {
+            reachedBeforeStartAt = true;
+            continue;
+          }
+          entries.push(parsed);
+          if (normalizedLimit !== null && entries.length >= normalizedLimit) {
+            break;
+          }
+        }
+        if (normalizedLimit !== null && entries.length >= normalizedLimit) {
+          break;
+        }
+        const oldest = asRecord(payload[payload.length - 1]);
+        const oldestMessageId = readNonEmptyString(oldest?.id);
+        if (!oldestMessageId) {
+          break;
+        }
+        beforeMessageId = oldestMessageId;
+        if (payload.length < pageSize || reachedBeforeStartAt) {
+          break;
+        }
+      }
+      entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       return {
         source: "discord_api",
         entries,
@@ -1387,10 +1457,54 @@ function summarizeError(error: unknown): string {
   return String(error);
 }
 
+function parseDiscordHistoryDateRange(input: {
+  from?: string;
+  to?: string;
+}): { from: Date | null; to: Date | null } {
+  const from = parseDiscordHistoryTimestamp(input.from, "from");
+  const to = parseDiscordHistoryTimestamp(input.to, "to");
+  if (from && to && from.getTime() > to.getTime()) {
+    throw new McpToolError(
+      "invalid_tool_arguments",
+      "discord.channel_history requires from <= to.",
+      {
+        from: input.from,
+        to: input.to,
+      },
+    );
+  }
+  return { from, to };
+}
+
+function parseDiscordHistoryTimestamp(
+  raw: string | undefined,
+  field: "from" | "to",
+): Date | null {
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new McpToolError(
+      "invalid_tool_arguments",
+      `discord.channel_history ${field} must be a valid date string.`,
+      {
+        field,
+        value: raw,
+      },
+    );
+  }
+  return parsed;
+}
+
 function toDiscordHistoryEntries(
   records: DiscordHistoryEntry[],
-  role: "all" | "user" | "assistant",
-  limit: number,
+  options: {
+    role: "all" | "user" | "assistant";
+    limit?: number;
+    from?: Date | null;
+    to?: Date | null;
+  },
 ): Array<{
   eventId: string;
   sessionId: string;
@@ -1425,8 +1539,29 @@ function toDiscordHistoryEntries(
   } | null;
   timestamp: string;
 }> {
-  const filtered = records.filter((entry) => role === "all" || entry.role === role);
-  const sliced = filtered.slice(Math.max(filtered.length - limit, 0));
+  const fromMs = options.from ? options.from.getTime() : null;
+  const toMs = options.to ? options.to.getTime() : null;
+  const filtered = records.filter((entry) => {
+    if (options.role !== "all" && entry.role !== options.role) {
+      return false;
+    }
+    const timestampMs = entry.timestamp.getTime();
+    if (fromMs !== null && timestampMs < fromMs) {
+      return false;
+    }
+    if (toMs !== null && timestampMs > toMs) {
+      return false;
+    }
+    return true;
+  });
+  const normalizedLimit =
+    typeof options.limit === "number" && Number.isFinite(options.limit)
+      ? Math.max(Math.trunc(options.limit), 1)
+      : null;
+  const sliced =
+    normalizedLimit === null
+      ? filtered
+      : filtered.slice(Math.max(filtered.length - normalizedLimit, 0));
   return sliced.map((entry) => ({
     eventId: entry.eventId,
     sessionId: entry.sessionId,

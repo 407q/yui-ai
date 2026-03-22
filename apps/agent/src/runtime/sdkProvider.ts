@@ -212,8 +212,10 @@ const systemMemoryFetchSchema = z.object({
 
 const discordChannelHistorySchema = z.object({
   channelId: z.string().min(1).optional(),
-  limit: z.number().int().min(1).max(50).optional().default(20),
+  limit: z.number().int().min(1).optional(),
   role: z.enum(["all", "user", "assistant"]).optional().default("all"),
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
 });
 
 const discordChannelListSchema = z.object({
