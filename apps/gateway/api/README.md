@@ -53,7 +53,12 @@ cp .env.example .env
 - `BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC`（任意。既定: `15`）
 - `BOT_ORCHESTRATOR_FAILURE_THRESHOLD`（任意。既定: `3`）
 - `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC`（任意。既定: `240`）
+- `BOT_ORCHESTRATOR_CLEANUP_ENABLED`（任意。既定: `true`）
+- `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC`（任意。既定: `86400`）
 - `BOT_ORCHESTRATOR_COMPOSE_BUILD`（任意。既定: `true`）
+- `BOT_TO_GATEWAY_INTERNAL_TOKEN`（任意。Bot -> Gateway API 内部認証）
+- `GATEWAY_TO_AGENT_INTERNAL_TOKEN`（任意。Gateway API -> Agent Runtime 内部認証）
+- `AGENT_TO_GATEWAY_INTERNAL_TOKEN`（任意。Agent Runtime -> Gateway API 内部認証）
 - `BOT_OPERATION_LOG_ENABLED`（任意。既定: `true`）
 - `BOT_OPERATION_LOG_MAX_FIELD_CHARS`（任意。既定: `320`）
 - `BOT_DELIVERED_FILE_MAX_BYTES`（任意。既定: `2097152`）
@@ -63,6 +68,7 @@ cp .env.example .env
 - `AGENT_CONTAINER_NAME`（任意。既定: `yui-ai-agent`）
 - `CONTAINER_DOCKER_CLI_TIMEOUT_SEC`（任意。既定: `60`）
 - `DOCKER_PROJECT_ROOT`（任意。既定: `.`）
+- `HOST_CLI_ENV_ALLOWLIST`（任意。既定: 空。`host.cli_exec` へ追加注入する環境変数キーをカンマ区切りで指定）
 
 `BOT_OPERATION_LOG_ENABLED=true` の場合、Bot は実行中の操作を
 「何をしたか」だけ（例: ファイル読込 / CLI 実行 / ツール呼び出し）で
@@ -147,6 +153,7 @@ yarn dev
 
 - 起動中に失敗した場合は起動処理を中断し、Gateway API/compose を停止して graceful に終了
 - 稼働中の障害時は `対象再起動 -> 全体再起動 -> 失敗時は全体終了` の順で試行
+- 定期 cleanup を有効化した場合、`db:cleanup:local` が `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC` 間隔で実行されます
 
 Gateway API を別プロセスで手動起動したい場合は、以下で Orchestrator を無効化してください。
 

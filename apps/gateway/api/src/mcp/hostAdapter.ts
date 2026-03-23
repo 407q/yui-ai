@@ -5,6 +5,7 @@ import { execCommand } from "./exec.js";
 export interface HostToolAdapterOptions {
   cliTimeoutSec: number;
   httpTimeoutSec: number;
+  cliEnvAllowlist?: string[];
 }
 
 export interface HostCliInput {
@@ -82,6 +83,7 @@ export class HostToolAdapter {
       args: input.args,
       cwd,
       timeoutSec: input.timeoutSec ?? this.options.cliTimeoutSec,
+      envAllowlist: this.options.cliEnvAllowlist,
     });
     return {
       command: input.command,

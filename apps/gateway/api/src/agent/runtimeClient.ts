@@ -109,6 +109,7 @@ export interface AgentRuntimeClient {
 export interface HttpAgentRuntimeClientOptions {
   baseUrl: string;
   timeoutSec: number;
+  internalToken?: string;
 }
 
 export class HttpAgentRuntimeClient implements AgentRuntimeClient {
@@ -164,6 +165,9 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     const headers: Record<string, string> = {};
     if (hasBody) {
       headers["content-type"] = "application/json; charset=utf-8";
+    }
+    if (this.options.internalToken && this.options.internalToken.length > 0) {
+      headers["x-internal-token"] = this.options.internalToken;
     }
 
     try {

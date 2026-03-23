@@ -42,6 +42,8 @@ export interface RuntimeSupervisorOptions {
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
+  cleanupEnabled?: boolean;
+  cleanupIntervalSec?: number;
   monitoringEnabled?: boolean;
   onLog?: (message: string) => void;
   onAlert?: (message: string) => Promise<void>;
@@ -61,7 +63,9 @@ export interface RuntimeSupervisorShutdownOptions {
 export class RuntimeSupervisor {
   private gatewayApp: FastifyInstance | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
+  private cleanupTimer: NodeJS.Timeout | null = null;
   private monitorInFlight = false;
+  private cleanupInFlight = false;
   private consecutiveFailures = 0;
   private booted = false;
   private fatalTriggered = false;
@@ -95,8 +99,12 @@ export class RuntimeSupervisor {
       if (this.options.monitoringEnabled ?? true) {
         this.startMonitorLoop();
       }
+      if (this.options.cleanupEnabled ?? true) {
+        this.startCleanupLoop();
+      }
     } catch (error) {
       this.stopMonitorLoop();
+      this.stopCleanupLoop();
       this.booted = false;
       await this.runBootRollback();
       throw error;
@@ -105,6 +113,7 @@ export class RuntimeSupervisor {
 
   async shutdown(options: RuntimeSupervisorShutdownOptions = {}): Promise<void> {
     this.stopMonitorLoop();
+    this.stopCleanupLoop();
     await this.stopGatewayApiBestEffort("shutdown");
     if (options.stopCompose) {
       await this.runCommandBestEffort(
@@ -155,6 +164,52 @@ export class RuntimeSupervisor {
     clearInterval(this.monitorTimer);
     this.monitorTimer = null;
     this.log("monitor: stopped");
+  }
+
+  private startCleanupLoop(): void {
+    if (this.cleanupTimer) {
+      return;
+    }
+    const intervalSec = Math.max(60, this.options.cleanupIntervalSec ?? 24 * 60 * 60);
+    const intervalMs = intervalSec * 1000;
+    this.cleanupTimer = setInterval(() => {
+      void this.cleanupCycle().catch((error: unknown) => {
+        this.log(
+          `cleanup cycle error: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }, intervalMs);
+    this.log(`cleanup: started (interval=${intervalSec}s)`);
+  }
+
+  private stopCleanupLoop(): void {
+    if (!this.cleanupTimer) {
+      return;
+    }
+    clearInterval(this.cleanupTimer);
+    this.cleanupTimer = null;
+    this.log("cleanup: stopped");
+  }
+
+  private async cleanupCycle(): Promise<void> {
+    if (this.cleanupInFlight) {
+      return;
+    }
+    this.cleanupInFlight = true;
+    try {
+      await this.runCommand({
+        command: "yarn",
+        args: ["db:cleanup:local"],
+      });
+      this.log("cleanup: completed");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.alert(`🚨 [orchestrator] cleanup failed: ${detail}`);
+    } finally {
+      this.cleanupInFlight = false;
+    }
   }
 
   private async monitorCycle(): Promise<void> {

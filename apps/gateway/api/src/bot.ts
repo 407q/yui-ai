@@ -134,6 +134,8 @@ const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
 const SYSTEM_ALERT_CHANNEL_ID = process.env.BOT_SYSTEM_ALERT_CHANNEL_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
+const BOT_TO_GATEWAY_INTERNAL_TOKEN =
+  process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ?? process.env.GATEWAY_INTERNAL_TOKEN ?? "";
 const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
 const GATEWAY_API_PORT = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
 const ORCHESTRATOR_MONITOR_INTERVAL_SEC = parsePositiveInt(
@@ -147,6 +149,12 @@ const ORCHESTRATOR_FAILURE_THRESHOLD = parsePositiveInt(
 const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
   process.env.BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
   240,
+);
+const ORCHESTRATOR_CLEANUP_ENABLED =
+  process.env.BOT_ORCHESTRATOR_CLEANUP_ENABLED !== "false";
+const ORCHESTRATOR_CLEANUP_INTERVAL_SEC = parsePositiveInt(
+  process.env.BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC,
+  24 * 60 * 60,
 );
 const ORCHESTRATOR_COMPOSE_BUILD =
   process.env.BOT_ORCHESTRATOR_COMPOSE_BUILD !== "false";
@@ -178,6 +186,10 @@ const BOT_DELIVERED_FILE_MAX_COUNT = parsePositiveInt(
 );
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_LINES = 8;
 const TOOL_PROGRESS_LOG_PREVIEW_MAX_CHARS = 720;
+const BOT_EVENT_DEDUP_TTL_MS = parsePositiveInt(
+  process.env.BOT_EVENT_DEDUP_TTL_MS,
+  5 * 60 * 1000,
+);
 function createDiscordClient(): Client {
   return new Client({
     intents: [
@@ -193,11 +205,14 @@ let client = createDiscordClient();
 const sessionsById = new Map<string, MockSession>();
 const sessionIdByThreadId = new Map<Snowflake, string>();
 const sessionIdsByUserId = new Map<Snowflake, Set<string>>();
+const sessionOwnerUserIdByThreadId = new Map<Snowflake, Snowflake>();
 const pendingApprovals = new Map<string, PendingApproval>();
 const idleTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const runningSessionIds = new Set<string>();
 const toolProgressMessageByCallId = new Map<string, ToolProgressMessageState>();
 const suppressedToolProgressCallByCallId = new Map<string, Snowflake>();
+const recentlySeenMessageIds = new Map<Snowflake, number>();
+const recentlySeenInteractionIds = new Map<Snowflake, number>();
 let isSystemControlPending = false;
 let isGracefulShutdownInProgress = false;
 let runtimeInfrastructureStatus: RuntimeInfrastructureStatus = ORCHESTRATOR_ENABLED
@@ -419,11 +434,16 @@ async function gatewayApiRequest<T>(
   pathname: string,
   payload?: unknown,
 ): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (payload !== undefined) {
+    headers["content-type"] = "application/json; charset=utf-8";
+  }
+  if (BOT_TO_GATEWAY_INTERNAL_TOKEN.length > 0) {
+    headers["x-internal-token"] = BOT_TO_GATEWAY_INTERNAL_TOKEN;
+  }
   const response = await fetch(`${GATEWAY_API_BASE_URL}${pathname}`, {
     method,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-    },
+    headers,
     body: payload ? JSON.stringify(payload) : undefined,
   });
 
@@ -1519,6 +1539,7 @@ async function syncToolProgressMessages(
   taskId: string,
 ): Promise<void> {
   const queryParts: string[] = [];
+  queryParts.push(`userId=${encodeURIComponent(session.ownerUserId)}`);
   queryParts.push("includeTaskEvents=true");
   queryParts.push(
     `eventTypes=${encodeURIComponent(
@@ -1768,6 +1789,7 @@ function attachSessionToUser(session: MockSession): void {
   const current = sessionIdsByUserId.get(session.ownerUserId) ?? new Set<string>();
   current.add(session.id);
   sessionIdsByUserId.set(session.ownerUserId, current);
+  sessionOwnerUserIdByThreadId.set(session.threadId, session.ownerUserId);
 }
 
 function detachSessionFromUser(session: MockSession): void {
@@ -1778,9 +1800,13 @@ function detachSessionFromUser(session: MockSession): void {
   current.delete(session.id);
   if (current.size === 0) {
     sessionIdsByUserId.delete(session.ownerUserId);
-    return;
+  } else {
+    sessionIdsByUserId.set(session.ownerUserId, current);
   }
-  sessionIdsByUserId.set(session.ownerUserId, current);
+  const sessionOnThread = resolveSessionByThreadId(session.threadId);
+  if (!sessionOnThread) {
+    sessionOwnerUserIdByThreadId.delete(session.threadId);
+  }
 }
 
 function setSessionStatus(
@@ -1867,11 +1893,16 @@ function resolveDiscordNickname(
 
 async function fetchThreadStatusFromGateway(
   threadId: Snowflake,
+  requesterUserId?: Snowflake,
 ): Promise<GatewayThreadStatusResponse | null> {
+  const userId = sessionOwnerUserIdByThreadId.get(threadId) ?? requesterUserId;
+  if (!userId) {
+    return null;
+  }
   try {
     return await gatewayApiRequest<GatewayThreadStatusResponse>(
       "GET",
-      `/v1/threads/${threadId}/status`,
+      `/v1/threads/${threadId}/status?userId=${encodeURIComponent(userId)}`,
     );
   } catch (error) {
     if (
@@ -1988,8 +2019,12 @@ function upsertSessionFromGatewayStatus(input: {
 
 async function restoreSessionFromGatewayThread(input: {
   thread: AnyThreadChannel;
+  requesterUserId?: Snowflake;
 }): Promise<MockSession | undefined> {
-  const status = await fetchThreadStatusFromGateway(input.thread.id);
+  const status = await fetchThreadStatusFromGateway(
+    input.thread.id,
+    input.requesterUserId,
+  );
   if (!status) {
     return undefined;
   }
@@ -2304,6 +2339,8 @@ async function bootInfrastructure(): Promise<void> {
     monitorIntervalSec: ORCHESTRATOR_MONITOR_INTERVAL_SEC,
     failureThreshold: ORCHESTRATOR_FAILURE_THRESHOLD,
     commandTimeoutSec: ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
+    cleanupEnabled: ORCHESTRATOR_CLEANUP_ENABLED,
+    cleanupIntervalSec: ORCHESTRATOR_CLEANUP_INTERVAL_SEC,
     onLog: (message) => {
       console.log(`[orchestrator] ${message}`);
     },
@@ -2427,7 +2464,28 @@ function resetRuntimeStateForReboot(): void {
   sessionsById.clear();
   sessionIdByThreadId.clear();
   sessionIdsByUserId.clear();
+  sessionOwnerUserIdByThreadId.clear();
+  recentlySeenMessageIds.clear();
+  recentlySeenInteractionIds.clear();
   runningSessionIds.clear();
+}
+
+function cleanupDedupCache(cache: Map<Snowflake, number>, now: number): void {
+  for (const [id, seenAt] of cache) {
+    if (now - seenAt > BOT_EVENT_DEDUP_TTL_MS) {
+      cache.delete(id);
+    }
+  }
+}
+
+function markEventIfNew(cache: Map<Snowflake, number>, id: Snowflake): boolean {
+  const now = Date.now();
+  cleanupDedupCache(cache, now);
+  if (cache.has(id)) {
+    return false;
+  }
+  cache.set(id, now);
+  return true;
 }
 
 async function rebootInProcess(): Promise<void> {
@@ -3237,7 +3295,9 @@ async function waitForAgentTaskTerminalStatus(
 
     const status = await gatewayApiRequest<GatewayAgentTaskStatusResponse>(
       "GET",
-      `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+      `/v1/agent/tasks/${encodeURIComponent(taskId)}/status?userId=${encodeURIComponent(
+        session.ownerUserId,
+      )}`,
     );
     session.gatewaySessionId = status.session.sessionId;
     session.currentTaskId = status.task.taskId;
@@ -4000,7 +4060,10 @@ async function handleSlashCommand(
   let session = resolveSessionByThreadId(thread.id);
   if (!session) {
     try {
-      session = await restoreSessionFromGatewayThread({ thread });
+      session = await restoreSessionFromGatewayThread({
+        thread,
+        requesterUserId: interaction.user.id,
+      });
     } catch (error) {
       console.error(`${LOG_PREFIX} session restore failed`, error);
       await interaction.reply({
@@ -4141,7 +4204,10 @@ async function handleThreadMessage(message: Message): Promise<void> {
   let session = resolveSessionByThreadId(thread.id);
   if (!session) {
     try {
-      session = await restoreSessionFromGatewayThread({ thread });
+      session = await restoreSessionFromGatewayThread({
+        thread,
+        requesterUserId: message.author.id,
+      });
     } catch (error) {
       console.error(`${LOG_PREFIX} session restore failed for message`, error);
       await message.reply(
@@ -4243,6 +4309,9 @@ function registerClientEventHandlers(): void {
       if (message.author.bot || !client.user) {
         return;
       }
+      if (!markEventIfNew(recentlySeenMessageIds, message.id)) {
+        return;
+      }
 
       if (
         message.inGuild() &&
@@ -4261,6 +4330,9 @@ function registerClientEventHandlers(): void {
 
   client.on(Events.InteractionCreate, (interaction) => {
     void (async () => {
+      if (!markEventIfNew(recentlySeenInteractionIds, interaction.id)) {
+        return;
+      }
       if (interaction.isButton()) {
         await handleApprovalButton(interaction);
         return;

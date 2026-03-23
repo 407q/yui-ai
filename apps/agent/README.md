@@ -70,6 +70,7 @@ COPILOT_SDK_LOG_LEVEL=info
 - 境界ガードは `availableTools` allowlist + SDK hooks（`onPreToolUse`）で強制し、System Message は補助的な誘導として扱います。
 - host 操作が必要な場合は、LM が口頭確認を先に求めるのではなく `host.*` ツールを呼び、Permission Hook の実行前承認フローに委ねます。
 - PR-4 では `system_memory_refs` を run payload に含め、Agent は実行ごとに `memory.get` で `system.*` を先読みしてから推論します（既定: `system.persona/active_profile`, `system.policy/core_rules`, `system.tooling/routing_contract`）。
+- Runtime は `runtime_sessions` / `runtime_task_snapshots` に session/task snapshot を永続化し、再起動後の `resumeSession` 復元と status 参照を維持します。
 
 ## Persona / Policy 設定（PR-1）
 
@@ -112,4 +113,5 @@ yarn agent:smoke:local
 ## Docker 実行
 
 `apps/agent/Dockerfile` を利用し、`docker-compose.yml` の `agent` サービスとして起動します。  
-ホスト上の Gateway API と接続するため `AGENT_GATEWAY_BASE_URL` を使用します。
+ホスト上の Gateway API と接続するため `AGENT_GATEWAY_BASE_URL`（同一ホスト既定: `http://127.0.0.1:3800`）を使用します。  
+内部 API 認証を有効化する場合は `AGENT_TO_GATEWAY_INTERNAL_TOKEN` と `GATEWAY_TO_AGENT_INTERNAL_TOKEN` を設定してください。

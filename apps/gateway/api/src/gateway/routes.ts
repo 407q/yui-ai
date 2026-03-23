@@ -33,6 +33,10 @@ const threadActionBodySchema = z.object({
   userId: z.string().min(1),
 });
 
+const threadStatusQuerySchema = z.object({
+  userId: z.string().min(1),
+});
+
 const approvalRequestBodySchema = z.object({
   userId: z.string().min(1),
   operation: z.string().min(1),
@@ -62,6 +66,7 @@ const taskParamsSchema = z.object({
 });
 
 const agentTaskStatusQuerySchema = z.object({
+  userId: z.string().min(1),
   includeTaskEvents: z
     .union([z.boolean(), z.enum(["true", "false"])])
     .optional()
@@ -218,7 +223,15 @@ export async function registerGatewayRoutes(
       request.params,
       "invalid_thread_params",
     );
-    const status = await service.getThreadStatus(params.threadId);
+    const query = parseOrThrow(
+      threadStatusQuerySchema,
+      request.query,
+      "invalid_thread_status_query",
+    );
+    const status = await service.getThreadStatus({
+      threadId: params.threadId,
+      userId: query.userId,
+    });
     return status;
   });
 
@@ -402,6 +415,7 @@ export async function registerGatewayRoutes(
     );
     return service.getAgentTaskStatus({
       taskId: params.taskId,
+      userId: query.userId,
       includeTaskEvents: query.includeTaskEvents,
       afterTimestamp: query.afterTimestamp,
       eventTypes: query.eventTypes,

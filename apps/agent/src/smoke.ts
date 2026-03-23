@@ -5,13 +5,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildAgentServer } from "./server.js";
 
+process.env.BOT_MODE ??= "mock";
+
 interface MockMcpServerContext {
   server: http.Server;
   approvalRequests: Array<Record<string, unknown>>;
 }
 
 async function main(): Promise<void> {
-  process.env.BOT_MODE ??= "mock";
   const sessionRootDir = path.resolve(
     process.cwd(),
     ".tmp",
@@ -34,6 +35,8 @@ async function main(): Promise<void> {
   const app = buildAgentServer({
     logger: false,
     gatewayBaseUrl,
+    gatewayInternalToken: "",
+    requiredInternalToken: "",
   });
 
   try {

@@ -161,6 +161,7 @@ interface AgentTaskRuntimeResult {
 
 export interface AgentTaskStatusInput {
   taskId: string;
+  userId: string;
   includeTaskEvents?: boolean;
   afterTimestamp?: string;
   eventTypes?: string[];
@@ -265,6 +266,7 @@ export class GatewayApiService {
   }> {
     let session = await this.requireSessionByThreadId(input.threadId);
     session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOwnedByUser(session, input.userId);
 
     if (session.status === "closed_by_user") {
       throw new GatewayApiError(
@@ -339,9 +341,13 @@ export class GatewayApiService {
     };
   }
 
-  async getThreadStatus(threadId: string): Promise<ThreadStatusResponse> {
-    let session = await this.requireSessionByThreadId(threadId);
+  async getThreadStatus(input: {
+    threadId: string;
+    userId: string;
+  }): Promise<ThreadStatusResponse> {
+    let session = await this.requireSessionByThreadId(input.threadId);
     session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOwnedByUser(session, input.userId);
 
     const latestTask = await this.repository.findLatestTaskBySessionId(
       session.sessionId,
@@ -363,6 +369,7 @@ export class GatewayApiService {
   }> {
     let session = await this.requireSessionByThreadId(input.threadId);
     session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOwnedByUser(session, input.userId);
     this.assertSessionOpen(session);
 
     const now = new Date();
@@ -487,6 +494,20 @@ export class GatewayApiService {
       );
     }
 
+    if (input.responderId && input.responderId !== session.userId) {
+      throw new GatewayApiError(
+        403,
+        "forbidden_approval_response",
+        "Approval can only be resolved by the session owner.",
+        {
+          approvalId: approval.approvalId,
+          sessionId: session.sessionId,
+          sessionOwnerUserId: session.userId,
+          responderId: input.responderId,
+        },
+      );
+    }
+
     const now = new Date();
     const approvalStatus = mapDecisionToApprovalStatus(input.decision);
     const taskStatus: TaskStatus =
@@ -557,6 +578,7 @@ export class GatewayApiService {
   }> {
     let session = await this.requireSessionByThreadId(input.threadId);
     session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOwnedByUser(session, input.userId);
 
     if (session.status === "closed_by_user") {
       throw new GatewayApiError(
@@ -630,6 +652,7 @@ export class GatewayApiService {
     session: SessionRecord;
   }> {
     let session = await this.requireSessionByThreadId(input.threadId);
+    this.assertSessionOwnedByUser(session, input.userId);
     if (session.status === "closed_by_user") {
       return { session };
     }
@@ -695,6 +718,7 @@ export class GatewayApiService {
   }> {
     let session = await this.requireSessionByThreadId(input.threadId);
     session = await this.refreshIdleStatusIfNeeded(session);
+    this.assertSessionOwnedByUser(session, input.userId);
     if (session.status === "running" || session.status === "waiting_approval") {
       throw new GatewayApiError(
         409,
@@ -793,6 +817,8 @@ export class GatewayApiService {
         },
       );
     }
+    this.assertSessionOwnedByUser(session, input.userId);
+    this.assertTaskOwnedByUser(task, input.userId);
 
     const now = new Date();
     const idleDeadlineAt = this.calculateIdleDeadline(now);
@@ -1077,6 +1103,8 @@ export class GatewayApiService {
         },
       );
     }
+    this.assertSessionOwnedByUser(session, input.userId);
+    this.assertTaskOwnedByUser(task, input.userId);
 
     const agentTask = await runtimeClient.getTaskStatus(task.taskId);
     const updated = await this.syncTaskStatusFromRuntime(
@@ -1229,6 +1257,8 @@ export class GatewayApiService {
         },
       );
     }
+    this.assertSessionOwnedByUser(session, input.userId);
+    this.assertTaskOwnedByUser(task, input.userId);
 
     const canceled = await runtimeClient.cancelTask(task.taskId);
     await this.repository.appendTaskEvent({
@@ -1277,6 +1307,39 @@ export class GatewayApiService {
         },
       );
     }
+  }
+
+  private assertSessionOwnedByUser(session: SessionRecord, userId: string): void {
+    if (session.userId === userId) {
+      return;
+    }
+    throw new GatewayApiError(
+      403,
+      "forbidden_session_access",
+      "Session is owned by another user.",
+      {
+        sessionId: session.sessionId,
+        threadId: session.threadId,
+        ownerUserId: session.userId,
+        userId,
+      },
+    );
+  }
+
+  private assertTaskOwnedByUser(task: TaskRecord, userId: string): void {
+    if (task.userId === userId) {
+      return;
+    }
+    throw new GatewayApiError(
+      403,
+      "forbidden_task_access",
+      "Task is owned by another user.",
+      {
+        taskId: task.taskId,
+        ownerUserId: task.userId,
+        userId,
+      },
+    );
   }
 
   private async requireSessionByThreadId(threadId: string): Promise<SessionRecord> {

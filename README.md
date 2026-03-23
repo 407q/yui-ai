@@ -29,6 +29,7 @@ apps/
 - `docs/development/implementation-flow.md`（実装手順ガイド）
 - `docs/development/runtime-environment-template.md`（実行環境定義）
 - `docs/development/copilot-e2e-test-runbook.md`（Copilot E2E テスト手順）
+- `docs/development/production-readiness-audit.md`（本番運用監査・修正チェックリスト）
 
 ## 実装済みモック（Discord Bot / デバッグ退避）
 
@@ -116,6 +117,7 @@ yarn api:smoke
 - `BOT_MODE=mock` では mock provider を利用（`agent:smoke` 回帰維持）
 - runtime policy は `hybrid_container_builtin_gateway_host` を標準化し、コンテナ内 built-in tools と host Gateway tools を分離
 - Agent は `system_memory_refs` を run payload で受け取り、`memory.get` による先読みを実行契約として強制
+- Agent runtime は `runtime_sessions` / `runtime_task_snapshots` へ session/task snapshot を永続化し、再起動後も status/resume を維持
 
 ## P7 システム統合（Bot主導）
 

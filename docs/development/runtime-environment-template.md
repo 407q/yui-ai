@@ -26,7 +26,7 @@
 | ホスト名 | shiona-srv |
 | Linux ディストリビューション / バージョン | Ubuntu 22.04.5 |
 | CPU / メモリ | Core i5-7400 / DDR4-2400 8GiB |
-| Node.js バージョン | 20.16.0 |
+| Node.js バージョン | 22.x 以上 |
 | Yarn (Classic) バージョン | 1.22.22 |
 | Docker Engine バージョン | 29.1.3 |
 | Docker Compose v2 バージョン | 5.0.1 |

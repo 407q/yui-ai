@@ -105,6 +105,7 @@ export interface McpToolServiceOptions {
   hostCliTimeoutSec: number;
   hostHttpTimeoutSec: number;
   hostCliAllowlist: string[];
+  hostCliEnvAllowlist?: string[];
   memoryNamespaceValidationMode?: "warn" | "enforce";
   discordBotToken?: string;
   discordGuildId?: string;
@@ -137,6 +138,7 @@ export class McpToolService {
     this.hostAdapter = new HostToolAdapter({
       cliTimeoutSec: options.hostCliTimeoutSec,
       httpTimeoutSec: options.hostHttpTimeoutSec,
+      cliEnvAllowlist: options.hostCliEnvAllowlist,
     });
     this.memoryNamespaceValidationMode =
       options.memoryNamespaceValidationMode ?? "warn";

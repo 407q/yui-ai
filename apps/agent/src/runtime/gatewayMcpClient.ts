@@ -4,6 +4,7 @@ import type { ToolCallRequestPayload, ToolCallResult } from "./types.js";
 export interface GatewayMcpClientOptions {
   baseUrl: string;
   timeoutSec: number;
+  internalToken?: string;
 }
 
 export interface ApprovalRequestAndWaitInput {
@@ -92,6 +93,9 @@ export class GatewayMcpClient {
         method,
         headers: {
           "content-type": "application/json; charset=utf-8",
+          ...(this.options.internalToken && this.options.internalToken.length > 0
+            ? { "x-internal-token": this.options.internalToken }
+            : {}),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,

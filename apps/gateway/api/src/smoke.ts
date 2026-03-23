@@ -27,6 +27,11 @@ async function main(): Promise<void> {
     agentRuntimeClient,
     containerExecutionMode: "host",
     memoryNamespaceValidationMode: "warn",
+    botInternalToken: "",
+    agentInternalToken: "",
+    agentRuntimeInternalToken: "",
+    hostCliAllowlist: ["git", "node", "npm", "yarn", "curl"],
+    hostCliEnvAllowlist: [],
   });
   const reporter = new SmokeReporter();
 
@@ -38,6 +43,8 @@ async function main(): Promise<void> {
     ".tmp",
     `host-smoke-${randomUUID()}.txt`,
   );
+  const hostCliSecret = `secret_${randomUUID()}`;
+  process.env.SMOKE_SECRET_HOST_CLI = hostCliSecret;
   let sessionId: string | null = null;
   let dbMigrated = false;
 
@@ -247,6 +254,7 @@ async function main(): Promise<void> {
       app,
       reporter,
       startBody.taskId,
+      userId,
       20,
     );
     assert(
@@ -571,6 +579,121 @@ async function main(): Promise<void> {
       (hostReadAfterApproval.result as { content: string }).content ===
         "host smoke content",
       "host read should return file content",
+    );
+
+    const hostCliBeforeApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "host.cli_exec",
+      execution_target: "gateway_adapter",
+      arguments: {
+        command: "env",
+        args: [],
+      },
+      reason: "host cli requires approval",
+    });
+    assert(
+      hostCliBeforeApproval.status === "error" &&
+        hostCliBeforeApproval.error_code === "policy_denied_command",
+      "host.cli_exec should deny non-allowlisted command",
+    );
+
+    const hostCliAllowedBeforeApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "host.cli_exec",
+      execution_target: "gateway_adapter",
+      arguments: {
+        command: "node",
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({secret: process.env.SMOKE_SECRET_HOST_CLI ?? null, hasPath: Boolean(process.env.PATH)}));",
+        ],
+      },
+      reason: "host cli allowlisted command requires approval",
+    });
+    assert(
+      hostCliAllowedBeforeApproval.status === "error" &&
+        hostCliAllowedBeforeApproval.error_code === "approval_required",
+      "host.cli_exec should require approval before execution",
+    );
+    const hostCliScope = (hostCliAllowedBeforeApproval as McpResultError).details?.scope;
+    assert(
+      hostCliScope === "node",
+      "host.cli_exec approval_required should include command scope",
+    );
+
+    const hostCliApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "exec",
+        path: "node",
+      },
+    });
+    const hostCliApprovalRequestBody = parseJsonBody(
+      hostCliApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      hostCliApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(host-cli)",
+    );
+    assert(
+      hostCliApprovalRequestBody.approval.status === "requested",
+      "host cli approval should start as requested",
+    );
+
+    const hostCliApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${hostCliApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      hostCliApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(host-cli)",
+    );
+
+    const hostCliAfterApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "host.cli_exec",
+      execution_target: "gateway_adapter",
+      arguments: {
+        command: "node",
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({secret: process.env.SMOKE_SECRET_HOST_CLI ?? null, hasPath: Boolean(process.env.PATH)}));",
+        ],
+      },
+      reason: "host cli after approval",
+    });
+    assert(
+      hostCliAfterApproval.status === "ok",
+      "host.cli_exec should succeed after approval",
+    );
+    const hostCliOutput = (hostCliAfterApproval.result as { stdout: string }).stdout;
+    const hostCliParsed = JSON.parse(hostCliOutput) as {
+      secret: string | null;
+      hasPath: boolean;
+    };
+    assert(
+      hostCliParsed.secret === null,
+      "host.cli_exec should not inherit non-allowlisted env values",
+    );
+    assert(
+      hostCliParsed.hasPath === true,
+      "host.cli_exec should preserve PATH via default env allowlist",
     );
 
     const memorySourceUpsertResult = await callMcpTool(app, reporter, {
@@ -1364,6 +1487,7 @@ async function main(): Promise<void> {
       app,
       reporter,
       messageBody.taskId,
+      userId,
       20,
     );
     assert(
@@ -1453,13 +1577,13 @@ async function main(): Promise<void> {
 
     const statusResponse = await app.inject({
       method: "GET",
-      url: `/v1/threads/${threadId}/status`,
+      url: `/v1/threads/${threadId}/status?userId=${encodeURIComponent(userId)}`,
     });
     const statusResponseBody = parseJsonBody(statusResponse.body);
     reporter.logHttp({
       label: "threads/status",
       method: "GET",
-      url: `/v1/threads/${threadId}/status`,
+      url: `/v1/threads/${threadId}/status?userId=${encodeURIComponent(userId)}`,
       statusCode: statusResponse.statusCode,
       responseBody: statusResponseBody,
     });
@@ -1711,6 +1835,7 @@ async function waitForAgentTerminalStatus(
   app: ReturnType<typeof buildGatewayApiServer>,
   reporter: SmokeReporter,
   taskId: string,
+  userId: string,
   maxAttempts: number,
 ): Promise<{
   agentTask: {
@@ -1724,13 +1849,13 @@ async function waitForAgentTerminalStatus(
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const response = await app.inject({
       method: "GET",
-      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status?userId=${encodeURIComponent(userId)}`,
     });
     const responseBody = parseJsonBody(response.body);
     reporter.logHttp({
       label: "agent/tasks/status",
       method: "GET",
-      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status`,
+      url: `/v1/agent/tasks/${encodeURIComponent(taskId)}/status?userId=${encodeURIComponent(userId)}`,
       statusCode: response.statusCode,
       responseBody,
     });

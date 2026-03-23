@@ -1,5 +1,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import type {
+  RuntimeSessionRegistryStore,
+  RuntimeTaskSnapshotRecord,
+} from "./runtimeStore.js";
+import {
+  createDefaultRuntimeSessionRegistryStore,
+  closeDefaultRuntimeSessionRegistryStore,
+} from "./runtimeStore.js";
 import type {
   AgentAttachmentSource,
   AgentRunAcceptedResponse,
@@ -58,13 +67,40 @@ const MAX_ATTACHMENT_BASENAME_LENGTH = 120;
 export class AgentRuntimeService {
   private readonly sessions = new Map<string, SessionState>();
   private readonly tasks = new Map<string, TaskExecutionState>();
+  private readonly shouldCloseRegistryStore: boolean;
+  private restorePromise: Promise<void> | null = null;
+  private readonly runtimeInstanceId = randomUUID();
 
   constructor(
     private readonly sdkProvider: CopilotSdkProvider,
     private readonly gatewayMcpClient: GatewayMcpClient,
-  ) {}
+    private readonly registryStore: RuntimeSessionRegistryStore = createDefaultRuntimeSessionRegistryStore(),
+    options?: {
+      closeRegistryStoreOnShutdown?: boolean;
+    },
+  ) {
+    this.shouldCloseRegistryStore = options?.closeRegistryStoreOnShutdown ?? true;
+  }
+
+  async initialize(): Promise<void> {
+    if (!this.restorePromise) {
+      this.restorePromise = this.restoreRuntimeState().catch((error: unknown) => {
+        this.restorePromise = null;
+        throw error;
+      });
+    }
+    await this.restorePromise;
+  }
+
+  async shutdown(): Promise<void> {
+    if (!this.shouldCloseRegistryStore) {
+      return;
+    }
+    await closeDefaultRuntimeSessionRegistryStore();
+  }
 
   async runTask(input: AgentRunRequest): Promise<AgentRunAcceptedResponse> {
+    await this.initialize();
     const existingTask = this.tasks.get(input.task_id);
     if (existingTask) {
       throw new AgentRuntimeError(
@@ -79,9 +115,23 @@ export class AgentRuntimeService {
     }
 
     assertGatewayOnlyRouting(input);
-    const bootstrapMode: SessionBootstrapMode = this.sessions.has(input.session_id)
-      ? "resume"
-      : "create";
+    const persistedTask = await this.registryStore.getTaskSnapshot(input.task_id);
+    if (persistedTask && persistedTask.status === "running") {
+      throw new AgentRuntimeError(
+        409,
+        "task_already_exists",
+        "Task already exists in runtime snapshot and is not terminal.",
+        {
+          task_id: input.task_id,
+          status: "running",
+        },
+      );
+    }
+    const persistedSession = await this.registryStore.getSession(input.session_id);
+    const bootstrapMode: SessionBootstrapMode =
+      this.sessions.has(input.session_id) || persistedSession
+        ? "resume"
+        : "create";
     const now = new Date();
     const state: TaskExecutionState = {
       taskId: input.task_id,
@@ -98,6 +148,7 @@ export class AgentRuntimeService {
       abortController: new AbortController(),
     };
     this.tasks.set(input.task_id, state);
+    await this.persistTaskSnapshot(state);
     void this.executeTask(state, input);
 
     return this.toAcceptedResponse(state);
@@ -176,20 +227,23 @@ export class AgentRuntimeService {
     };
   }
 
-  getTaskStatus(taskId: string): AgentTaskStatusResponse {
+  async getTaskStatus(taskId: string): Promise<AgentTaskStatusResponse> {
     const state = this.tasks.get(taskId);
-    if (!state) {
-      throw new AgentRuntimeError(
-        404,
-        "task_not_found",
-        "Task is not found in runtime.",
-        {
-          task_id: taskId,
-        },
-      );
+    if (state) {
+      return this.toStatusResponse(state);
     }
-
-    return this.toStatusResponse(state);
+    const persisted = await this.registryStore.getTaskSnapshot(taskId);
+    if (persisted) {
+      return toStatusResponseFromSnapshot(persisted);
+    }
+    throw new AgentRuntimeError(
+      404,
+      "task_not_found",
+      "Task is not found in runtime.",
+      {
+        task_id: taskId,
+      },
+    );
   }
 
   cancelTask(taskId: string): AgentTaskStatusResponse {
@@ -208,6 +262,7 @@ export class AgentRuntimeService {
     if (state.status === "running") {
       state.abortController.abort();
       state.updatedAt = new Date();
+      void this.persistTaskSnapshot(state);
     }
 
     return this.toStatusResponse(state);
@@ -242,23 +297,32 @@ export class AgentRuntimeService {
       };
 
       let sdkSession: SdkSessionHandle;
+      const persistedSession = await this.registryStore.getSession(input.session_id);
       if (state.bootstrapMode === "create") {
         sdkSession = await this.sdkProvider.createSession({
           session_id: input.session_id,
           task_id: input.task_id,
           callbacks,
+          sdk_session_id_hint: persistedSession?.sdkSessionId,
         });
       } else {
         sdkSession = await this.sdkProvider.resumeSession({
           session_id: input.session_id,
           task_id: input.task_id,
           callbacks,
+          sdk_session_id_hint: persistedSession?.sdkSessionId,
         });
       }
       this.sessions.set(input.session_id, {
         sdkSession,
         updatedAt: new Date(),
       });
+      await this.registryStore.upsertSession({
+        sessionId: input.session_id,
+        sdkSessionId: sdkSession.sdk_session_id,
+        updatedAt: new Date(),
+      });
+      await this.persistTaskSnapshot(state);
 
       const sendResult = await this.sdkProvider.sendAndWait({
         task_id: input.task_id,
@@ -277,13 +341,21 @@ export class AgentRuntimeService {
         sdkSession,
         updatedAt: new Date(),
       });
+      await this.registryStore.upsertSession({
+        sessionId: input.session_id,
+        sdkSessionId: sdkSession.sdk_session_id,
+        updatedAt: new Date(),
+      });
+      await this.persistTaskSnapshot(state);
     } catch (error) {
       if (isAbortError(error) || state.abortController.signal.aborted) {
         this.cancelTaskState(state);
+        await this.persistTaskSnapshot(state);
         return;
       }
 
       this.failTask(state, error);
+      await this.persistTaskSnapshot(state);
     }
   }
 
@@ -414,6 +486,170 @@ export class AgentRuntimeService {
       error: state.error,
     };
   }
+
+  private async restoreRuntimeState(): Promise<void> {
+    await this.registryStore.ping();
+    await this.registryStore.markRunningTasksFailedOnStartup({
+      runtimeInstanceId: this.runtimeInstanceId,
+    });
+    const restoredSessions = await this.registryStore.listSessions(1000);
+    for (const record of restoredSessions) {
+      this.sessions.set(record.sessionId, {
+        sdkSession: {
+          sdk_session_id: record.sdkSessionId,
+        },
+        updatedAt: record.updatedAt,
+      });
+    }
+  }
+
+  private async persistTaskSnapshot(state: TaskExecutionState): Promise<void> {
+    await this.registryStore.upsertTaskSnapshot({
+      taskId: state.taskId,
+      sessionId: state.sessionId,
+      status: state.status,
+      bootstrapMode: state.bootstrapMode,
+      sendAndWaitCount: state.sendAndWaitCount,
+      startedAt: state.startedAt,
+      updatedAt: state.updatedAt,
+      completedAt: state.completedAt,
+      resultJson: toTaskResultJson(state),
+      toolEventsJson: toToolEventsJson(state.toolEvents),
+      errorJson: state.error ? { ...state.error } : null,
+    });
+  }
+}
+
+function toTaskResultJson(state: TaskExecutionState): Record<string, unknown> | null {
+  if (!state.result) {
+    return null;
+  }
+  return {
+    final_answer: state.result.final_answer,
+    tool_results: state.result.tool_results,
+  };
+}
+
+function toToolEventsJson(
+  toolEvents: ToolProgressEvent[],
+): Record<string, unknown>[] | null {
+  if (toolEvents.length === 0) {
+    return [];
+  }
+  return toolEvents.map((event) => ({ ...event }));
+}
+
+function toStatusResponseFromSnapshot(
+  snapshot: RuntimeTaskSnapshotRecord,
+): AgentTaskStatusResponse {
+  const result = parseSnapshotResult(snapshot.resultJson);
+  const toolEvents = parseSnapshotToolEvents(snapshot.toolEventsJson);
+  const error = parseSnapshotError(snapshot.errorJson);
+  return {
+    task_id: snapshot.taskId,
+    session_id: snapshot.sessionId,
+    status: snapshot.status,
+    bootstrap_mode: snapshot.bootstrapMode,
+    send_and_wait_count: snapshot.sendAndWaitCount,
+    started_at: snapshot.startedAt.toISOString(),
+    updated_at: snapshot.updatedAt.toISOString(),
+    completed_at: snapshot.completedAt ? snapshot.completedAt.toISOString() : null,
+    result,
+    tool_events: toolEvents,
+    error,
+  };
+}
+
+function parseSnapshotResult(snapshot: Record<string, unknown> | null): {
+  final_answer: string;
+  tool_results: ToolCallResult[];
+} | null {
+  if (!snapshot) {
+    return null;
+  }
+  const finalAnswer = snapshot.final_answer;
+  const toolResults = snapshot.tool_results;
+  if (typeof finalAnswer !== "string" || !Array.isArray(toolResults)) {
+    return null;
+  }
+  return {
+    final_answer: finalAnswer,
+    tool_results: toolResults as ToolCallResult[],
+  };
+}
+
+function parseSnapshotToolEvents(
+  snapshot: Record<string, unknown>[] | null,
+): ToolProgressEvent[] {
+  if (!snapshot || !Array.isArray(snapshot)) {
+    return [];
+  }
+  const result: ToolProgressEvent[] = [];
+  for (const entry of snapshot) {
+    const callId = entry.call_id;
+    const toolName = entry.tool_name;
+    const executionTarget = entry.execution_target;
+    const phase = entry.phase;
+    const timestamp = entry.timestamp;
+    if (
+      typeof callId !== "string" ||
+      typeof toolName !== "string" ||
+      typeof executionTarget !== "string" ||
+      (phase !== "start" && phase !== "result") ||
+      typeof timestamp !== "string"
+    ) {
+      continue;
+    }
+    result.push({
+      call_id: callId,
+      tool_name: toolName,
+      execution_target: executionTarget,
+      phase,
+      status: entry.status === "ok" || entry.status === "error" ? entry.status : undefined,
+      error_code: typeof entry.error_code === "string" ? entry.error_code : undefined,
+      message: typeof entry.message === "string" ? entry.message : undefined,
+      arguments:
+        entry.arguments && typeof entry.arguments === "object" && !Array.isArray(entry.arguments)
+          ? (entry.arguments as Record<string, unknown>)
+          : undefined,
+      reason: typeof entry.reason === "string" ? entry.reason : undefined,
+      result:
+        entry.result && typeof entry.result === "object" && !Array.isArray(entry.result)
+          ? (entry.result as Record<string, unknown>)
+          : undefined,
+      details:
+        entry.details && typeof entry.details === "object" && !Array.isArray(entry.details)
+          ? (entry.details as Record<string, unknown>)
+          : undefined,
+      timestamp,
+    });
+  }
+  return result;
+}
+
+function parseSnapshotError(snapshot: Record<string, unknown> | null): {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+} | null {
+  if (!snapshot) {
+    return null;
+  }
+  const code = snapshot.code;
+  const message = snapshot.message;
+  if (typeof code !== "string" || typeof message !== "string") {
+    return null;
+  }
+  const detailsRaw = snapshot.details;
+  const details =
+    detailsRaw && typeof detailsRaw === "object" && !Array.isArray(detailsRaw)
+      ? (detailsRaw as Record<string, unknown>)
+      : undefined;
+  return {
+    code,
+    message,
+    details,
+  };
 }
 
 function assertGatewayOnlyRouting(input: AgentRunRequest): void {

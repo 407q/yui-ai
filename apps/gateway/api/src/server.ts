@@ -32,10 +32,14 @@ interface BuildGatewayApiServerOptions {
   hostCliTimeoutSec?: number;
   hostHttpTimeoutSec?: number;
   hostCliAllowlist?: string[];
+  hostCliEnvAllowlist?: string[];
   memoryNamespaceValidationMode?: "warn" | "enforce";
   agentRuntimeClient?: AgentRuntimeClient;
   agentRuntimeBaseUrl?: string;
   agentRuntimeTimeoutSec?: number;
+  botInternalToken?: string;
+  agentInternalToken?: string;
+  agentRuntimeInternalToken?: string;
 }
 
 export function buildGatewayApiServer(
@@ -47,12 +51,26 @@ export function buildGatewayApiServer(
 
   const pool = options.pool ?? createGatewayPool();
   const repository = options.repository ?? new PostgresGatewayRepository(pool);
+  const botInternalToken =
+    options.botInternalToken ??
+    process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ??
+    process.env.GATEWAY_INTERNAL_TOKEN ??
+    "";
+  const agentInternalToken =
+    options.agentInternalToken ??
+    process.env.AGENT_TO_GATEWAY_INTERNAL_TOKEN ??
+    process.env.GATEWAY_INTERNAL_TOKEN ??
+    "";
   const agentRuntimeClient =
     options.agentRuntimeClient ??
     new HttpAgentRuntimeClient({
       baseUrl: options.agentRuntimeBaseUrl ?? resolveAgentRuntimeBaseUrl(),
       timeoutSec:
         options.agentRuntimeTimeoutSec ?? resolveAgentRuntimeTimeoutSec(),
+      internalToken:
+        options.agentRuntimeInternalToken ??
+        process.env.GATEWAY_TO_AGENT_INTERNAL_TOKEN ??
+        process.env.AGENT_INTERNAL_TOKEN,
     });
   const service = new GatewayApiService(repository, {
     sessionIdleTimeoutSec:
@@ -74,6 +92,8 @@ export function buildGatewayApiServer(
     hostHttpTimeoutSec:
       options.hostHttpTimeoutSec ?? resolveHostHttpTimeoutSec(),
     hostCliAllowlist: options.hostCliAllowlist ?? resolveHostCliAllowlist(),
+    hostCliEnvAllowlist:
+      options.hostCliEnvAllowlist ?? resolveHostCliEnvAllowlist(),
     memoryNamespaceValidationMode:
       options.memoryNamespaceValidationMode ??
       resolveMemoryNamespaceValidationMode(),
@@ -101,6 +121,36 @@ export function buildGatewayApiServer(
     return reply.code(500).send({
       error: "internal_error",
       message: "Unexpected error occurred.",
+    });
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    const requestPath = request.url.split("?")[0] ?? request.url;
+    if (requestPath === "/health") {
+      return;
+    }
+
+    const expectedToken = resolveExpectedInternalToken({
+      requestPath,
+      botInternalToken,
+      agentInternalToken,
+    });
+    if (!expectedToken || expectedToken.length === 0) {
+      return;
+    }
+
+    const header = request.headers["x-internal-token"];
+    const providedToken = Array.isArray(header) ? header[0] : header;
+    if (providedToken === expectedToken) {
+      return;
+    }
+
+    return reply.code(401).send({
+      error: "internal_auth_required",
+      message: "Valid internal token is required.",
+      details: {
+        path: requestPath,
+      },
     });
   });
 
@@ -192,6 +242,17 @@ function resolveHostCliAllowlist(): string[] {
   return commands;
 }
 
+function resolveHostCliEnvAllowlist(): string[] {
+  const raw = process.env.HOST_CLI_ENV_ALLOWLIST;
+  if (!raw || raw.trim().length === 0) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 function resolveMemoryNamespaceValidationMode(): "warn" | "enforce" {
   const raw = process.env.MEMORY_NAMESPACE_VALIDATION_MODE;
   if (raw === "warn" || raw === "enforce") {
@@ -228,6 +289,20 @@ function requestLogError(error: unknown): void {
   }
 
   console.error("[gateway-api] error:", String(error));
+}
+
+function resolveExpectedInternalToken(input: {
+  requestPath: string;
+  botInternalToken: string;
+  agentInternalToken: string;
+}): string {
+  if (
+    input.requestPath === "/v1/agent/approvals/request-and-wait" ||
+    input.requestPath.startsWith("/v1/mcp/")
+  ) {
+    return input.agentInternalToken;
+  }
+  return input.botInternalToken;
 }
 
 function isEntrypoint(): boolean {

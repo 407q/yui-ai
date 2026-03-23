@@ -43,6 +43,7 @@ export interface CreateSdkSessionInput {
   session_id: string;
   task_id: string;
   callbacks: SdkSessionCallbacks;
+  sdk_session_id_hint?: string;
 }
 
 export interface SendAndWaitInput {
@@ -286,6 +287,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       input.session_id,
       input.callbacks,
       "create",
+      input.sdk_session_id_hint,
     );
     return { sdk_session_id: state.sdkSessionId };
   }
@@ -296,6 +298,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       input.session_id,
       input.callbacks,
       "resume",
+      input.sdk_session_id_hint,
     );
     return { sdk_session_id: state.sdkSessionId };
   }
@@ -387,6 +390,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
     appSessionId: string,
     callbacks: SdkSessionCallbacks,
     preferredOpenMode: "create" | "resume",
+    sdkSessionIdHint?: string,
   ): Promise<SdkSessionState> {
     const resolvedRoutingMode = resolveToolRoutingModeFromCallbacks(callbacks);
     const existing = this.sessionsByAppSessionId.get(appSessionId);
@@ -406,7 +410,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
 
     await this.ensureStarted();
 
-    const sdkSessionId = toSdkSessionId(appSessionId);
+    const sdkSessionId = sdkSessionIdHint ?? toSdkSessionId(appSessionId);
     const routingMode = resolvedRoutingMode;
     const workspaceRoot = resolveSessionWorkspaceRoot(
       appSessionId,

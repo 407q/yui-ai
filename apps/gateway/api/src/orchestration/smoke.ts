@@ -42,6 +42,14 @@ async function runBootScenario(): Promise<void> {
   );
   assert(harness.starts >= 1, "boot should start gateway-api");
   assert(harness.stops >= 1, "shutdown should stop gateway-api");
+  assert(
+    harness.logs.some((message) => message.includes("cleanup: started")),
+    "boot should start cleanup loop",
+  );
+  assert(
+    harness.logs.some((message) => message.includes("cleanup: stopped")),
+    "shutdown should stop cleanup loop",
+  );
 }
 
 async function runBootFailureRollbackScenario(): Promise<void> {

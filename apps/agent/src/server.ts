@@ -113,6 +113,8 @@ interface BuildAgentServerOptions {
   sdkProvider?: CopilotSdkProvider;
   gatewayBaseUrl?: string;
   gatewayMcpTimeoutSec?: number;
+  gatewayInternalToken?: string;
+  requiredInternalToken?: string;
 }
 
 export function buildAgentServer(options: BuildAgentServerOptions = {}): FastifyInstance {
@@ -126,13 +128,24 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
     baseUrl: options.gatewayBaseUrl ?? resolveGatewayBaseUrl(),
     timeoutSec:
       options.gatewayMcpTimeoutSec ?? resolvePositiveInt(process.env.AGENT_MCP_TIMEOUT_SEC, 30),
+    internalToken:
+      options.gatewayInternalToken ??
+      process.env.AGENT_TO_GATEWAY_INTERNAL_TOKEN ??
+      process.env.GATEWAY_INTERNAL_TOKEN,
   });
   const runtimeService = new AgentRuntimeService(sdkProvider, gatewayMcpClient);
+  const requiredInternalToken =
+    options.requiredInternalToken ?? process.env.GATEWAY_TO_AGENT_INTERNAL_TOKEN;
 
   app.addHook("onClose", async () => {
+    await runtimeService.shutdown();
     if (typeof sdkProvider.shutdown === "function") {
       await sdkProvider.shutdown();
     }
+  });
+
+  app.addHook("onReady", async () => {
+    await runtimeService.initialize();
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -176,7 +189,26 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
     };
   });
 
+  app.addHook("onRequest", async (request, reply) => {
+    if (!requiredInternalToken || requiredInternalToken.length === 0) {
+      return;
+    }
+    if (request.url === "/health" || request.url === "/ready") {
+      return;
+    }
+    const header = request.headers["x-internal-token"];
+    const providedToken = Array.isArray(header) ? header[0] : header;
+    if (providedToken === requiredInternalToken) {
+      return;
+    }
+    return reply.code(401).send({
+      error: "internal_auth_required",
+      message: "Valid internal token is required.",
+    });
+  });
+
   app.post("/v1/tasks/run", async (request, reply) => {
+    await runtimeService.initialize();
     const payload = parseOrThrow(
       runTaskBodySchema,
       request.body,
@@ -187,6 +219,7 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
   });
 
   app.post("/v1/tasks/:taskId/attachments/stage", async (request, reply) => {
+    await runtimeService.initialize();
     const params = parseOrThrow(taskParamsSchema, request.params, "invalid_task_params");
     const payload = parseOrThrow(
       stageAttachmentsBodySchema,
@@ -203,11 +236,13 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
   });
 
   app.get("/v1/tasks/:taskId", async (request) => {
+    await runtimeService.initialize();
     const params = parseOrThrow(taskParamsSchema, request.params, "invalid_task_params");
-    return runtimeService.getTaskStatus(params.taskId);
+    return await runtimeService.getTaskStatus(params.taskId);
   });
 
   app.post("/v1/tasks/:taskId/cancel", async (request) => {
+    await runtimeService.initialize();
     const params = parseOrThrow(taskParamsSchema, request.params, "invalid_task_params");
     return runtimeService.cancelTask(params.taskId);
   });
