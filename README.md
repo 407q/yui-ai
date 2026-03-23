@@ -1,143 +1,94 @@
-# yui-ai
+# Yui AI
 
-GitHub Copilot SDK ベースの個人用エージェント実装リポジトリです。
+Discord 上で動作する個人用 AI エージェントです。GitHub Copilot SDK を利用し、ユーザーからのタスクを自律的に実行します。
 
-## Project Structure
+## 特徴
 
-```text
-apps/
-  agent/
-  gateway/
-    api/              # Discord Bot UX mock (実装済み)
-    mcp/
-    attachments/
-    approvals/
-    state/
-    memory/
-    container-tools/
-```
+- **Discord 連携** — Bot をメンションしてセッション開始、スレッド内で継続対話
+- **承認フロー** — ホストマシン操作や Discord API 呼び出しにはユーザー承認が必要
+- **永続メモリ** — セッションをまたいで知識を保存・参照
+- **自動復旧** — Orchestrator による障害検知と自動リカバリ
 
-## Runtime Topology
+## 必要環境
 
-- Gateway 系（`apps/gateway/*`）: ホストマシン上で実行
-- コンテナ実行（Docker Compose）: `apps/agent` と `postgres`
+| 項目 | 要件 |
+|------|------|
+| Node.js | **22 以上**（`node:sqlite` を使用） |
+| Docker Compose | v2 |
+| 1Password CLI | シークレット管理に使用（任意） |
 
-仕様ドキュメント:
-
-- `docs/development/copilot-agent-system-design.md`
-- `docs/development/copilot-agent-nodejs-requirements.md`
-- `docs/development/implementation-flow.md`（実装手順ガイド）
-- `docs/development/runtime-environment-template.md`（実行環境定義）
-- `docs/development/copilot-e2e-test-runbook.md`（Copilot E2E テスト手順）
-- `docs/development/production-readiness-audit.md`（本番運用監査・修正チェックリスト）
-
-## 実装済みモック（Discord Bot / デバッグ退避）
-
-- 実装場所: `apps/gateway/api`
-- 本体エントリポイント: `apps/gateway/api/src/bot.ts`（通常/Copilot 経路）
-- mock エントリポイント: `apps/gateway/api/src/debug/mock-bot.ts`（`BOT_MODE=mock` で起動）
-- 詳細: `apps/gateway/api/README.md`
-
-## 共通コマンド
+## クイックスタート
 
 ```bash
+# 依存インストール
 yarn install
-yarn register:commands
-yarn dev
-yarn dev:mock
-yarn build
-yarn start
-yarn start:mock
-yarn orchestrator:smoke
-```
 
-## P1 実行基盤コマンド
-
-```bash
+# 環境変数ファイル作成（1Password 使用時）
 cp .env.op.example .env.op
-yarn compose:up
-yarn compose:ps
+# .env.op を編集
+
+# スラッシュコマンド登録（初回のみ）
+yarn register:commands
+
+# 起動
 yarn dev
 ```
 
-停止:
+詳細は [セットアップガイド](docs/guide/setup.md) を参照してください。
 
-```bash
-yarn compose:down
+## ドキュメント
+
+### ガイド
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [セットアップ](docs/guide/setup.md) | 環境構築・初回起動 |
+| [Discord Bot 操作](docs/guide/discord-usage.md) | コマンド・承認フローの使い方 |
+| [運用](docs/guide/operations.md) | 起動・停止・復旧・バックアップ |
+
+### リファレンス
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [アーキテクチャ](docs/reference/architecture.md) | システム構成・データフロー |
+| [環境変数](docs/reference/environment-variables.md) | 設定項目一覧 |
+| [API エンドポイント](docs/reference/api-endpoints.md) | Gateway / Agent API 仕様 |
+| [MCP ツール](docs/reference/mcp-tools.md) | 利用可能なツール一覧 |
+| [トラブルシューティング](docs/reference/troubleshooting.md) | よくある問題と対処法 |
+
+### 開発者向け
+
+設計書・実装詳細は [docs/development/](docs/development/) を参照してください。
+
+## プロジェクト構成
+
+```
+apps/
+├── agent/           # Agent Runtime（Docker 内で実行）
+│   └── src/runtime/ # Copilot SDK 統合・タスク実行
+└── gateway/
+    ├── api/         # Discord Bot + Gateway API（ホストで実行）
+    │   └── src/
+    │       ├── bot.ts           # Bot エントリポイント
+    │       ├── server.ts        # Gateway API サーバー
+    │       ├── orchestration/   # Orchestrator
+    │       ├── mcp/             # MCP ツールサービス
+    │       └── gateway/         # セッション・タスク管理
+    └── state/       # 永続層（マイグレーション・ストア）
 ```
 
-## P2 永続層コマンド
+## 主要コマンド
 
-```bash
-yarn db:migrate
-yarn db:smoke
-yarn db:cleanup
-```
+| コマンド | 説明 |
+|---------|------|
+| `yarn dev` | Bot 起動（Orchestrator 込み） |
+| `yarn dev:local` | 同上（1Password なし） |
+| `yarn build` | TypeScript ビルド |
+| `yarn compose:up` | Docker Compose 起動 |
+| `yarn compose:down` | Docker Compose 停止 |
+| `yarn db:migrate` | マイグレーション実行 |
+| `yarn register:commands` | Discord コマンド登録 |
 
-ローカル環境変数（`op run` なし）で実行する場合は `:local` サフィックスを利用します。
+## ライセンス
 
-## P3 Gateway API コマンド
-
-```bash
-yarn dev:api
-yarn api:smoke
-```
-
-## P4 Approval フロー（API 追加）
-
-- `POST /v1/threads/:threadId/approvals/request`
-- `POST /v1/approvals/:approvalId/respond`
-
-## P5 MCP / Tool Adapter（API 追加）
-
-- `POST /v1/mcp/tool-call`
-- `container.*` / `host.*` / `memory.*` を Gateway で実行
-- `discord.channel_history` / `discord.channel_list` を Gateway で実行
-- `discord.*` ツールは承認制（Permission Hook の実行前承認）として運用
-- `container.file_deliver` でコンテナ内ファイルを base64 返却し、Bot が Discord 添付として送信可能
-- `api:smoke` に P5（approval flow, container scope, memory CRUD）検証を追加
-- `system.*` memory を導入（`memory.get/search` で参照可、`memory.upsert/delete` は read-only 拒否）
-
-## P6 Agent Runtime（API/コマンド追加）
-
-- `apps/agent` に `create/resume + sendAndWait(1回)` 実行モデルを実装（mock provider）
-- `POST /v1/agent/tasks/run`
-- `GET /v1/agent/tasks/:taskId/status`
-- `POST /v1/agent/tasks/:taskId/cancel`
-- `yarn dev:agent`, `yarn agent:smoke`
-
-### P8 初回（Copilot SDK provider）
-
-- `BOT_MODE=standard` で Copilot provider を利用
-- Node.js 22 以上が必要（`node:sqlite`）
-- `COPILOT_GITHUB_TOKEN` 必須（未設定時は Agent 起動エラー）
-- `COPILOT_MODEL`（既定: `claude-sonnet-4.6`）
-- `COPILOT_WORKING_DIRECTORY`（Docker では `/app` 推奨） / `COPILOT_SEND_TIMEOUT_MS` / `COPILOT_SDK_LOG_LEVEL` を追加
-- `COPILOT_SEND_TIMEOUT_MS` は「最後のツール実行アクティビティから `session.idle` まで」の待機上限（初回送信時刻起点ではない）
-- `BOT_MODE=mock` では mock provider を利用（`agent:smoke` 回帰維持）
-- runtime policy は `hybrid_container_builtin_gateway_host` を標準化し、コンテナ内 built-in tools と host Gateway tools を分離
-- Agent は `system_memory_refs` を run payload で受け取り、`memory.get` による先読みを実行契約として強制
-- Agent runtime は `runtime_sessions` / `runtime_task_snapshots` へ session/task snapshot を永続化し、再起動後も status/resume を維持
-
-## P7 システム統合（Bot主導）
-
-- Discord Bot が `POST /v1/agent/tasks/run` / `GET /v1/agent/tasks/:taskId/status` / `POST /v1/agent/tasks/:taskId/cancel` を利用
-- `/cancel` `/close` `/resume` `/exit` `/reboot` で Agent Runtime 側キャンセルと Gateway セッション状態を同期
-- `#host-read: <path>` を含むプロンプトで `host.file_read` を要求し、Discord 承認 UI と再試行フローを確認可能
-- `#host-read` は承認後に同一 path / operation の permission が付与され、再試行で承認ループしない
-- `#tool: <tool_name> <JSON object>` を含むプロンプトで mock Agent に Gateway MCP ツール呼び出しを実行させるデモが可能
-- 例: `#tool: container.file_deliver {"path":"workspace/report.txt","maxBytes":1048576}`
-- P7 時点では Copilot SDK provider は `mock` を使用（P8 初回で `copilot` を追加）
-- Bot 起動時に Orchestrator が `docker compose up -d --build` -> `db:migrate` -> `gateway-api` 起動を行い、`agent/postgres/gateway-api` を監視
-- 起動失敗時は Orchestrator が起動処理を中断して関連コンポーネントを停止し、プロセスを graceful に終了
-- 稼働中障害時は `対象再起動 -> 全体再起動 -> 失敗時は全体終了` の順で復旧を試行
-- `yarn orchestrator:smoke` で Orchestrator の起動/復旧ロジックを検証可能
-
-## 次フェーズ（実装計画）
-
-- P8: Copilot SDK 実装
-  - `BOT_MODE` による provider 切替で、実 SDK 実行へ切り替え可能にする
-- P9: 運用品質
-  - 監査ログ、冪等、バックアップ、監視復旧運用を整備
-
-詳細は `docs/development/implementation-flow.md` を参照してください。
+Private
