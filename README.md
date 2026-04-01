@@ -36,6 +36,8 @@ yarn dev
 
 詳細は [セットアップガイド](docs/guide/setup.md) を参照してください。
 
+内部 API 間通信（Bot↔Gateway / Gateway↔Agent / Agent↔Gateway）は既定で Unix Domain Socket を優先し、未設定時のみ TCP を使用します。
+
 ## ドキュメント
 
 ### ガイド

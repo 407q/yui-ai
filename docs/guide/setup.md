@@ -114,6 +114,16 @@ cp .env.example .env
 
 `.env` を編集して値を直接記入します。
 
+UDS を使う既定構成では、以下を設定します。
+
+```bash
+GATEWAY_API_SOCKET_PATH=/tmp/sockets/gateway-api.sock
+AGENT_RUNTIME_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
+AGENT_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
+AGENT_GATEWAY_API_SOCKET_PATH=/tmp/sockets/gateway-api.sock
+RUNTIME_SOCKET_DIR=/tmp/sockets
+```
+
 ### 必須の環境変数
 
 | 変数 | 説明 |
@@ -184,13 +194,11 @@ yarn dev:local
 ### ヘルスチェック
 
 ```bash
-# Gateway API
-curl http://127.0.0.1:3800/health
-# {"status":"ok","service":"gateway-api"}
+# Gateway API (UDS)
+curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
 
-# Agent Runtime
-curl http://127.0.0.1:3801/health
-# {"status":"ok","service":"agent-runtime","uptime_sec":...}
+# Agent Runtime (UDS)
+curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
 ```
 
 ### スラッシュコマンド

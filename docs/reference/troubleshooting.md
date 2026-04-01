@@ -94,6 +94,27 @@ docker compose logs
 
 ---
 
+### `ENOENT` / `connect` で UDS に接続できない
+
+**原因**: socket ファイルが未作成、またはパス不一致
+
+**解決策**:
+```bash
+# socket ディレクトリ/ファイル確認
+ls -la /tmp/sockets
+
+# Gateway health (UDS)
+curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
+
+# Agent health (UDS)
+curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
+
+# 再起動で再作成
+yarn compose:down && yarn compose:up
+```
+
+---
+
 ## Discord 関連
 
 ### Bot が応答しない

@@ -1,4 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import http from "node:http";
+import path from "node:path";
 import {
   execCommand,
   type ExecCommandInput,
@@ -35,9 +38,11 @@ interface RuntimeSupervisorHooks {
 export interface RuntimeSupervisorOptions {
   projectRoot: string;
   gatewayApiBaseUrl: string;
+  gatewayApiSocketPath?: string;
   gatewayApiHost: string;
   gatewayApiPort: number;
   agentRuntimeBaseUrl: string;
+  agentRuntimeSocketPath?: string;
   composeBuild: boolean;
   monitorIntervalSec: number;
   failureThreshold: number;
@@ -429,6 +434,16 @@ export class RuntimeSupervisor {
     }
 
     this.gatewayApp = buildGatewayApiServer();
+    if (
+      this.options.gatewayApiSocketPath &&
+      this.options.gatewayApiSocketPath.trim().length > 0
+    ) {
+      prepareSocketPath(this.options.gatewayApiSocketPath);
+      await this.gatewayApp.listen({
+        path: this.options.gatewayApiSocketPath,
+      });
+      return;
+    }
     await this.gatewayApp.listen({
       host: this.options.gatewayApiHost,
       port: this.options.gatewayApiPort,
@@ -455,9 +470,16 @@ export class RuntimeSupervisor {
       return this.options.hooks.probeRuntime();
     }
 
+    const gatewayProbe = this.options.gatewayApiSocketPath
+      ? this.probeEndpointViaSocket(this.options.gatewayApiSocketPath, "/health")
+      : this.probeEndpoint(`${this.options.gatewayApiBaseUrl}/health`);
+    const agentProbe = this.options.agentRuntimeSocketPath
+      ? this.probeEndpointViaSocket(this.options.agentRuntimeSocketPath, "/health")
+      : this.probeEndpoint(`${this.options.agentRuntimeBaseUrl}/health`);
+
     const [gateway, agent, compose] = await Promise.all([
-      this.probeEndpoint(`${this.options.gatewayApiBaseUrl}/health`),
-      this.probeEndpoint(`${this.options.agentRuntimeBaseUrl}/health`),
+      gatewayProbe,
+      agentProbe,
       this.probeComposeServices(),
     ]);
 
@@ -496,6 +518,37 @@ export class RuntimeSupervisor {
       };
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private async probeEndpointViaSocket(
+    socketPath: string,
+    pathname: string,
+  ): Promise<RuntimeHealthEndpointStatus> {
+    const timeoutSec = Math.min(10, Math.max(1, this.options.commandTimeoutSec));
+    try {
+      const response = await requestTextViaUnixSocket({
+        socketPath,
+        pathname,
+        timeoutSec,
+      });
+      const ok = response.statusCode >= 200 && response.statusCode < 300;
+      const detail = ok
+        ? `status=${response.statusCode}`
+        : `status=${response.statusCode} body=${truncate(response.bodyText, 120)}`;
+      return {
+        ok,
+        statusCode: response.statusCode,
+        detail,
+      };
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : `unexpected: ${String(error)}`;
+      return {
+        ok: false,
+        statusCode: null,
+        detail,
+      };
     }
   }
 
@@ -598,4 +651,56 @@ function truncate(text: string, maxLength: number): string {
     return text;
   }
   return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function prepareSocketPath(socketPath: string): void {
+  mkdirSync(path.dirname(socketPath), { recursive: true });
+  if (!existsSync(socketPath)) {
+    return;
+  }
+  unlinkSync(socketPath);
+}
+
+interface UnixSocketHealthRequestInput {
+  socketPath: string;
+  pathname: string;
+  timeoutSec: number;
+}
+
+interface UnixSocketHealthResponse {
+  statusCode: number;
+  bodyText: string;
+}
+
+function requestTextViaUnixSocket(
+  input: UnixSocketHealthRequestInput,
+): Promise<UnixSocketHealthResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath: input.socketPath,
+        path: input.pathname,
+        method: "GET",
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer | string) => {
+          chunks.push(
+            typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk,
+          );
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            bodyText: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(input.timeoutSec * 1000, () => {
+      req.destroy(new Error("socket probe timeout"));
+    });
+    req.end();
+  });
 }

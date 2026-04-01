@@ -101,11 +101,11 @@ Orchestrator は Bot 起動時に自動で動作し、以下を担当します:
 ### 手動チェック
 
 ```bash
-# Gateway API
-curl http://127.0.0.1:3800/health
+# Gateway API (UDS)
+curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
 
-# Agent Runtime
-curl http://127.0.0.1:3801/health
+# Agent Runtime (UDS)
+curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
 
 # PostgreSQL
 docker compose exec postgres pg_isready
@@ -115,8 +115,8 @@ docker compose exec postgres pg_isready
 
 | コンポーネント | エンドポイント | チェック内容 |
 |---------------|---------------|-------------|
-| Gateway API | `GET /health` | HTTP 200 応答 |
-| Agent Runtime | `GET /health` | HTTP 200 応答 |
+| Gateway API | `/tmp/sockets/gateway-api.sock + GET /health` | HTTP 200 応答 |
+| Agent Runtime | `/tmp/sockets/agent-runtime.sock + GET /health` | HTTP 200 応答 |
 | PostgreSQL | `pg_isready` | 接続可能性 |
 
 ---

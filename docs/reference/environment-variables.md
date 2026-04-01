@@ -65,7 +65,9 @@ openssl rand -hex 32
 | `GATEWAY_API_HOST` | - | `127.0.0.1` | バインドホスト |
 | `GATEWAY_API_PORT` | - | `3800` | バインドポート |
 | `GATEWAY_API_BASE_URL` | - | `http://127.0.0.1:3800` | Gateway API ベース URL |
+| `GATEWAY_API_SOCKET_PATH` | - | `/tmp/sockets/gateway-api.sock` | Bot/Gateway 間 UDS パス（設定時は UDS 優先） |
 | `AGENT_RUNTIME_BASE_URL` | - | `http://127.0.0.1:3801` | Agent Runtime ベース URL |
+| `AGENT_RUNTIME_SOCKET_PATH` | - | `/tmp/sockets/agent-runtime.sock` | Gateway/Agent 間 UDS パス（設定時は UDS 優先） |
 | `AGENT_RUNTIME_TIMEOUT_SEC` | - | `30` | Agent API タイムアウト（秒） |
 | `SESSION_IDLE_TIMEOUT_SEC` | - | `600` | セッションアイドルタイムアウト（秒） |
 
@@ -78,7 +80,10 @@ openssl rand -hex 32
 | `AGENT_BIND_HOST` | - | `0.0.0.0` | バインドホスト |
 | `AGENT_PORT` | - | `3801` | バインドポート |
 | `AGENT_GATEWAY_BASE_URL` | - | `http://host.docker.internal:3800` | Gateway API ベース URL（コンテナから見た） |
+| `AGENT_GATEWAY_API_SOCKET_PATH` | - | `/tmp/sockets/gateway-api.sock` | Agent->Gateway MCP の UDS パス（設定時は UDS 優先） |
 | `AGENT_MCP_TIMEOUT_SEC` | - | `30` | MCP ツール呼び出しタイムアウト（秒） |
+| `AGENT_SOCKET_PATH` | - | `/tmp/sockets/agent-runtime.sock` | Agent Runtime の listen UDS パス（設定時は TCP の代わりに使用） |
+| `RUNTIME_SOCKET_DIR` | - | `/tmp/sockets` | docker-compose で Agent コンテナへ bind mount する socket 共有ディレクトリ |
 | `AGENT_SESSION_ROOT_DIR` | - | `/agent/session` | セッション作業ディレクトリルート |
 
 ---

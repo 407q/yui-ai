@@ -1,4 +1,5 @@
 import { GatewayApiError } from "../gateway/errors.js";
+import http from "node:http";
 
 export type AgentRuntimeTaskStatus =
   | "queued"
@@ -110,6 +111,7 @@ export interface HttpAgentRuntimeClientOptions {
   baseUrl: string;
   timeoutSec: number;
   internalToken?: string;
+  socketPath?: string;
 }
 
 export class HttpAgentRuntimeClient implements AgentRuntimeClient {
@@ -156,11 +158,6 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     pathname: string,
     payload?: unknown,
   ): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, this.options.timeoutSec * 1000);
-
     const hasBody = payload !== undefined;
     const headers: Record<string, string> = {};
     if (hasBody) {
@@ -170,14 +167,40 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
       headers["x-internal-token"] = this.options.internalToken;
     }
 
+    if (this.options.socketPath && this.options.socketPath.trim().length > 0) {
+      return this.requestViaSocket(
+        method,
+        pathname,
+        hasBody ? JSON.stringify(payload) : null,
+        headers,
+      );
+    }
+    return this.requestViaHttp(
+      method,
+      pathname,
+      hasBody ? JSON.stringify(payload) : null,
+      headers,
+    );
+  }
+
+  private async requestViaHttp(
+    method: "GET" | "POST",
+    pathname: string,
+    body: string | null,
+    headers: Record<string, string>,
+  ): Promise<unknown> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.options.timeoutSec * 1000);
     try {
       const response = await fetch(`${this.options.baseUrl}${pathname}`, {
         method,
         headers,
-        body: hasBody ? JSON.stringify(payload) : undefined,
+        body: body ?? undefined,
         signal: controller.signal,
       });
-      const body = await parseJson(response);
+      const responseBody = await parseJson(response);
       if (!response.ok) {
         throw new GatewayApiError(
           502,
@@ -186,16 +209,15 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
           {
             status: response.status,
             statusText: response.statusText,
-            body,
+            body: responseBody,
           },
         );
       }
-      return body;
+      return responseBody;
     } catch (error) {
       if (error instanceof GatewayApiError) {
         throw error;
       }
-
       if (error instanceof Error && error.name === "AbortError") {
         throw new GatewayApiError(
           504,
@@ -206,7 +228,6 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
           },
         );
       }
-
       throw new GatewayApiError(
         502,
         "agent_runtime_unreachable",
@@ -219,10 +240,154 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
       clearTimeout(timeout);
     }
   }
+
+  private async requestViaSocket(
+    method: "GET" | "POST",
+    pathname: string,
+    body: string | null,
+    headers: Record<string, string>,
+  ): Promise<unknown> {
+    const socketPath = this.options.socketPath;
+    if (!socketPath || socketPath.trim().length === 0) {
+      throw new GatewayApiError(
+        500,
+        "agent_runtime_socket_path_invalid",
+        "Agent runtime socket path is invalid.",
+      );
+    }
+    try {
+      const response = await requestJsonViaUnixSocket({
+        socketPath,
+        pathname,
+        method,
+        timeoutSec: this.options.timeoutSec,
+        headers,
+        body,
+      });
+      const responseBody = parseTextAsJson(response.bodyText);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw new GatewayApiError(
+          502,
+          "agent_runtime_error",
+          "Agent runtime returned non-success response.",
+          {
+            status: response.statusCode,
+            statusText: response.statusMessage,
+            body: responseBody,
+          },
+        );
+      }
+      return responseBody;
+    } catch (error) {
+      if (error instanceof GatewayApiError) {
+        throw error;
+      }
+      if (error instanceof UnixSocketRequestTimeoutError) {
+        throw new GatewayApiError(
+          504,
+          "agent_runtime_timeout",
+          "Agent runtime request timed out.",
+          {
+            timeout_sec: this.options.timeoutSec,
+          },
+        );
+      }
+      throw new GatewayApiError(
+        502,
+        "agent_runtime_unreachable",
+        "Agent runtime is unreachable.",
+        {
+          message: error instanceof Error ? error.message : String(error),
+          socket_path: socketPath,
+        },
+      );
+    }
+  }
 }
 
 async function parseJson(response: Response): Promise<unknown> {
   const text = await response.text();
+  if (!text || text.trim().length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+interface UnixSocketRequestInput {
+  socketPath: string;
+  pathname: string;
+  method: "GET" | "POST";
+  timeoutSec: number;
+  headers: Record<string, string>;
+  body: string | null;
+}
+
+interface UnixSocketResponse {
+  statusCode: number;
+  statusMessage: string;
+  bodyText: string;
+}
+
+class UnixSocketRequestTimeoutError extends Error {
+  constructor(timeoutSec: number) {
+    super(`Unix socket request timed out after ${timeoutSec}s`);
+    this.name = "UnixSocketRequestTimeoutError";
+  }
+}
+
+function requestJsonViaUnixSocket(
+  input: UnixSocketRequestInput,
+): Promise<UnixSocketResponse> {
+  return new Promise((resolve, reject) => {
+    const requestHeaders = {
+      ...input.headers,
+      ...(input.body
+        ? {
+            "content-length": Buffer.byteLength(input.body, "utf8").toString(),
+          }
+        : {}),
+    };
+    const req = http.request(
+      {
+        socketPath: input.socketPath,
+        path: input.pathname,
+        method: input.method,
+        headers: requestHeaders,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer | string) => {
+          chunks.push(
+            typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk,
+          );
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            statusMessage: res.statusMessage ?? "",
+            bodyText: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", (error) => {
+      reject(error);
+    });
+    req.setTimeout(input.timeoutSec * 1000, () => {
+      req.destroy(new UnixSocketRequestTimeoutError(input.timeoutSec));
+    });
+    if (input.body) {
+      req.write(input.body);
+    }
+    req.end();
+  });
+}
+
+function parseTextAsJson(text: string): unknown {
   if (!text || text.trim().length === 0) {
     return null;
   }

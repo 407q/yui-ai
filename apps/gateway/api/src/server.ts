@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -37,9 +38,11 @@ interface BuildGatewayApiServerOptions {
   agentRuntimeClient?: AgentRuntimeClient;
   agentRuntimeBaseUrl?: string;
   agentRuntimeTimeoutSec?: number;
+  agentRuntimeSocketPath?: string;
   botInternalToken?: string;
   agentInternalToken?: string;
   agentRuntimeInternalToken?: string;
+  gatewaySocketPath?: string;
 }
 
 export function buildGatewayApiServer(
@@ -67,6 +70,8 @@ export function buildGatewayApiServer(
       baseUrl: options.agentRuntimeBaseUrl ?? resolveAgentRuntimeBaseUrl(),
       timeoutSec:
         options.agentRuntimeTimeoutSec ?? resolveAgentRuntimeTimeoutSec(),
+      socketPath:
+        options.agentRuntimeSocketPath ?? resolveAgentRuntimeSocketPath(),
       internalToken:
         options.agentRuntimeInternalToken ??
         process.env.GATEWAY_TO_AGENT_INTERNAL_TOKEN ??
@@ -162,10 +167,17 @@ export function buildGatewayApiServer(
 async function main(): Promise<void> {
   const host = process.env.GATEWAY_API_HOST ?? "0.0.0.0";
   const port = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
+  const socketPath = resolveGatewayApiSocketPath();
 
   const app = buildGatewayApiServer();
-  await app.listen({ host, port });
-  app.log.info(`[gateway-api] listening on ${host}:${port}`);
+  if (socketPath) {
+    cleanupStaleSocket(socketPath);
+    await app.listen({ path: socketPath });
+    app.log.info(`[gateway-api] listening on socket ${socketPath}`);
+  } else {
+    await app.listen({ host, port });
+    app.log.info(`[gateway-api] listening on ${host}:${port}`);
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`[gateway-api] received ${signal}, shutting down...`);
@@ -269,6 +281,22 @@ function resolveAgentRuntimeTimeoutSec(): number {
   return parsePositiveInt(process.env.AGENT_RUNTIME_TIMEOUT_SEC, 30);
 }
 
+function resolveGatewayApiSocketPath(): string | null {
+  const raw = process.env.GATEWAY_API_SOCKET_PATH;
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  return path.resolve(raw);
+}
+
+function resolveAgentRuntimeSocketPath(): string | undefined {
+  const raw = process.env.AGENT_RUNTIME_SOCKET_PATH;
+  if (!raw || raw.trim().length === 0) {
+    return undefined;
+  }
+  return path.resolve(raw);
+}
+
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) {
     return fallback;
@@ -289,6 +317,14 @@ function requestLogError(error: unknown): void {
   }
 
   console.error("[gateway-api] error:", String(error));
+}
+
+function cleanupStaleSocket(socketPath: string): void {
+  mkdirSync(path.dirname(socketPath), { recursive: true });
+  if (!existsSync(socketPath)) {
+    return;
+  }
+  unlinkSync(socketPath);
 }
 
 function resolveExpectedInternalToken(input: {

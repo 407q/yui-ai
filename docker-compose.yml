@@ -33,9 +33,11 @@ services:
       BOT_MODE: ${BOT_MODE:-standard}
       AGENT_BIND_HOST: 0.0.0.0
       AGENT_PORT: "3801"
+      AGENT_SOCKET_PATH: ${AGENT_SOCKET_PATH:-/tmp/sockets/agent-runtime.sock}
       STATE_STORE_DSN: ${STATE_STORE_DSN:?STATE_STORE_DSN is required}
       MEMORY_STORE_DSN: ${MEMORY_STORE_DSN:?MEMORY_STORE_DSN is required}
       AGENT_GATEWAY_BASE_URL: ${AGENT_GATEWAY_BASE_URL:-http://127.0.0.1:3800}
+      AGENT_GATEWAY_API_SOCKET_PATH: ${AGENT_GATEWAY_API_SOCKET_PATH:-/tmp/sockets/gateway-api.sock}
       AGENT_MCP_TIMEOUT_SEC: ${AGENT_MCP_TIMEOUT_SEC:-30}
       AGENT_TO_GATEWAY_INTERNAL_TOKEN: ${AGENT_TO_GATEWAY_INTERNAL_TOKEN:-}
       GATEWAY_TO_AGENT_INTERNAL_TOKEN: ${GATEWAY_TO_AGENT_INTERNAL_TOKEN:-}
@@ -44,17 +46,16 @@ services:
       COPILOT_WORKING_DIRECTORY: ${COPILOT_WORKING_DIRECTORY:-/app}
       COPILOT_SEND_TIMEOUT_MS: ${COPILOT_SEND_TIMEOUT_MS:-180000}
       COPILOT_SDK_LOG_LEVEL: ${COPILOT_SDK_LOG_LEVEL:-info}
-    ports:
-      - "${AGENT_PORT:-3801}:3801"
     volumes:
       - agent_workspace_data:/agent/session
+      - ${RUNTIME_SOCKET_DIR:-/tmp/sockets}:/tmp/sockets
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:3801/health').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1));",
+          "const http=require('node:http');const req=http.request({socketPath:process.env.AGENT_SOCKET_PATH||'/tmp/sockets/agent-runtime.sock',path:'/health',method:'GET'},(res)=>process.exit(res.statusCode>=200&&res.statusCode<300?0:1));req.on('error',()=>process.exit(1));req.end();",
         ]
       interval: 10s
       timeout: 5s

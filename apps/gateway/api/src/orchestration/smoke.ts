@@ -188,9 +188,11 @@ function createSupervisor(
   return new RuntimeSupervisor({
     projectRoot: process.cwd(),
     gatewayApiBaseUrl: "http://127.0.0.1:3800",
+    gatewayApiSocketPath: undefined,
     gatewayApiHost: "127.0.0.1",
     gatewayApiPort: 3800,
     agentRuntimeBaseUrl: "http://127.0.0.1:3801",
+    agentRuntimeSocketPath: undefined,
     composeBuild: true,
     monitorIntervalSec: 1,
     failureThreshold,

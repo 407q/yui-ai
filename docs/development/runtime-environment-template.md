@@ -40,5 +40,6 @@
 |---|---|
 | Gateway 系（`apps/gateway/*`）はホスト実行 | OK |
 | Compose 対象は `agent` / `postgres` のみ | OK |
+| 内部 API 間通信は UDS 優先 | OK（`/tmp/sockets/*.sock`） |
 | シークレット注入は `op run` を使用 | OK |
 | 平文シークレットをリポジトリに保存しない | OK |

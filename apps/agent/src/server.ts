@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -112,6 +113,7 @@ interface BuildAgentServerOptions {
   startedAt?: Date;
   sdkProvider?: CopilotSdkProvider;
   gatewayBaseUrl?: string;
+  gatewaySocketPath?: string;
   gatewayMcpTimeoutSec?: number;
   gatewayInternalToken?: string;
   requiredInternalToken?: string;
@@ -126,6 +128,7 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
   const sdkProvider = options.sdkProvider ?? resolveSdkProvider();
   const gatewayMcpClient = new GatewayMcpClient({
     baseUrl: options.gatewayBaseUrl ?? resolveGatewayBaseUrl(),
+    socketPath: resolveGatewaySocketPathForOptions(options),
     timeoutSec:
       options.gatewayMcpTimeoutSec ?? resolvePositiveInt(process.env.AGENT_MCP_TIMEOUT_SEC, 30),
     internalToken:
@@ -253,13 +256,20 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
 async function main(): Promise<void> {
   const host = process.env.AGENT_BIND_HOST ?? "0.0.0.0";
   const port = resolvePositiveInt(process.env.AGENT_PORT, 3801);
+  const socketPath = resolveAgentSocketPath();
   const sdkProvider = resolveSdkProvider();
   const app = buildAgentServer({
     sdkProvider,
   });
 
-  await app.listen({ host, port });
-  app.log.info(`[agent] listening on ${host}:${port}`);
+  if (socketPath) {
+    cleanupStaleSocket(socketPath);
+    await app.listen({ path: socketPath });
+    app.log.info(`[agent] listening on socket ${socketPath}`);
+  } else {
+    await app.listen({ host, port });
+    app.log.info(`[agent] listening on ${host}:${port}`);
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`[agent] received ${signal}, shutting down...`);
@@ -313,6 +323,35 @@ function resolveSdkProvider(): CopilotSdkProvider {
 
 function resolveGatewayBaseUrl(): string {
   return process.env.AGENT_GATEWAY_BASE_URL ?? "http://host.docker.internal:3800";
+}
+
+function resolveGatewaySocketPath(): string | undefined {
+  const raw =
+    process.env.AGENT_GATEWAY_API_SOCKET_PATH ?? process.env.GATEWAY_API_SOCKET_PATH;
+  if (!raw || raw.trim().length === 0) {
+    return undefined;
+  }
+  return path.resolve(raw);
+}
+
+function resolveGatewaySocketPathForOptions(
+  options: BuildAgentServerOptions,
+): string | undefined {
+  if (options.gatewaySocketPath !== undefined) {
+    return options.gatewaySocketPath;
+  }
+  if (options.gatewayBaseUrl !== undefined) {
+    return undefined;
+  }
+  return resolveGatewaySocketPath();
+}
+
+function resolveAgentSocketPath(): string | null {
+  const raw = process.env.AGENT_SOCKET_PATH;
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  return path.resolve(raw);
 }
 
 function resolveAgentSessionRootDirectory(raw: string | undefined): string {
@@ -409,6 +448,14 @@ function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown, code: string): T 
       message: issue.message,
     })),
   });
+}
+
+function cleanupStaleSocket(socketPath: string): void {
+  mkdirSync(path.dirname(socketPath), { recursive: true });
+  if (!existsSync(socketPath)) {
+    return;
+  }
+  unlinkSync(socketPath);
 }
 
 function isEntrypoint(): boolean {

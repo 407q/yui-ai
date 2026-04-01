@@ -31,7 +31,7 @@
 現状は「開発～検証向けとしては成立」していますが、本番運用向けには以下が主要ギャップです。
 
 1. **内部 API 認証が未実装**（Bot↔Gateway, Gateway↔Agent, Agent↔Gateway MCP）→ ✅ static token 導入済み
-2. **通信経路が HTTP 平文前提**（localhost 前提で閉域依存）
+2. **通信経路を内部 UDS 優先に移行する**
 3. **サービス間名前解決が host 依存**（`host.docker.internal` / `127.0.0.1`）
 4. **Agent セッション復元がプロセス内 Map 依存**（再起動時の resume 信頼性ギャップ）→ ✅ runtime session/task snapshot 永続化を実装
 5. **保持データ cleanup が手動実行前提**（定期ジョブ未統合）→ ✅ Orchestrator 定期 cleanup 実装

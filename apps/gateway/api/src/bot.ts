@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { Buffer } from "node:buffer";
+import http from "node:http";
 import path from "node:path";
 import {
   ActionRowBuilder,
@@ -136,6 +137,12 @@ const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
 const BOT_TO_GATEWAY_INTERNAL_TOKEN =
   process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ?? process.env.GATEWAY_INTERNAL_TOKEN ?? "";
+const GATEWAY_API_SOCKET_PATH = resolveOptionalSocketPath(
+  process.env.GATEWAY_API_SOCKET_PATH,
+);
+const AGENT_RUNTIME_SOCKET_PATH = resolveOptionalSocketPath(
+  process.env.AGENT_RUNTIME_SOCKET_PATH,
+);
 const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
 const GATEWAY_API_PORT = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
 const ORCHESTRATOR_MONITOR_INTERVAL_SEC = parsePositiveInt(
@@ -231,6 +238,13 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   }
 
   return parsed;
+}
+
+function resolveOptionalSocketPath(raw: string | undefined): string | null {
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  return path.resolve(raw);
 }
 
 function newId(prefix: string): string {
@@ -441,10 +455,32 @@ async function gatewayApiRequest<T>(
   if (BOT_TO_GATEWAY_INTERNAL_TOKEN.length > 0) {
     headers["x-internal-token"] = BOT_TO_GATEWAY_INTERNAL_TOKEN;
   }
+  const body = payload ? JSON.stringify(payload) : null;
+  if (GATEWAY_API_SOCKET_PATH) {
+    const response = await requestJsonViaUnixSocket({
+      socketPath: GATEWAY_API_SOCKET_PATH,
+      pathname,
+      method,
+      timeoutSec: 30,
+      headers,
+      body,
+    });
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new GatewayApiRequestError(
+        method,
+        pathname,
+        response.statusCode,
+        response.statusMessage,
+        response.bodyText,
+      );
+    }
+    return parseJsonText(response.bodyText) as T;
+  }
+
   const response = await fetch(`${GATEWAY_API_BASE_URL}${pathname}`, {
     method,
     headers,
-    body: payload ? JSON.stringify(payload) : undefined,
+    body: body ?? undefined,
   });
 
   if (!response.ok) {
@@ -459,6 +495,77 @@ async function gatewayApiRequest<T>(
   }
 
   return (await response.json()) as T;
+}
+
+interface UnixSocketRequestInput {
+  socketPath: string;
+  pathname: string;
+  method: "GET" | "POST";
+  timeoutSec: number;
+  headers: Record<string, string>;
+  body: string | null;
+}
+
+interface UnixSocketResponse {
+  statusCode: number;
+  statusMessage: string;
+  bodyText: string;
+}
+
+function requestJsonViaUnixSocket(
+  input: UnixSocketRequestInput,
+): Promise<UnixSocketResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath: input.socketPath,
+        path: input.pathname,
+        method: input.method,
+        headers: {
+          ...input.headers,
+          ...(input.body
+            ? {
+                "content-length": Buffer.byteLength(input.body, "utf8").toString(),
+              }
+            : {}),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer | string) => {
+          chunks.push(
+            typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk,
+          );
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            statusMessage: res.statusMessage ?? "",
+            bodyText: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(input.timeoutSec * 1000, () => {
+      req.destroy(new Error("gateway_api_socket_timeout"));
+    });
+    if (input.body) {
+      req.write(input.body);
+    }
+    req.end();
+  });
+}
+
+function parseJsonText(text: string): unknown {
+  if (!text || text.trim().length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function truncateOperationLogValue(value: string, maxChars: number): string {
@@ -2332,9 +2439,11 @@ async function bootInfrastructure(): Promise<void> {
   const supervisor = new RuntimeSupervisor({
     projectRoot: process.cwd(),
     gatewayApiBaseUrl: GATEWAY_API_BASE_URL,
+    gatewayApiSocketPath: GATEWAY_API_SOCKET_PATH ?? undefined,
     gatewayApiHost: GATEWAY_API_HOST,
     gatewayApiPort: GATEWAY_API_PORT,
     agentRuntimeBaseUrl: AGENT_RUNTIME_BASE_URL,
+    agentRuntimeSocketPath: AGENT_RUNTIME_SOCKET_PATH ?? undefined,
     composeBuild: ORCHESTRATOR_COMPOSE_BUILD,
     monitorIntervalSec: ORCHESTRATOR_MONITOR_INTERVAL_SEC,
     failureThreshold: ORCHESTRATOR_FAILURE_THRESHOLD,
