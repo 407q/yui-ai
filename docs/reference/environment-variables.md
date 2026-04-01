@@ -34,7 +34,7 @@ Yui AI の設定に使用する環境変数の一覧です。
 | 変数 | 必須 | デフォルト | 説明 |
 |------|------|-----------|------|
 | `COPILOT_GITHUB_TOKEN` | ※ | - | GitHub PAT（`BOT_MODE=standard` 時は必須） |
-| `COPILOT_MODEL` | - | `gpt-5.3-codex` | 使用するモデル |
+| `COPILOT_MODEL` | - | `claude-sonnet-4.6` | 使用するモデル |
 | `COPILOT_WORKING_DIRECTORY` | - | `/app` | SDK 作業ディレクトリ |
 | `COPILOT_SEND_TIMEOUT_MS` | - | `180000` | 推論タイムアウト（ms）※最後のツール実行から計測 |
 | `COPILOT_SDK_LOG_LEVEL` | - | `info` | SDK ログレベル（`none`/`error`/`warning`/`info`/`debug`/`all`） |
