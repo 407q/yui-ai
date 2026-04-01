@@ -1,194 +1,190 @@
-# 環境変数リファレンス
+# 環境変数リファレンス（コードベース棚卸し）
 
-Yui AI の設定に使用する環境変数の一覧です。
+`process.env.*`（`apps/**`）と `docker-compose*.yml` の参照を棚卸しし、現行構成での必要性を再分類した一覧です。
 
-## 目次
+## 必須度の見方
 
-1. [Discord](#discord)
-2. [Copilot SDK](#copilot-sdk)
-3. [内部 API 認証](#内部-api-認証)
-4. [Gateway API](#gateway-api)
-5. [Agent Runtime](#agent-runtime)
-6. [データベース](#データベース)
-7. [Orchestrator](#orchestrator)
-8. [MCP ツール](#mcp-ツール)
-9. [その他](#その他)
+- **必須**: 未設定だと現行運用フローで起動/実行できない
+- **条件付き必須**: 特定モードや特定コマンド実行時のみ必須
+- **任意**: 未設定時にデフォルト値へフォールバック
+- **互換**: 旧変数（後方互換用）。新規設定は非推奨
+- **テスト専用**: smoke テスト内部でのみ使用
+
+## 現行の標準運用で最低限必要な変数
+
+前提: `BOT_MODE=standard` + `INTERNAL_CONNECTION_MODE=tcp` + `compose:*` 系コマンド。
+
+- `DISCORD_BOT_TOKEN`
+- `COPILOT_GITHUB_TOKEN`
+- `BOT_TO_GATEWAY_INTERNAL_TOKEN`
+- `GATEWAY_TO_AGENT_INTERNAL_TOKEN`
+- `AGENT_TO_GATEWAY_INTERNAL_TOKEN`
+- `INTERNAL_CONNECTION_MODE`
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `STATE_STORE_DSN`
+- `MEMORY_STORE_DSN`
 
 ---
 
-## Discord
+## Discord / Bot
 
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `DISCORD_BOT_TOKEN` | ✅ | - | Discord Bot トークン |
-| `DISCORD_CLIENT_ID` | ✅ | - | Discord アプリケーション ID |
-| `DISCORD_GUILD_ID` | - | - | ギルド ID（指定時はギルドコマンドとして登録） |
-| `DISCORD_API_BASE_URL` | - | `https://discord.com/api/v10` | Discord API ベース URL |
-| `BOT_SYSTEM_ALERT_CHANNEL_ID` | - | - | システムアラート送信先チャンネル ID |
-| `BOT_MODE` | - | `standard` | `standard`: Copilot SDK, `mock`: モックモード |
+| 変数 | 必須度 | デフォルト | 説明 |
+|------|--------|-----------|------|
+| `DISCORD_BOT_TOKEN` | 必須 | - | Bot 起動時に必須 |
+| `DISCORD_CLIENT_ID` | 条件付き必須 | - | `yarn register:commands*` 実行時に必須 |
+| `DISCORD_GUILD_ID` | 任意 | - | 指定時はギルドコマンドとして登録 |
+| `DISCORD_API_BASE_URL` | 任意 | `https://discord.com/api/v10` | Discord API ベース URL |
+| `BOT_SYSTEM_ALERT_CHANNEL_ID` | 任意 | - | システムアラート通知先 |
+| `BOT_MODE` | 任意 | `standard` | `standard` / `mock` |
+| `BOT_IDLE_TIMEOUT_SEC` | 任意 | `600` | Bot 側のアイドルタイムアウト（秒） |
+| `BOT_AGENT_STATUS_TIMEOUT_SEC` | 任意 | `180` | Agent status ポーリングのタイムアウト（秒） |
+| `BOT_AGENT_POLL_INTERVAL_MS` | 任意 | `800` | Agent status ポーリング間隔（ms） |
+| `BOT_EVENT_DEDUP_TTL_MS` | 任意 | `300000` | Discord イベント重複排除の TTL（ms） |
+| `BOT_OPERATION_LOG_ENABLED` | 任意 | `true` | 操作ログの Discord 表示有効化 |
+| `BOT_OPERATION_LOG_MAX_FIELD_CHARS` | 任意 | `320` | 操作ログ表示時のフィールド最大文字数 |
+| `BOT_DELIVERED_FILE_MAX_BYTES` | 任意 | `2097152` | `container.file_deliver` の Discord 配信サイズ上限（bytes） |
+| `BOT_DELIVERED_FILE_MAX_COUNT` | 任意 | `3` | 1 回の返信で配信する最大ファイル数 |
 
 ---
 
-## Copilot SDK
+## Copilot SDK / Agent Runtime
 
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `COPILOT_GITHUB_TOKEN` | ※ | - | GitHub PAT（`BOT_MODE=standard` 時は必須） |
-| `COPILOT_MODEL` | - | `claude-sonnet-4.6` | 使用するモデル |
-| `COPILOT_WORKING_DIRECTORY` | - | `/app` | SDK 作業ディレクトリ |
-| `COPILOT_SEND_TIMEOUT_MS` | - | `180000` | 推論タイムアウト（ms）※最後のツール実行から計測 |
-| `COPILOT_SDK_LOG_LEVEL` | - | `info` | SDK ログレベル（`none`/`error`/`warning`/`info`/`debug`/`all`） |
+| 変数 | 必須度 | デフォルト | 説明 |
+|------|--------|-----------|------|
+| `COPILOT_GITHUB_TOKEN` | 条件付き必須 | - | `BOT_MODE=standard` の場合に必須 |
+| `COPILOT_MODEL` | 任意 | `claude-sonnet-4.6` | 利用モデル |
+| `COPILOT_WORKING_DIRECTORY` | 任意 | `/app`（compose時） | SDK 作業ディレクトリ |
+| `COPILOT_SEND_TIMEOUT_MS` | 任意 | `180000` | send-and-wait タイムアウト（ms） |
+| `COPILOT_SDK_LOG_LEVEL` | 任意 | `info` | `none/error/warning/info/debug/all` |
+| `AGENT_BIND_HOST` | 任意 | `0.0.0.0` | Agent listen host |
+| `AGENT_PORT` | 任意 | `3801` | Agent listen port |
+| `AGENT_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Agent listen socket |
+| `AGENT_GATEWAY_BASE_URL` | 任意 | `http://host.docker.internal:3800` | Agent -> Gateway の HTTP ベース URL |
+| `AGENT_GATEWAY_API_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Agent -> Gateway socket |
+| `AGENT_MCP_TIMEOUT_SEC` | 任意 | `30` | Agent -> Gateway MCP 呼び出しタイムアウト（秒） |
+| `AGENT_SESSION_ROOT_DIR` | 任意 | `/agent/session` | セッション作業ルート |
+| `AGENT_ATTACHMENT_MAX_BYTES` | 任意 | `26214400`（25MB） | 添付 stage 時の 1 ファイル上限 |
+| `BOT_APPROVAL_TIMEOUT_SEC` | 任意 | `120` | Agent 側 approval wait タイムアウト（秒） |
 
 ---
 
 ## 内部 API 認証
 
-コンポーネント間通信の認証トークンです。任意の秘密文字列を設定してください。
+> 実装上は未設定でも起動できますが、未設定時は内部 API 認証が実質無効化されます。現行構成では**運用必須**として扱ってください。
 
-| 変数 | 必須 | 説明 |
-|------|------|------|
-| `BOT_TO_GATEWAY_INTERNAL_TOKEN` | ✅ | Bot → Gateway API |
-| `GATEWAY_TO_AGENT_INTERNAL_TOKEN` | ✅ | Gateway → Agent Runtime |
-| `AGENT_TO_GATEWAY_INTERNAL_TOKEN` | ✅ | Agent → Gateway（MCP/承認） |
+| 変数 | 必須度 | 説明 |
+|------|--------|------|
+| `BOT_TO_GATEWAY_INTERNAL_TOKEN` | 必須 | Bot -> Gateway 認証トークン |
+| `GATEWAY_TO_AGENT_INTERNAL_TOKEN` | 必須 | Gateway -> Agent 認証トークン |
+| `AGENT_TO_GATEWAY_INTERNAL_TOKEN` | 必須 | Agent -> Gateway（MCP/approval）認証トークン |
 
 トークン生成例:
+
 ```bash
 openssl rand -hex 32
 ```
 
----
+### 後方互換（旧トークン名）
 
-## Gateway API
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `GATEWAY_API_HOST` | - | `127.0.0.1` | バインドホスト |
-| `GATEWAY_API_PORT` | - | `3800` | バインドポート |
-| `GATEWAY_API_BASE_URL` | - | `http://127.0.0.1:3800` | Gateway API ベース URL |
-| `GATEWAY_API_SOCKET_PATH` | - | `/tmp/sockets/gateway-api.sock` | Bot/Gateway 間 UDS パス（設定時は UDS 優先） |
-| `AGENT_RUNTIME_BASE_URL` | - | `http://127.0.0.1:3801` | Agent Runtime ベース URL |
-| `AGENT_RUNTIME_SOCKET_PATH` | - | `/tmp/sockets/agent-runtime.sock` | Gateway/Agent 間 UDS パス（設定時は UDS 優先） |
-| `AGENT_RUNTIME_TIMEOUT_SEC` | - | `30` | Agent API タイムアウト（秒） |
-| `SESSION_IDLE_TIMEOUT_SEC` | - | `600` | セッションアイドルタイムアウト（秒） |
+| 変数 | 必須度 | 説明 |
+|------|--------|------|
+| `GATEWAY_INTERNAL_TOKEN` | 互換 | `BOT_TO_GATEWAY_INTERNAL_TOKEN` / `AGENT_TO_GATEWAY_INTERNAL_TOKEN` の互換フォールバック |
+| `AGENT_INTERNAL_TOKEN` | 互換 | `GATEWAY_TO_AGENT_INTERNAL_TOKEN` の互換フォールバック |
 
 ---
 
-## Agent Runtime
+## Gateway API / MCP ツール
 
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `AGENT_BIND_HOST` | - | `0.0.0.0` | バインドホスト |
-| `AGENT_PORT` | - | `3801` | バインドポート |
-| `AGENT_GATEWAY_BASE_URL` | - | `http://host.docker.internal:3800` | Gateway API ベース URL（コンテナから見た） |
-| `AGENT_GATEWAY_API_SOCKET_PATH` | - | `/tmp/sockets/gateway-api.sock` | Agent->Gateway MCP の UDS パス（設定時は UDS 優先） |
-| `AGENT_MCP_TIMEOUT_SEC` | - | `30` | MCP ツール呼び出しタイムアウト（秒） |
-| `AGENT_SOCKET_PATH` | - | `/tmp/sockets/agent-runtime.sock` | Agent Runtime の listen UDS パス（設定時は TCP の代わりに使用） |
-| `RUNTIME_SOCKET_DIR` | - | `/tmp/sockets` | docker-compose で Agent コンテナへ bind mount する socket 共有ディレクトリ |
-| `AGENT_SESSION_ROOT_DIR` | - | `/agent/session` | セッション作業ディレクトリルート |
+| 変数 | 必須度 | デフォルト | 説明 |
+|------|--------|-----------|------|
+| `GATEWAY_API_HOST` | 任意 | `127.0.0.1`（Bot側）/`0.0.0.0`（API側） | Gateway listen host |
+| `GATEWAY_API_PORT` | 任意 | `3800` | Gateway listen port |
+| `GATEWAY_API_BASE_URL` | 任意 | `http://127.0.0.1:3800` | Bot -> Gateway ベース URL |
+| `GATEWAY_API_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Bot/Agent -> Gateway socket |
+| `AGENT_RUNTIME_BASE_URL` | 任意 | `http://127.0.0.1:3801` | Gateway/Bot -> Agent ベース URL |
+| `AGENT_RUNTIME_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Gateway/Bot -> Agent socket |
+| `AGENT_RUNTIME_TIMEOUT_SEC` | 任意 | `30` | Gateway -> Agent API タイムアウト（秒） |
+| `SESSION_IDLE_TIMEOUT_SEC` | 任意 | `600` | Gateway 側セッション idle timeout（秒） |
+| `CONTAINER_SESSION_ROOT` | 任意 | `/agent/session` | container ツールのセッションルート |
+| `CONTAINER_CLI_TIMEOUT_SEC` | 任意 | `60` | container CLI タイムアウト（秒） |
+| `CONTAINER_TOOL_EXECUTION_MODE` | 任意 | `docker_exec` | `docker_exec` / `host` |
+| `AGENT_CONTAINER_NAME` | 任意 | `yui-ai-agent` | `docker_exec` 対象コンテナ名 |
+| `CONTAINER_DOCKER_CLI_TIMEOUT_SEC` | 任意 | `60` | docker CLI タイムアウト（秒） |
+| `DOCKER_PROJECT_ROOT` | 任意 | `.` | Docker プロジェクトルート |
+| `HOST_CLI_TIMEOUT_SEC` | 任意 | `60` | host CLI タイムアウト（秒） |
+| `HOST_HTTP_TIMEOUT_SEC` | 任意 | `60` | host HTTP タイムアウト（秒） |
+| `HOST_CLI_ALLOWLIST` | 任意 | `git,node,npm,yarn,curl` | host CLI 許可コマンド |
+| `HOST_CLI_ENV_ALLOWLIST` | 任意 | (空) | host CLI 子プロセスへ渡す環境変数 |
+| `MEMORY_NAMESPACE_VALIDATION_MODE` | 任意 | `warn` | `warn` / `enforce` |
 
 ---
 
-## データベース
+## データベース / 接続モード
 
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `POSTGRES_DB` | ✅ | - | データベース名 |
-| `POSTGRES_USER` | ✅ | - | ユーザー名 |
-| `POSTGRES_PASSWORD` | ✅ | - | パスワード |
-| `INTERNAL_CONNECTION_MODE` | ✅ | - | 内部通信モード（`tcp`/`uds`）。compose、Bot/Gateway/Agent 間通信、DB 接続方式を一括切替 |
-| `POSTGRES_HOST` | - | `127.0.0.1` | ホスト |
-| `POSTGRES_PORT` | - | `55432` | ポート |
-| `POSTGRES_SOCKET_DIR` | - | `/tmp/postgres-socket` | UDS 用ソケット共有ディレクトリ（ホスト側） |
-| `POSTGRES_SOCKET_PATH` | - | `/tmp/postgres-socket` | `pg` が接続する UDS ディレクトリ（host/container 共通、container は `DB_SOCKET_MOUNT_PATH` 優先） |
-| `POSTGRES_SOCKET_PORT` | - | `5432` | UDS 利用時の PostgreSQL ポート値 |
-| `DB_SOCKET_MOUNT_PATH` | - | `/tmp/postgres-socket` | Agent コンテナ内の Postgres socket マウント先 |
-| `STATE_STORE_DSN` | ✅ | - | 状態ストア DSN |
-| `MEMORY_STORE_DSN` | ✅ | - | メモリストア DSN |
+| 変数 | 必須度 | デフォルト | 説明 |
+|------|--------|-----------|------|
+| `INTERNAL_CONNECTION_MODE` | 必須 | - | `tcp` / `uds`。compose ファイル選択と内部 API/DB 接続モードを一括制御 |
+| `POSTGRES_DB` | 必須（compose） | - | Postgres DB 名 |
+| `POSTGRES_USER` | 必須（compose） | - | Postgres ユーザー |
+| `POSTGRES_PASSWORD` | 必須（compose） | - | Postgres パスワード |
+| `STATE_STORE_DSN` | 必須（compose/本番運用） | - | state 用 DSN |
+| `MEMORY_STORE_DSN` | 必須（compose/本番運用） | - | memory 用 DSN（同一 DSN 可） |
+| `POSTGRES_HOST` | 任意 | DSN準拠（host実行時は `postgres` を `127.0.0.1` へ自動補正） | DB host 上書き |
+| `POSTGRES_PORT` | 任意 | `55432`（compose 公開ポート）/ DSN準拠（DB上書き未指定時） | compose の host 公開ポート。Node 側では DB port 上書きにも使われ、host実行時 `postgres:5432` は `55432` に自動補正 |
+| `POSTGRES_SOCKET_DIR` | 任意 | `/tmp/postgres-socket` | UDS 用 socket ディレクトリ（主にホスト側） |
+| `POSTGRES_SOCKET_PATH` | 任意 | `/tmp/postgres-socket` | `pg` 接続先 socket ディレクトリ |
+| `POSTGRES_SOCKET_PORT` | 任意 | `5432` | UDS 利用時に `pg` へ渡す port 値 |
+| `DB_SOCKET_MOUNT_PATH` | 条件付き必須（uds + container） | `/tmp/postgres-socket` | container 内から参照する socket mount path |
+| `RUNTIME_SOCKET_DIR` | 任意 | `/tmp/sockets` | Agent/Gateway UDS 共有マウント |
+
+### 後方互換（旧 DSN 名）
+
+| 変数 | 必須度 | 説明 |
+|------|--------|------|
+| `DATABASE_URL` | 互換 | `STATE_STORE_DSN` / `MEMORY_STORE_DSN` 未設定時のフォールバック |
 
 DSN 形式:
-```
+
+```text
 postgres://user:password@host:port/database
 ```
 
-`INTERNAL_CONNECTION_MODE=uds` の場合、Node プロセスは DSN の host/port より UDS 設定を優先して接続します。container 内では `DB_SOCKET_MOUNT_PATH` を優先し、未指定時は `POSTGRES_SOCKET_PATH` / `POSTGRES_SOCKET_DIR` を参照します。
+`INTERNAL_CONNECTION_MODE=uds` の場合、Node プロセスは DSN の host/port より UDS 設定を優先します。container 内では `DB_SOCKET_MOUNT_PATH` が優先されます。
 
 ---
 
-## Orchestrator
+## Orchestrator / 定期処理
 
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `BOT_ORCHESTRATOR_ENABLED` | - | `true` | Orchestrator の有効化 |
-| `BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC` | - | `15` | 監視間隔（秒） |
-| `BOT_ORCHESTRATOR_FAILURE_THRESHOLD` | - | `3` | 復旧開始までの失敗回数 |
-| `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC` | - | `240` | コマンドタイムアウト（秒） |
-| `BOT_ORCHESTRATOR_CLEANUP_ENABLED` | - | `true` | クリーンアップの有効化 |
-| `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC` | - | `86400` | クリーンアップ間隔（秒） |
-| `BOT_ORCHESTRATOR_COMPOSE_BUILD` | - | `true` | compose 起動時に `--build` を付与 |
-
----
-
-## MCP ツール
-
-### コンテナツール
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `CONTAINER_SESSION_ROOT` | - | `/agent/session` | セッションルート |
-| `CONTAINER_CLI_TIMEOUT_SEC` | - | `60` | CLI タイムアウト（秒） |
-| `CONTAINER_TOOL_EXECUTION_MODE` | - | `docker_exec` | 実行モード（`docker_exec`/`host`） |
-| `AGENT_CONTAINER_NAME` | - | `yui-ai-agent` | Agent コンテナ名 |
-| `CONTAINER_DOCKER_CLI_TIMEOUT_SEC` | - | `60` | docker exec タイムアウト（秒） |
-| `DOCKER_PROJECT_ROOT` | - | `.` | Docker プロジェクトルート |
-
-### ホストツール
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `HOST_CLI_TIMEOUT_SEC` | - | `60` | CLI タイムアウト（秒） |
-| `HOST_HTTP_TIMEOUT_SEC` | - | `60` | HTTP タイムアウト（秒） |
-| `HOST_CLI_ALLOWLIST` | - | `git,node,npm,yarn,curl` | 許可コマンドリスト（カンマ区切り） |
-| `HOST_CLI_ENV_ALLOWLIST` | - | (空) | 子プロセスに渡す環境変数（カンマ区切り） |
-
-### メモリ
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `MEMORY_NAMESPACE_VALIDATION_MODE` | - | `warn` | 名前空間検証モード（`warn`/`enforce`） |
+| 変数 | 必須度 | デフォルト | 説明 |
+|------|--------|-----------|------|
+| `BOT_ORCHESTRATOR_ENABLED` | 任意 | `true` | Orchestrator 有効化 |
+| `BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC` | 任意 | `15` | 監視間隔（秒） |
+| `BOT_ORCHESTRATOR_FAILURE_THRESHOLD` | 任意 | `3` | 復旧開始までの失敗回数 |
+| `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC` | 任意 | `240` | Orchestrator 実行コマンドのタイムアウト（秒） |
+| `BOT_ORCHESTRATOR_CLEANUP_ENABLED` | 任意 | `true` | cleanup 実行有効化 |
+| `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC` | 任意 | `86400` | cleanup 実行間隔（秒） |
+| `BOT_ORCHESTRATOR_COMPOSE_BUILD` | 任意 | `true` | compose up 時 `--build` を付与 |
+| `TASK_EVENTS_RETENTION_DAYS` | 任意 | `90` | task_events 保持日数 |
+| `AUDIT_LOGS_RETENTION_DAYS` | 任意 | `180` | audit_logs 保持日数 |
 
 ---
 
-## その他
+## テスト専用
 
-### Bot 設定
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `BOT_IDLE_TIMEOUT_SEC` | - | `600` | アイドルタイムアウト（秒） |
-| `BOT_AGENT_STATUS_TIMEOUT_SEC` | - | `180` | Agent ステータス取得タイムアウト（秒） |
-| `BOT_AGENT_POLL_INTERVAL_MS` | - | `800` | Agent ポーリング間隔（ms） |
-| `BOT_OPERATION_LOG_ENABLED` | - | `true` | 操作ログの Discord 表示 |
-| `BOT_OPERATION_LOG_MAX_FIELD_CHARS` | - | `320` | 操作ログフィールド最大文字数 |
-| `BOT_DELIVERED_FILE_MAX_BYTES` | - | `2097152` | 配信ファイル最大サイズ（2MB） |
-| `BOT_DELIVERED_FILE_MAX_COUNT` | - | `3` | 配信ファイル最大数 |
-
-### データ保持
-
-| 変数 | 必須 | デフォルト | 説明 |
-|------|------|-----------|------|
-| `TASK_EVENTS_RETENTION_DAYS` | - | `90` | タスクイベント保持日数 |
-| `AUDIT_LOGS_RETENTION_DAYS` | - | `180` | 監査ログ保持日数 |
+| 変数 | 必須度 | 説明 |
+|------|--------|------|
+| `SMOKE_SECRET_HOST_CLI` | テスト専用 | `apps/gateway/api/src/smoke.ts` のみで使用 |
 
 ---
 
-## 設定例
-
-### 最小構成（開発用）
+## 設定例（最小）
 
 ```bash
 # .env
+INTERNAL_CONNECTION_MODE=tcp
 DISCORD_BOT_TOKEN=your-token
-DISCORD_CLIENT_ID=123456789012345678
 COPILOT_GITHUB_TOKEN=ghp_xxxx
 BOT_TO_GATEWAY_INTERNAL_TOKEN=dev-secret-1
 GATEWAY_TO_AGENT_INTERNAL_TOKEN=dev-secret-2
@@ -200,13 +196,9 @@ STATE_STORE_DSN=postgres://yui:password@127.0.0.1:55432/yui_ai
 MEMORY_STORE_DSN=postgres://yui:password@127.0.0.1:55432/yui_ai
 ```
 
-### 本番構成（1Password）
-
-`.env.op.example` を参照してください。
-
 ---
 
-## 次のステップ
+## 関連ドキュメント
 
-- [セットアップガイド](../guide/setup.md) — 環境構築
-- [トラブルシューティング](troubleshooting.md) — 問題解決
+- [セットアップガイド](../guide/setup.md)
+- [トラブルシューティング](troubleshooting.md)
