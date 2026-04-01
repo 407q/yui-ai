@@ -138,10 +138,14 @@ const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127
 const BOT_TO_GATEWAY_INTERNAL_TOKEN =
   process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ?? process.env.GATEWAY_INTERNAL_TOKEN ?? "";
 const GATEWAY_API_SOCKET_PATH = resolveOptionalSocketPath(
-  process.env.GATEWAY_API_SOCKET_PATH,
+  resolveInternalConnectionMode() === "uds"
+    ? process.env.GATEWAY_API_SOCKET_PATH
+    : undefined,
 );
 const AGENT_RUNTIME_SOCKET_PATH = resolveOptionalSocketPath(
-  process.env.AGENT_RUNTIME_SOCKET_PATH,
+  resolveInternalConnectionMode() === "uds"
+    ? process.env.AGENT_RUNTIME_SOCKET_PATH
+    : undefined,
 );
 const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
 const GATEWAY_API_PORT = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
@@ -245,6 +249,14 @@ function resolveOptionalSocketPath(raw: string | undefined): string | null {
     return null;
   }
   return path.resolve(raw);
+}
+
+function resolveInternalConnectionMode(): "tcp" | "uds" {
+  const raw = (process.env.INTERNAL_CONNECTION_MODE ?? "").toLowerCase();
+  if (raw === "tcp" || raw === "uds") {
+    return raw;
+  }
+  return "tcp";
 }
 
 function newId(prefix: string): string {

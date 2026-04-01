@@ -122,7 +122,14 @@ AGENT_RUNTIME_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
 AGENT_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
 AGENT_GATEWAY_API_SOCKET_PATH=/tmp/sockets/gateway-api.sock
 RUNTIME_SOCKET_DIR=/tmp/sockets
+INTERNAL_CONNECTION_MODE=tcp
+POSTGRES_SOCKET_DIR=/tmp/postgres-socket
+POSTGRES_SOCKET_PATH=/tmp/postgres-socket
+POSTGRES_SOCKET_PORT=5432
+DB_SOCKET_MOUNT_PATH=/tmp/postgres-socket
 ```
+
+`INTERNAL_CONNECTION_MODE` は必須です。`tcp`（既定）または `uds` を設定してください。
 
 ### 必須の環境変数
 

@@ -32,7 +32,7 @@ async function runBootScenario(): Promise<void> {
 
   assertIncludes(
     harness.commands,
-    "docker compose up -d --build",
+    "docker compose -f docker-compose.tcp.yml up -d --build",
     "boot should call compose up",
   );
   assertIncludes(
@@ -66,7 +66,7 @@ async function runBootFailureRollbackScenario(): Promise<void> {
   assert(failed, "boot should fail when initial health check fails");
   assertIncludes(
     harness.commands,
-    "docker compose down --remove-orphans",
+    "docker compose -f docker-compose.tcp.yml down --remove-orphans",
     "boot failure should roll back compose",
   );
   assert(harness.starts >= 1, "boot failure scenario should start gateway-api once");
@@ -89,7 +89,7 @@ async function runTargetedRecoveryScenario(): Promise<void> {
 
   assertIncludes(
     harness.commands,
-    "docker compose restart agent postgres",
+    "docker compose -f docker-compose.tcp.yml restart agent postgres",
     "targeted recovery should restart compose services",
   );
   const migrateCount = harness.commands.filter(
@@ -122,11 +122,11 @@ async function runFullRestartRecoveryScenario(): Promise<void> {
 
   assertIncludes(
     harness.commands,
-    "docker compose down --remove-orphans",
+    "docker compose -f docker-compose.tcp.yml down --remove-orphans",
     "full recovery should include compose down",
   );
   const composeUpCount = harness.commands.filter(
-    (command) => command === "docker compose up -d --build",
+    (command) => command === "docker compose -f docker-compose.tcp.yml up -d --build",
   ).length;
   assert(composeUpCount >= 2, "full recovery should compose up again");
   assert(
@@ -185,6 +185,7 @@ function createSupervisor(
   harness: SupervisorHarness,
   failureThreshold: number,
 ): RuntimeSupervisor {
+  process.env.INTERNAL_CONNECTION_MODE = "tcp";
   return new RuntimeSupervisor({
     projectRoot: process.cwd(),
     gatewayApiBaseUrl: "http://127.0.0.1:3800",

@@ -59,6 +59,7 @@ export interface RuntimeSupervisorOptions {
 interface CommandSpec {
   command: string;
   args: string[];
+  extraEnv?: Record<string, string>;
 }
 
 export interface RuntimeSupervisorShutdownOptions {
@@ -124,7 +125,13 @@ export class RuntimeSupervisor {
       await this.runCommandBestEffort(
         {
           command: "docker",
-          args: ["compose", "down", "--remove-orphans"],
+          args: [
+            "compose",
+            "-f",
+            `docker-compose.${resolveInternalConnectionMode()}.yml`,
+            "down",
+            "--remove-orphans",
+          ],
         },
         "shutdown: compose down",
       );
@@ -322,7 +329,14 @@ export class RuntimeSupervisor {
         this.log("recovery: restarting compose services (agent/postgres)");
         await this.runCommand({
           command: "docker",
-          args: ["compose", "restart", "agent", "postgres"],
+          args: [
+            "compose",
+            "-f",
+            `docker-compose.${resolveInternalConnectionMode()}.yml`,
+            "restart",
+            "agent",
+            "postgres",
+          ],
         });
         await this.runCommand({
           command: "yarn",
@@ -349,7 +363,13 @@ export class RuntimeSupervisor {
       await this.stopGatewayApiBestEffort("recovery: full restart gateway stop");
       await this.runCommand({
         command: "docker",
-        args: ["compose", "down", "--remove-orphans"],
+        args: [
+          "compose",
+          "-f",
+          `docker-compose.${resolveInternalConnectionMode()}.yml`,
+          "down",
+          "--remove-orphans",
+        ],
       });
       await this.runCommand(this.composeUpCommand());
       await this.runCommand({
@@ -372,7 +392,14 @@ export class RuntimeSupervisor {
     return this.options.composeBuild
       ? {
           command: "docker",
-          args: ["compose", "up", "-d", "--build"],
+          args: [
+            "compose",
+            "-f",
+            `docker-compose.${resolveInternalConnectionMode()}.yml`,
+            "up",
+            "-d",
+            "--build",
+          ],
         }
       : {
           command: "yarn",
@@ -385,7 +412,13 @@ export class RuntimeSupervisor {
     await this.runCommandBestEffort(
       {
         command: "docker",
-        args: ["compose", "down", "--remove-orphans"],
+        args: [
+          "compose",
+          "-f",
+          `docker-compose.${resolveInternalConnectionMode()}.yml`,
+          "down",
+          "--remove-orphans",
+        ],
       },
       "boot rollback: compose down",
     );
@@ -555,7 +588,15 @@ export class RuntimeSupervisor {
   private async probeComposeServices(): Promise<RuntimeComposeStatus> {
     const output = await this.runCommandRaw({
       command: "docker",
-      args: ["compose", "ps", "--services", "--status", "running"],
+      args: [
+        "compose",
+        "-f",
+        `docker-compose.${resolveInternalConnectionMode()}.yml`,
+        "ps",
+        "--services",
+        "--status",
+        "running",
+      ],
     });
     if (output.timedOut) {
       return {
@@ -615,6 +656,7 @@ export class RuntimeSupervisor {
       args: spec.args,
       cwd: this.options.projectRoot,
       timeoutSec: this.options.commandTimeoutSec,
+      extraEnv: spec.extraEnv,
     });
   }
 
@@ -703,4 +745,14 @@ function requestTextViaUnixSocket(
     });
     req.end();
   });
+}
+
+function resolveInternalConnectionMode(): "tcp" | "uds" {
+  const mode = (process.env.INTERNAL_CONNECTION_MODE ?? "").toLowerCase();
+  if (mode === "tcp" || mode === "uds") {
+    return mode;
+  }
+  throw new Error(
+    "INTERNAL_CONNECTION_MODE is required and must be either 'tcp' or 'uds'.",
+  );
 }

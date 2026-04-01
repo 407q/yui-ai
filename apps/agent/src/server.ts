@@ -326,6 +326,9 @@ function resolveGatewayBaseUrl(): string {
 }
 
 function resolveGatewaySocketPath(): string | undefined {
+  if (resolveInternalConnectionMode() !== "uds") {
+    return undefined;
+  }
   const raw =
     process.env.AGENT_GATEWAY_API_SOCKET_PATH ?? process.env.GATEWAY_API_SOCKET_PATH;
   if (!raw || raw.trim().length === 0) {
@@ -347,11 +350,22 @@ function resolveGatewaySocketPathForOptions(
 }
 
 function resolveAgentSocketPath(): string | null {
+  if (resolveInternalConnectionMode() !== "uds") {
+    return null;
+  }
   const raw = process.env.AGENT_SOCKET_PATH;
   if (!raw || raw.trim().length === 0) {
     return null;
   }
   return path.resolve(raw);
+}
+
+function resolveInternalConnectionMode(): "tcp" | "uds" {
+  const raw = (process.env.INTERNAL_CONNECTION_MODE ?? "").toLowerCase();
+  if (raw === "tcp" || raw === "uds") {
+    return raw;
+  }
+  return "tcp";
 }
 
 function resolveAgentSessionRootDirectory(raw: string | undefined): string {

@@ -27,10 +27,12 @@ yarn dev:local
 ```
 
 Orchestrator が自動で以下を実行します:
-1. `docker compose up -d --build`
+1. `docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml up -d --build`
 2. `yarn db:migrate`
 3. Gateway API 起動
 4. ヘルスチェック
+
+`INTERNAL_CONNECTION_MODE`（`tcp`/`uds`）は必須です。
 
 ### プロダクションビルドからの起動
 
@@ -108,7 +110,7 @@ curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
 curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
 
 # PostgreSQL
-docker compose exec postgres pg_isready
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_isready
 ```
 
 ### ヘルスチェック対象
@@ -129,10 +131,10 @@ Orchestrator は以下の順序で復旧を試みます:
 
 1. **対象コンポーネントの再起動**
    - Gateway 停止 → Gateway 再起動
-   - Agent 停止 → `docker compose restart agent postgres` + `db:migrate`
+   - Agent 停止 → `docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml restart agent postgres` + `db:migrate`
 
 2. **全体再起動**
-   - `docker compose down` → `docker compose up` → `db:migrate` → Gateway 起動
+   - `docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml down` → `docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml up` → `db:migrate` → Gateway 起動
 
 3. **致命的障害**
    - 復旧失敗 → アラート送信 → プロセス終了
@@ -142,15 +144,15 @@ Orchestrator は以下の順序で復旧を試みます:
 **Agent が応答しない:**
 
 ```bash
-docker compose logs agent --tail 100
-docker compose restart agent
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs agent --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml restart agent
 ```
 
 **PostgreSQL が応答しない:**
 
 ```bash
-docker compose logs postgres --tail 100
-docker compose restart postgres
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs postgres --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml restart postgres
 ```
 
 **Gateway が応答しない:**
@@ -190,7 +192,7 @@ yarn db:cleanup:local # 直接環境変数使用時
 
 ```bash
 # psql で接続
-docker compose exec postgres psql -U <user> -d <database>
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres psql -U <user> -d <database>
 
 # テーブル一覧
 \dt
@@ -207,10 +209,10 @@ SELECT status, COUNT(*) FROM sessions GROUP BY status;
 
 ```bash
 # バックアップ
-docker compose exec postgres pg_dump -U <user> <database> > backup.sql
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_dump -U <user> <database> > backup.sql
 
 # 圧縮バックアップ
-docker compose exec postgres pg_dump -U <user> <database> | gzip > backup.sql.gz
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_dump -U <user> <database> | gzip > backup.sql.gz
 ```
 
 ### リストア
@@ -219,7 +221,7 @@ docker compose exec postgres pg_dump -U <user> <database> | gzip > backup.sql.gz
 # Bot を停止
 
 # リストア
-cat backup.sql | docker compose exec -T postgres psql -U <user> <database>
+cat backup.sql | docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec -T postgres psql -U <user> <database>
 
 # Bot を再起動
 yarn dev
@@ -229,7 +231,7 @@ yarn dev
 
 ```bash
 # crontab -e
-0 3 * * * cd /path/to/yui-ai && docker compose exec -T postgres pg_dump -U yui yui_ai | gzip > /backups/yui_$(date +\%Y\%m\%d).sql.gz
+0 3 * * * cd /path/to/yui-ai && docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec -T postgres pg_dump -U yui yui_ai | gzip > /backups/yui_$(date +\%Y\%m\%d).sql.gz
 ```
 
 ---
@@ -261,7 +263,7 @@ yarn dev
 
 ```bash
 yarn compose:down
-docker compose build --no-cache
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml build --no-cache
 yarn dev
 ```
 
@@ -281,19 +283,19 @@ LOG_LEVEL=debug yarn dev
 ### Agent
 
 ```bash
-docker compose logs agent -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs agent -f --tail 100
 ```
 
 ### PostgreSQL
 
 ```bash
-docker compose logs postgres -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs postgres -f --tail 100
 ```
 
 ### 全コンポーネント
 
 ```bash
-docker compose logs -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs -f --tail 100
 ```
 
 ---

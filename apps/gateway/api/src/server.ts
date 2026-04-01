@@ -282,6 +282,9 @@ function resolveAgentRuntimeTimeoutSec(): number {
 }
 
 function resolveGatewayApiSocketPath(): string | null {
+  if (resolveInternalConnectionMode() !== "uds") {
+    return null;
+  }
   const raw = process.env.GATEWAY_API_SOCKET_PATH;
   if (!raw || raw.trim().length === 0) {
     return null;
@@ -290,11 +293,22 @@ function resolveGatewayApiSocketPath(): string | null {
 }
 
 function resolveAgentRuntimeSocketPath(): string | undefined {
+  if (resolveInternalConnectionMode() !== "uds") {
+    return undefined;
+  }
   const raw = process.env.AGENT_RUNTIME_SOCKET_PATH;
   if (!raw || raw.trim().length === 0) {
     return undefined;
   }
   return path.resolve(raw);
+}
+
+function resolveInternalConnectionMode(): "tcp" | "uds" {
+  const raw = (process.env.INTERNAL_CONNECTION_MODE ?? "").toLowerCase();
+  if (raw === "tcp" || raw === "uds") {
+    return raw;
+  }
+  return "tcp";
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

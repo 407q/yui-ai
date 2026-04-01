@@ -95,8 +95,13 @@ openssl rand -hex 32
 | `POSTGRES_DB` | ✅ | - | データベース名 |
 | `POSTGRES_USER` | ✅ | - | ユーザー名 |
 | `POSTGRES_PASSWORD` | ✅ | - | パスワード |
+| `INTERNAL_CONNECTION_MODE` | ✅ | - | 内部通信モード（`tcp`/`uds`）。compose、Bot/Gateway/Agent 間通信、DB 接続方式を一括切替 |
 | `POSTGRES_HOST` | - | `127.0.0.1` | ホスト |
 | `POSTGRES_PORT` | - | `55432` | ポート |
+| `POSTGRES_SOCKET_DIR` | - | `/tmp/postgres-socket` | UDS 用ソケット共有ディレクトリ（ホスト側） |
+| `POSTGRES_SOCKET_PATH` | - | `/tmp/postgres-socket` | `pg` が接続する UDS ディレクトリ（host/container 共通、container は `DB_SOCKET_MOUNT_PATH` 優先） |
+| `POSTGRES_SOCKET_PORT` | - | `5432` | UDS 利用時の PostgreSQL ポート値 |
+| `DB_SOCKET_MOUNT_PATH` | - | `/tmp/postgres-socket` | Agent コンテナ内の Postgres socket マウント先 |
 | `STATE_STORE_DSN` | ✅ | - | 状態ストア DSN |
 | `MEMORY_STORE_DSN` | ✅ | - | メモリストア DSN |
 
@@ -104,6 +109,8 @@ DSN 形式:
 ```
 postgres://user:password@host:port/database
 ```
+
+`INTERNAL_CONNECTION_MODE=uds` の場合、Node プロセスは DSN の host/port より UDS 設定を優先して接続します。container 内では `DB_SOCKET_MOUNT_PATH` を優先し、未指定時は `POSTGRES_SOCKET_PATH` / `POSTGRES_SOCKET_DIR` を参照します。
 
 ---
 

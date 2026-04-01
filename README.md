@@ -26,6 +26,7 @@ yarn install
 # 環境変数ファイル作成（1Password 使用時）
 cp .env.op.example .env.op
 # .env.op を編集
+# INTERNAL_CONNECTION_MODE=tcp (または uds) を設定
 
 # スラッシュコマンド登録（初回のみ）
 yarn register:commands
@@ -37,6 +38,7 @@ yarn dev
 詳細は [セットアップガイド](docs/guide/setup.md) を参照してください。
 
 内部 API 間通信（Bot↔Gateway / Gateway↔Agent / Agent↔Gateway）は既定で Unix Domain Socket を優先し、未設定時のみ TCP を使用します。
+PostgreSQL 接続は `INTERNAL_CONNECTION_MODE`（`tcp`/`uds` 必須）で切り替え、Compose は `docker-compose.tcp.yml` / `docker-compose.uds.yml` を使い分けます。
 
 ## ドキュメント
 

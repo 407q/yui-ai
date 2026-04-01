@@ -37,13 +37,13 @@
     "db:cleanup": "op run --env-file=.env.op -- yarn db:cleanup:local",
     "db:smoke:local": "tsx apps/gateway/state/src/smoke.ts",
     "db:smoke": "op run --env-file=.env.op -- yarn db:smoke:local",
-    "compose:up:local": "docker compose up -d",
+    "compose:up:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml up -d'",
     "compose:up": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:up:local",
-    "compose:down:local": "docker compose down --remove-orphans",
+    "compose:down:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml down --remove-orphans'",
     "compose:down": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:down:local",
-    "compose:ps:local": "docker compose ps",
+    "compose:ps:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml ps'",
     "compose:ps": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:ps:local",
-    "compose:logs:local": "docker compose logs -f --tail=100",
+    "compose:logs:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml logs -f --tail=100'",
     "compose:logs": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:logs:local"
   },
   "dependencies": {

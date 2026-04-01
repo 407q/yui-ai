@@ -78,18 +78,21 @@ kill <PID>
 
 ### `docker compose` 起動失敗
 
-**原因**: Docker デーモンが起動していない、または環境変数不足
+**原因**: Docker デーモンが起動していない、または環境変数不足（`INTERNAL_CONNECTION_MODE` 未設定/不正含む）
 
 **解決策**:
 ```bash
 # Docker の状態確認
 docker info
 
+# 接続モード確認（tcp / uds）
+echo "$INTERNAL_CONNECTION_MODE"
+
 # 手動で compose up
-docker compose up -d
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml up -d
 
 # ログ確認
-docker compose logs
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs
 ```
 
 ---
@@ -196,14 +199,33 @@ BOT_MODE=mock yarn dev
 **解決策**:
 ```bash
 # compose 状態確認
-docker compose ps
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml ps
 
 # PostgreSQL を起動
-docker compose up -d postgres
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml up -d postgres
 
 # 接続確認
-docker compose exec postgres pg_isready
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_isready
 ```
+
+---
+
+### `getaddrinfo ENOTFOUND postgres`
+
+**原因**: ホスト上プロセス（`db:migrate` / `api:smoke` / `agent:smoke`）が、コンテナ内向け DSN（`host=postgres`）をそのまま使っている
+
+**解決策**:
+```bash
+# まず DSN の host/port を確認
+echo "$STATE_STORE_DSN"
+
+# ホスト実行時は明示上書き（推奨）
+POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=55432 yarn db:migrate:local
+```
+
+補足:
+- 現在の実装では、`POSTGRES_HOST/PORT` 未指定でも **host実行時に DSN の `postgres:5432` を自動で `127.0.0.1:55432` へ補正** します。
+- コンテナ内実行時は補正しません（`postgres:5432` のまま）。
 
 ---
 
@@ -215,10 +237,10 @@ docker compose exec postgres pg_isready
 yarn db:migrate
 
 # PostgreSQL ログ確認
-docker compose logs postgres
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs postgres
 
 # マイグレーション状態確認
-docker compose exec postgres psql -U yui -d yui_ai -c "SELECT * FROM migrations;"
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres psql -U yui -d yui_ai -c "SELECT * FROM migrations;"
 ```
 
 ---
@@ -315,13 +337,13 @@ LOG_LEVEL=debug COPILOT_SDK_LOG_LEVEL=debug yarn dev
 
 ```bash
 # Agent
-docker compose logs agent -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs agent -f --tail 100
 
 # PostgreSQL
-docker compose logs postgres -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs postgres -f --tail 100
 
 # 全て
-docker compose logs -f --tail 100
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs -f --tail 100
 ```
 
 ### ヘルスチェック
@@ -334,7 +356,7 @@ curl -s http://127.0.0.1:3800/health | jq
 curl -s http://127.0.0.1:3801/health | jq
 
 # PostgreSQL
-docker compose exec postgres pg_isready
+docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_isready
 ```
 
 ### Smoke テスト
