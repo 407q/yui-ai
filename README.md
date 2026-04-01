@@ -45,6 +45,7 @@ yarn dev
 | [セットアップ](docs/guide/setup.md) | 環境構築・初回起動 |
 | [Discord Bot 操作](docs/guide/discord-usage.md) | コマンド・承認フローの使い方 |
 | [運用](docs/guide/operations.md) | 起動・停止・復旧・バックアップ |
+| [Copilot CLI 権限再設定](docs/development/copilot-cli-permissions.md) | CLI再起動後の許可設定手順 |
 
 ### リファレンス
 
