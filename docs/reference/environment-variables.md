@@ -60,9 +60,9 @@
 | `COPILOT_SDK_LOG_LEVEL` | 任意 | `info` | `none/error/warning/info/debug/all` |
 | `AGENT_BIND_HOST` | 任意 | `0.0.0.0` | Agent listen host |
 | `AGENT_PORT` | 任意 | `3801` | Agent listen port |
-| `AGENT_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Agent listen socket |
+| `AGENT_SOCKET_PATH` | 任意 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Agent listen socket を使用 |
 | `AGENT_GATEWAY_BASE_URL` | 任意 | `http://host.docker.internal:3800` | Agent -> Gateway の HTTP ベース URL |
-| `AGENT_GATEWAY_API_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Agent -> Gateway socket |
+| `AGENT_GATEWAY_API_SOCKET_PATH` | 任意 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Agent -> Gateway socket を使用 |
 | `AGENT_MCP_TIMEOUT_SEC` | 任意 | `30` | Agent -> Gateway MCP 呼び出しタイムアウト（秒） |
 | `AGENT_SESSION_ROOT_DIR` | 任意 | `/agent/session` | セッション作業ルート |
 | `AGENT_ATTACHMENT_MAX_BYTES` | 任意 | `26214400`（25MB） | 添付 stage 時の 1 ファイル上限 |
@@ -102,9 +102,9 @@ openssl rand -hex 32
 | `GATEWAY_API_HOST` | 任意 | `127.0.0.1`（Bot側）/`0.0.0.0`（API側） | Gateway listen host |
 | `GATEWAY_API_PORT` | 任意 | `3800` | Gateway listen port |
 | `GATEWAY_API_BASE_URL` | 任意 | `http://127.0.0.1:3800` | Bot -> Gateway ベース URL |
-| `GATEWAY_API_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Bot/Agent -> Gateway socket |
+| `GATEWAY_API_SOCKET_PATH` | 任意 | `/tmp/sockets/gateway-api.sock` | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Bot/Agent -> Gateway socket を使用 |
 | `AGENT_RUNTIME_BASE_URL` | 任意 | `http://127.0.0.1:3801` | Gateway/Bot -> Agent ベース URL |
-| `AGENT_RUNTIME_SOCKET_PATH` | 条件付き必須 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時の Gateway/Bot -> Agent socket |
+| `AGENT_RUNTIME_SOCKET_PATH` | 任意 | `/tmp/sockets/agent-runtime.sock` | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Gateway/Bot -> Agent socket を使用 |
 | `AGENT_RUNTIME_TIMEOUT_SEC` | 任意 | `30` | Gateway -> Agent API タイムアウト（秒） |
 | `SESSION_IDLE_TIMEOUT_SEC` | 任意 | `600` | Gateway 側セッション idle timeout（秒） |
 | `CONTAINER_SESSION_ROOT` | 任意 | `/agent/session` | container ツールのセッションルート |

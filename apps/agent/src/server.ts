@@ -330,7 +330,9 @@ function resolveGatewaySocketPath(): string | undefined {
     return undefined;
   }
   const raw =
-    process.env.AGENT_GATEWAY_API_SOCKET_PATH ?? process.env.GATEWAY_API_SOCKET_PATH;
+    process.env.AGENT_GATEWAY_API_SOCKET_PATH ??
+    process.env.GATEWAY_API_SOCKET_PATH ??
+    "/tmp/sockets/gateway-api.sock";
   if (!raw || raw.trim().length === 0) {
     return undefined;
   }
@@ -353,7 +355,7 @@ function resolveAgentSocketPath(): string | null {
   if (resolveInternalConnectionMode() !== "uds") {
     return null;
   }
-  const raw = process.env.AGENT_SOCKET_PATH;
+  const raw = process.env.AGENT_SOCKET_PATH ?? "/tmp/sockets/agent-runtime.sock";
   if (!raw || raw.trim().length === 0) {
     return null;
   }

@@ -136,16 +136,18 @@ const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
 const SYSTEM_ALERT_CHANNEL_ID = process.env.BOT_SYSTEM_ALERT_CHANNEL_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
+const DEFAULT_GATEWAY_API_SOCKET_PATH = "/tmp/sockets/gateway-api.sock";
+const DEFAULT_AGENT_RUNTIME_SOCKET_PATH = "/tmp/sockets/agent-runtime.sock";
 const BOT_TO_GATEWAY_INTERNAL_TOKEN =
   process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ?? process.env.GATEWAY_INTERNAL_TOKEN ?? "";
 const GATEWAY_API_SOCKET_PATH = resolveOptionalSocketPath(
   resolveInternalConnectionMode() === "uds"
-    ? process.env.GATEWAY_API_SOCKET_PATH
+    ? process.env.GATEWAY_API_SOCKET_PATH ?? DEFAULT_GATEWAY_API_SOCKET_PATH
     : undefined,
 );
 const AGENT_RUNTIME_SOCKET_PATH = resolveOptionalSocketPath(
   resolveInternalConnectionMode() === "uds"
-    ? process.env.AGENT_RUNTIME_SOCKET_PATH
+    ? process.env.AGENT_RUNTIME_SOCKET_PATH ?? DEFAULT_AGENT_RUNTIME_SOCKET_PATH
     : undefined,
 );
 const GATEWAY_API_HOST = process.env.GATEWAY_API_HOST ?? "127.0.0.1";
