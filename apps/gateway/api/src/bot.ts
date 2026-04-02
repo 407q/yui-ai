@@ -136,8 +136,15 @@ const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
 const SYSTEM_ALERT_CHANNEL_ID = process.env.BOT_SYSTEM_ALERT_CHANNEL_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
-const DEFAULT_GATEWAY_API_SOCKET_PATH = "/tmp/sockets/gateway-api.sock";
-const DEFAULT_AGENT_RUNTIME_SOCKET_PATH = "/tmp/sockets/agent-runtime.sock";
+const DEFAULT_RUNTIME_SOCKET_DIR = resolveDefaultRuntimeSocketDir();
+const DEFAULT_GATEWAY_API_SOCKET_PATH = path.join(
+  DEFAULT_RUNTIME_SOCKET_DIR,
+  "gateway-api.sock",
+);
+const DEFAULT_AGENT_RUNTIME_SOCKET_PATH = path.join(
+  DEFAULT_RUNTIME_SOCKET_DIR,
+  "agent-runtime.sock",
+);
 const BOT_TO_GATEWAY_INTERNAL_TOKEN =
   process.env.BOT_TO_GATEWAY_INTERNAL_TOKEN ?? process.env.GATEWAY_INTERNAL_TOKEN ?? "";
 const GATEWAY_API_SOCKET_PATH = resolveOptionalSocketPath(
@@ -252,6 +259,18 @@ function resolveOptionalSocketPath(raw: string | undefined): string | null {
     return null;
   }
   return path.resolve(raw);
+}
+
+function resolveDefaultRuntimeSocketDir(): string {
+  const configured = process.env.RUNTIME_SOCKET_DIR;
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
+  const xdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
+  if (xdgRuntimeDir && xdgRuntimeDir.trim().length > 0) {
+    return path.resolve(xdgRuntimeDir, "yui-ai");
+  }
+  return path.resolve("/tmp/yui-ai");
 }
 
 function resolveInternalConnectionMode(): "tcp" | "uds" {

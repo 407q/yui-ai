@@ -56,7 +56,7 @@ services:
       DB_SOCKET_MOUNT_PATH: ${DB_SOCKET_MOUNT_PATH:-/tmp/postgres-socket}
     volumes:
       - agent_workspace_data:/agent/session
-      - ${RUNTIME_SOCKET_DIR:-/tmp/sockets}:/tmp/sockets
+      - ${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}:/tmp/sockets
       - ${POSTGRES_SOCKET_DIR:-/tmp/postgres-socket}:${DB_SOCKET_MOUNT_PATH:-/tmp/postgres-socket}
     healthcheck:
       test:
@@ -64,7 +64,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "const http=require('node:http');const req=http.request({socketPath:process.env.AGENT_SOCKET_PATH||'/tmp/sockets/agent-runtime.sock',path:'/health',method:'GET'},(res)=>process.exit(res.statusCode>=200&&res.statusCode<300?0:1));req.on('error',()=>process.exit(1));req.end();",
+          "const path=require('node:path');const base=process.env.RUNTIME_SOCKET_DIR&&process.env.RUNTIME_SOCKET_DIR.trim().length>0?process.env.RUNTIME_SOCKET_DIR:((process.env.XDG_RUNTIME_DIR&&process.env.XDG_RUNTIME_DIR.trim().length>0)?path.join(process.env.XDG_RUNTIME_DIR,'yui-ai'):'/tmp/yui-ai');const socket=process.env.AGENT_SOCKET_PATH||path.join(base,'agent-runtime.sock');const http=require('node:http');const req=http.request({socketPath:socket,path:'/health',method:'GET'},(res)=>process.exit(res.statusCode>=200&&res.statusCode<300?0:1));req.on('error',()=>process.exit(1));req.end();",
         ]
       interval: 10s
       timeout: 5s

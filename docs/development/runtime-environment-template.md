@@ -40,6 +40,6 @@
 |---|---|
 | Gateway 系（`apps/gateway/*`）はホスト実行 | OK |
 | Compose 対象は `agent` / `postgres` のみ | OK |
-| 内部 API 間通信は UDS 優先 | OK（`/tmp/sockets/*.sock`） |
+| 内部 API 間通信は UDS 優先 | OK（`${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/*.sock`） |
 | シークレット注入は `op run` を使用 | OK |
 | 平文シークレットをリポジトリに保存しない | OK |

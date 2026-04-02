@@ -104,10 +104,10 @@ Orchestrator は Bot 起動時に自動で動作し、以下を担当します:
 
 ```bash
 # Gateway API (UDS)
-curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
+curl --unix-socket "${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/gateway-api.sock" http://localhost/health
 
 # Agent Runtime (UDS)
-curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
+curl --unix-socket "${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/agent-runtime.sock" http://localhost/health
 
 # PostgreSQL
 docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres pg_isready
@@ -117,8 +117,8 @@ docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml exec postgres p
 
 | コンポーネント | エンドポイント | チェック内容 |
 |---------------|---------------|-------------|
-| Gateway API | `/tmp/sockets/gateway-api.sock + GET /health` | HTTP 200 応答 |
-| Agent Runtime | `/tmp/sockets/agent-runtime.sock + GET /health` | HTTP 200 応答 |
+| Gateway API | `${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/gateway-api.sock + GET /health` | HTTP 200 応答 |
+| Agent Runtime | `${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/agent-runtime.sock + GET /health` | HTTP 200 応答 |
 | PostgreSQL | `pg_isready` | 接続可能性 |
 
 ---

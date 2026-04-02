@@ -299,7 +299,8 @@ function resolveGatewayApiSocketPath(): string | null {
     return null;
   }
   const raw =
-    process.env.GATEWAY_API_SOCKET_PATH ?? "/tmp/sockets/gateway-api.sock";
+    process.env.GATEWAY_API_SOCKET_PATH ??
+    path.join(resolveDefaultRuntimeSocketDir(), "gateway-api.sock");
   if (!raw || raw.trim().length === 0) {
     return null;
   }
@@ -311,11 +312,24 @@ function resolveAgentRuntimeSocketPath(): string | undefined {
     return undefined;
   }
   const raw =
-    process.env.AGENT_RUNTIME_SOCKET_PATH ?? "/tmp/sockets/agent-runtime.sock";
+    process.env.AGENT_RUNTIME_SOCKET_PATH ??
+    path.join(resolveDefaultRuntimeSocketDir(), "agent-runtime.sock");
   if (!raw || raw.trim().length === 0) {
     return undefined;
   }
   return path.resolve(raw);
+}
+
+function resolveDefaultRuntimeSocketDir(): string {
+  const configured = process.env.RUNTIME_SOCKET_DIR;
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
+  const xdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
+  if (xdgRuntimeDir && xdgRuntimeDir.trim().length > 0) {
+    return path.resolve(xdgRuntimeDir, "yui-ai");
+  }
+  return path.resolve("/tmp/yui-ai");
 }
 
 function resolveInternalConnectionMode(): "tcp" | "uds" {

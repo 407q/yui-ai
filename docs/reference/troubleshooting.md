@@ -104,13 +104,14 @@ docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE}.yml logs
 **解決策**:
 ```bash
 # socket ディレクトリ/ファイル確認
-ls -la /tmp/sockets
+SOCKET_DIR="${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}"
+ls -la "$SOCKET_DIR"
 
 # Gateway health (UDS)
-curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
+curl --unix-socket "$SOCKET_DIR/gateway-api.sock" http://localhost/health
 
 # Agent health (UDS)
-curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
+curl --unix-socket "$SOCKET_DIR/agent-runtime.sock" http://localhost/health
 
 # 再起動で再作成
 yarn compose:down && yarn compose:up

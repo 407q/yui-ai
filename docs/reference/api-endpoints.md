@@ -13,7 +13,7 @@ Gateway API と Agent Runtime API のエンドポイント一覧です。
 
 ## Gateway API
 
-ベース URL: `http://127.0.0.1:3800`（UDS 利用時は `/tmp/sockets/gateway-api.sock`）
+ベース URL: `http://127.0.0.1:3800`（UDS 利用時は `${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/gateway-api.sock`）
 
 ### ヘルスチェック
 
@@ -331,7 +331,7 @@ MCP ツールを実行します。
 
 ## Agent Runtime API
 
-ベース URL: `http://127.0.0.1:3801`（UDS 利用時は `/tmp/sockets/agent-runtime.sock`）
+ベース URL: `http://127.0.0.1:3801`（UDS 利用時は `${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/agent-runtime.sock`）
 
 ### ヘルスチェック
 

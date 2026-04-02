@@ -117,11 +117,11 @@ cp .env.example .env
 UDS を使う既定構成では、以下を設定します。
 
 ```bash
-GATEWAY_API_SOCKET_PATH=/tmp/sockets/gateway-api.sock
-AGENT_RUNTIME_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
-AGENT_SOCKET_PATH=/tmp/sockets/agent-runtime.sock
-AGENT_GATEWAY_API_SOCKET_PATH=/tmp/sockets/gateway-api.sock
-RUNTIME_SOCKET_DIR=/tmp/sockets
+RUNTIME_SOCKET_DIR=${XDG_RUNTIME_DIR}/yui-ai
+GATEWAY_API_SOCKET_PATH=${RUNTIME_SOCKET_DIR}/gateway-api.sock
+AGENT_RUNTIME_SOCKET_PATH=${RUNTIME_SOCKET_DIR}/agent-runtime.sock
+AGENT_SOCKET_PATH=${RUNTIME_SOCKET_DIR}/agent-runtime.sock
+AGENT_GATEWAY_API_SOCKET_PATH=${RUNTIME_SOCKET_DIR}/gateway-api.sock
 INTERNAL_CONNECTION_MODE=tcp
 POSTGRES_SOCKET_DIR=/tmp/postgres-socket
 POSTGRES_SOCKET_PATH=/tmp/postgres-socket
@@ -202,10 +202,10 @@ yarn dev:local
 
 ```bash
 # Gateway API (UDS)
-curl --unix-socket /tmp/sockets/gateway-api.sock http://localhost/health
+curl --unix-socket "${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/gateway-api.sock" http://localhost/health
 
 # Agent Runtime (UDS)
-curl --unix-socket /tmp/sockets/agent-runtime.sock http://localhost/health
+curl --unix-socket "${RUNTIME_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yui-ai}/agent-runtime.sock" http://localhost/health
 ```
 
 ### スラッシュコマンド
