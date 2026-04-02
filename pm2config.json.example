@@ -1,0 +1,19 @@
+{
+  "name": "yui-ai",
+  "script": "dist/apps/gateway/api/bot.js",
+  "watch":false,
+  "autorestart":false,
+  "env":{
+    "INTERNAL_CONNECTION_MODE": "uds",
+    "DISCORD_BOT_TOKEN": "op://<vault>/<item>/token",
+    "COPILOT_GITHUB_TOKEN": "op://<vault>/<item>/copilot_github_token",
+    "BOT_TO_GATEWAY_INTERNAL_TOKEN": "op://<vault>/<item>/bot_to_gateway_internal_token",
+    "GATEWAY_TO_AGENT_INTERNAL_TOKEN": "op://<vault>/<item>/gateway_to_agent_internal_token",
+    "AGENT_TO_GATEWAY_INTERNAL_TOKEN": "op://<vault>/<item>/agent_to_gateway_internal_token",
+    "POSTGRES_DB": "op://<vault>/<item>/postgres_db",
+    "POSTGRES_USER": "op://<vault>/<item>/postgres_user",
+    "POSTGRES_PASSWORD": "op://<vault>/<item>/postgres_password",
+    "STATE_STORE_DSN": "op://<vault>/<item>/state_store_dsn",
+    "MEMORY_STORE_DSN": "op://<vault>/<item>/memory_store_dsn"
+  }
+}
