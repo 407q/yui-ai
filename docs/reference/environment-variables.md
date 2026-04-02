@@ -133,6 +133,7 @@ openssl rand -hex 32
 | `POSTGRES_PASSWORD` | 必須（compose） | - | Postgres パスワード |
 | `STATE_STORE_DSN` | 必須（compose/本番運用） | - | state 用 DSN |
 | `MEMORY_STORE_DSN` | 必須（compose/本番運用） | - | memory 用 DSN（同一 DSN 可） |
+| `MEMTOOL_DATABASE_URL` | 任意 | `MEMORY_STORE_DSN` / `STATE_STORE_DSN` / `DATABASE_URL` | memtool の DB 接続 DSN |
 | `POSTGRES_HOST` | 任意 | DSN準拠（host実行時は `postgres` を `127.0.0.1` へ自動補正） | DB host 上書き |
 | `POSTGRES_PORT` | 任意 | `55432`（compose 公開ポート）/ DSN準拠（DB上書き未指定時） | compose の host 公開ポート。Node 側では DB port 上書きにも使われ、host実行時 `postgres:5432` は `55432` に自動補正 |
 | `POSTGRES_SOCKET_DIR` | 任意 | `/tmp/postgres-socket` | UDS 用 socket ディレクトリ（主にホスト側） |

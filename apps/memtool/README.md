@@ -1,5 +1,25 @@
-# Vue 3 + TypeScript + Vite
+# Memory Tool (`apps/memtool`)
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+`memory_entries` / `memory_links` を一覧・詳細表示し、更新・削除を行う独立Webアプリです。
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## Local 起動
+
+```bash
+yarn mem:dev:local
+```
+
+## 1Password 経由起動（失敗時は local へフォールバック）
+
+```bash
+yarn mem:dev
+```
+
+## 利用する DB 接続環境変数
+
+優先順:
+1. `MEMTOOL_DATABASE_URL`
+2. `MEMORY_STORE_DSN`
+3. `STATE_STORE_DSN`
+4. `DATABASE_URL`
+
+`INTERNAL_CONNECTION_MODE=uds` 時は既存の DB socket 設定（`POSTGRES_SOCKET_*`, `DB_SOCKET_MOUNT_PATH`）を利用します。

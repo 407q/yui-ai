@@ -93,6 +93,9 @@ apps/
 | `yarn compose:down` | Docker Compose 停止 |
 | `yarn db:migrate` | マイグレーション実行 |
 | `yarn register:commands` | Discord コマンド登録 |
+| `yarn mem:dev` | Memory Tool を起動（1Password失敗時 local フォールバック） |
+| `yarn mem:build` | Memory Tool をビルド（同上） |
+| `yarn mem:start` | Memory Tool preview 起動（同上） |
 
 ## ライセンス
 
