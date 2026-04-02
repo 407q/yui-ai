@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, unlinkSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import {
@@ -84,6 +84,7 @@ export class RuntimeSupervisor {
     }
 
     try {
+      this.prepareRuntimeSocketArtifacts();
       this.log("boot: compose up");
       await this.runCommand(this.composeUpCommand());
       this.log("boot: db migrate");
@@ -660,6 +661,33 @@ export class RuntimeSupervisor {
     });
   }
 
+  private prepareRuntimeSocketArtifacts(): void {
+    if (resolveInternalConnectionMode() !== "uds") {
+      return;
+    }
+
+    const socketPaths = [
+      this.options.gatewayApiSocketPath,
+      this.options.agentRuntimeSocketPath,
+    ]
+      .filter((value): value is string => Boolean(value && value.trim().length > 0))
+      .map((value) => path.resolve(value));
+    if (socketPaths.length === 0) {
+      return;
+    }
+
+    this.log(`boot: prepare uds sockets (${socketPaths.length})`);
+    for (const socketPath of socketPaths) {
+      try {
+        ensureSocketPlaceholder(socketPath);
+      } catch (error) {
+        throw new Error(
+          `failed to prepare socket path: ${socketPath} (${toErrorMessage(error)})`,
+        );
+      }
+    }
+  }
+
   private log(message: string): void {
     if (!this.options.onLog) {
       return;
@@ -701,6 +729,25 @@ function prepareSocketPath(socketPath: string): void {
     return;
   }
   unlinkSync(socketPath);
+}
+
+function ensureSocketPlaceholder(socketPath: string): void {
+  mkdirSync(path.dirname(socketPath), {
+    recursive: true,
+    mode: 0o700,
+  });
+  if (existsSync(socketPath)) {
+    return;
+  }
+  const fd = openSync(socketPath, "a", 0o600);
+  closeSync(fd);
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 interface UnixSocketHealthRequestInput {
