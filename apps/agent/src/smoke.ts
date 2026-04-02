@@ -218,6 +218,64 @@ async function main(): Promise<void> {
         !("timeout_sec" in approvalRequest),
       "approval request payload should not use snake_case keys",
     );
+    assert(
+      approvalRequest !== undefined && approvalRequest.operation === "discord_channel_history",
+      "discord.channel_history approval should preserve operation code",
+    );
+
+    const taskIdWebSearchApproval = `task_${randomUUID()}`;
+    const runWebSearchApprovalResponse = await app.inject({
+      method: "POST",
+      url: "/v1/tasks/run",
+      payload: {
+        task_id: taskIdWebSearchApproval,
+        session_id: sessionId,
+        prompt: "P6 smoke web search approval request run",
+        runtime_policy: {
+          tool_routing: {
+            mode: "hybrid_container_builtin_gateway_host",
+            allow_external_mcp: false,
+          },
+        },
+        tool_calls: [
+          {
+            tool_name: "web.search",
+            execution_target: "gateway_adapter",
+            arguments: {
+              query: "smoke web search",
+            },
+            reason: "web search approval payload contract check",
+          },
+        ],
+      },
+    });
+    assertStatusCode(
+      runWebSearchApprovalResponse.statusCode,
+      202,
+      "tasks/run(web-search-approval)",
+    );
+
+    const completedWebSearchApproval = await waitUntilTerminal(app, taskIdWebSearchApproval);
+    assert(
+      completedWebSearchApproval.status === "completed",
+      "web search approval run should complete",
+    );
+    const webSearchApprovalRequest = mockMcp.approvalRequests.find(
+      (request) =>
+        request.taskId === taskIdWebSearchApproval && request.sessionId === sessionId,
+    );
+    assert(
+      Boolean(webSearchApprovalRequest),
+      "web.search approval request should be sent with taskId/sessionId",
+    );
+    assert(
+      webSearchApprovalRequest?.operation === "web_search",
+      "web.search approval request should preserve web_search operation code",
+    );
+    assert(
+      webSearchApprovalRequest?.path === "web_search:__configured_origin__",
+      "web.search approval request should target configured web search origin placeholder",
+    );
 
     const taskId3 = `task_${randomUUID()}`;
     const runResponse3 = await app.inject({
@@ -348,6 +406,20 @@ function createMockMcpServer(): MockMcpServerContext {
       const taskId = String(payload.task_id ?? "");
       const callId = String(payload.call_id ?? "");
       const toolName = String(payload.tool_name ?? "");
+
+      if (toolName === "web.search") {
+        writeJson(response, 200, {
+          task_id: taskId,
+          call_id: callId,
+          status: "error",
+          error_code: "approval_required",
+          message: "approval required",
+          details: {
+            scope: "https://ollama.com",
+          },
+        });
+        return;
+      }
 
       writeJson(response, 200, {
         task_id: taskId,

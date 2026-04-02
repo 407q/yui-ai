@@ -11,6 +11,8 @@ import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
 import type { ToolCallRequest, ToolCallResult } from "./types.js";
 
+const DEFAULT_OLLAMA_WEB_SEARCH_API_URL = "https://ollama.com/api/web_search";
+
 const containerFileReadSchema = z.object({
   path: z.string().min(1),
 });
@@ -48,6 +50,45 @@ const hostHttpRequestSchema = z.object({
     .default("GET"),
   headers: z.record(z.string(), z.string()).optional().default({}),
   body: z.string().optional(),
+  timeoutSec: z.number().int().min(1).max(600).optional(),
+});
+
+const webGetSchema = z.object({
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional().default({}),
+  timeoutSec: z.number().int().min(1).max(600).optional(),
+});
+
+const webPostSchema = z
+  .object({
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional().default({}),
+    body: z.string().optional(),
+    bodyBase64: z.string().optional(),
+    timeoutSec: z.number().int().min(1).max(600).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.body !== undefined && value.bodyBase64 !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bodyBase64"],
+        message: "Specify either body or bodyBase64, not both.",
+      });
+      return;
+    }
+    if (value.bodyBase64 !== undefined && !isValidBase64(value.bodyBase64)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bodyBase64"],
+        message: "bodyBase64 must be valid base64 text.",
+      });
+    }
+  });
+
+const webSearchSchema = z.object({
+  query: z.string().min(1),
+  maxResults: z.number().int().min(1).max(10).optional().default(5),
+  apiUrl: z.string().url().optional(),
   timeoutSec: z.number().int().min(1).max(600).optional(),
 });
 
@@ -107,6 +148,8 @@ export interface McpToolServiceOptions {
   hostCliAllowlist: string[];
   hostCliEnvAllowlist?: string[];
   memoryNamespaceValidationMode?: "warn" | "enforce";
+  ollamaApiKey?: string;
+  ollamaWebSearchApiUrl?: string;
   discordBotToken?: string;
   discordGuildId?: string;
   discordApiBaseUrl?: string;
@@ -380,11 +423,55 @@ export class McpToolService {
         const args = parseToolArgs(hostHttpRequestSchema, input.arguments);
         const url = new URL(args.url);
         await this.assertHostScopeAllowed(input.sessionId, "http_request", url.origin);
-        return this.hostAdapter.httpRequest({
+        const response = await this.hostAdapter.httpRequest({
           url: args.url,
           method: args.method,
           headers: args.headers,
           body: args.body,
+          timeoutSec: args.timeoutSec,
+        });
+        return {
+          url: response.url,
+          method: response.method,
+          status: response.status,
+          headers: response.headers,
+          body: response.body.toString("utf8"),
+        };
+      }
+      case "web.get": {
+        const args = parseToolArgs(webGetSchema, input.arguments);
+        return this.executeWebRequest({
+          sessionId: input.sessionId,
+          method: "GET",
+          url: args.url,
+          headers: args.headers,
+          timeoutSec: args.timeoutSec,
+        });
+      }
+      case "web.post": {
+        const args = parseToolArgs(webPostSchema, input.arguments);
+        const bodyBuffer =
+          args.bodyBase64 !== undefined
+            ? Buffer.from(args.bodyBase64, "base64")
+            : args.body !== undefined
+              ? Buffer.from(args.body, "utf8")
+              : undefined;
+        return this.executeWebRequest({
+          sessionId: input.sessionId,
+          method: "POST",
+          url: args.url,
+          headers: args.headers,
+          body: bodyBuffer,
+          timeoutSec: args.timeoutSec,
+        });
+      }
+      case "web.search": {
+        const args = parseToolArgs(webSearchSchema, input.arguments);
+        return this.executeWebSearch({
+          sessionId: input.sessionId,
+          query: args.query,
+          maxResults: args.maxResults,
+          apiUrl: args.apiUrl,
           timeoutSec: args.timeoutSec,
         });
       }
@@ -1011,11 +1098,180 @@ export class McpToolService {
     return base.endsWith("/") ? base.slice(0, -1) : base;
   }
 
+  private async executeWebRequest(input: {
+    sessionId: string;
+    method: "GET" | "POST";
+    url: string;
+    headers?: Record<string, string>;
+    body?: Buffer;
+    timeoutSec?: number;
+  }): Promise<Record<string, unknown>> {
+    const url = new URL(input.url);
+    await this.assertHostScopeAllowed(input.sessionId, "http_request", url.origin);
+    const response = await this.hostAdapter.httpRequest({
+      url: input.url,
+      method: input.method,
+      headers: input.headers,
+      body: input.body,
+      timeoutSec: input.timeoutSec,
+    });
+    const contentType = response.headers["content-type"] ?? null;
+    if (isTextLikeContentType(contentType)) {
+      return {
+        url: response.url,
+        method: response.method,
+        status: response.status,
+        headers: response.headers,
+        content_type: contentType,
+        body: response.body.toString("utf8"),
+      };
+    }
+
+    const ext = resolveExtensionFromContentType(contentType);
+    const relativeTargetPath = `artifacts/web/${new Date().toISOString().replace(/[:.]/g, "-")}_${randomUUID()}${ext}`;
+    const saved = await this.containerAdapter.fileWriteBinary(
+      input.sessionId,
+      relativeTargetPath,
+      response.body,
+    );
+    return {
+      url: response.url,
+      method: response.method,
+      status: response.status,
+      headers: response.headers,
+      content_type: contentType,
+      body_saved: true,
+      body_bytes: saved.bytes,
+      body_path: saved.path,
+    };
+  }
+
+  private async executeWebSearch(input: {
+    sessionId: string;
+    query: string;
+    maxResults: number;
+    apiUrl?: string;
+    timeoutSec?: number;
+  }): Promise<Record<string, unknown>> {
+    const apiUrl = this.resolveOllamaWebSearchApiUrl(input.apiUrl);
+    const endpoint = new URL(apiUrl);
+    await this.assertHostScopeAllowed(input.sessionId, "web_search", endpoint.origin);
+    const apiKey = this.options.ollamaApiKey?.trim();
+    if (!apiKey) {
+      throw new McpToolError(
+        "tool_execution_failed",
+        "OLLAMA_API_KEY is required for web.search.",
+      );
+    }
+    const body = Buffer.from(
+      JSON.stringify({
+        query: input.query,
+        max_results: input.maxResults,
+      }),
+      "utf8",
+    );
+    const response = await this.hostAdapter.httpRequest({
+      url: apiUrl,
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body,
+      timeoutSec: input.timeoutSec,
+    });
+    const contentType = response.headers["content-type"] ?? null;
+    if (!isJsonContentType(contentType)) {
+      throw new McpToolError(
+        "tool_execution_failed",
+        "web.search API returned non-JSON response.",
+        {
+          status: response.status,
+          content_type: contentType,
+          response: truncate(response.body.toString("utf8"), 400),
+        },
+      );
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(response.body.toString("utf8"));
+    } catch {
+      throw new McpToolError(
+        "tool_execution_failed",
+        "web.search API returned invalid JSON.",
+        {
+          status: response.status,
+        },
+      );
+    }
+    if (response.status >= 400) {
+      throw new McpToolError(
+        "tool_execution_failed",
+        "web.search API request failed.",
+        {
+          status: response.status,
+          response: payload,
+        },
+      );
+    }
+    const resultPayload = asRecord(payload);
+    const rawResults = Array.isArray(resultPayload?.results)
+      ? resultPayload.results
+      : [];
+    const results = rawResults
+      .map((entry) => {
+        const record = asRecord(entry);
+        const title = readStringOrNull(record?.title);
+        const url = readStringOrNull(record?.url);
+        const content = readStringOrNull(record?.content);
+        if (!title && !url && !content) {
+          return null;
+        }
+        return {
+          title,
+          url,
+          content,
+        };
+      })
+      .filter(
+        (
+          entry,
+        ): entry is { title: string | null; url: string | null; content: string | null } =>
+          entry !== null,
+      );
+
+    return {
+      query: input.query,
+      max_results: input.maxResults,
+      api_url: apiUrl,
+      status: response.status,
+      results,
+    };
+  }
+
+  private resolveOllamaWebSearchApiUrl(inputApiUrl: string | undefined): string {
+    const configured = inputApiUrl?.trim() || this.options.ollamaWebSearchApiUrl?.trim();
+    const base = configured && configured.length > 0 ? configured : DEFAULT_OLLAMA_WEB_SEARCH_API_URL;
+    return base;
+  }
+
   private isPermissionMatch(
     operation: string,
     grantedValue: string,
     scopeValue: string,
   ): boolean {
+    if (operation === "web_search") {
+      if (grantedValue === scopeValue) {
+        return true;
+      }
+      if (grantedValue === "web_search:__configured_origin__") {
+        const configuredOrigin = safeParseUrlOrigin(
+          this.resolveOllamaWebSearchApiUrl(undefined),
+        );
+        return configuredOrigin !== null && configuredOrigin === scopeValue;
+      }
+      return false;
+    }
     if (
       operation === "discord_channel_history" &&
       grantedValue === "discord_channel:__session_channel__"
@@ -1188,6 +1444,79 @@ function resolveMimeTypeFromPath(filePath: string): string {
       return "application/zip";
     default:
       return "application/octet-stream";
+  }
+}
+
+function isTextLikeContentType(contentType: string | null): boolean {
+  if (!contentType) {
+    return true;
+  }
+  const normalized = contentType.toLowerCase();
+  if (normalized.startsWith("text/")) {
+    return true;
+  }
+  return (
+    normalized.includes("json") ||
+    normalized.includes("xml") ||
+    normalized.includes("yaml") ||
+    normalized.includes("csv") ||
+    normalized.includes("javascript") ||
+    normalized.includes("x-www-form-urlencoded")
+  );
+}
+
+function isJsonContentType(contentType: string | null): boolean {
+  if (!contentType) {
+    return false;
+  }
+  return contentType.toLowerCase().includes("json");
+}
+
+function resolveExtensionFromContentType(contentType: string | null): string {
+  if (!contentType) {
+    return ".bin";
+  }
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes("png")) {
+    return ".png";
+  }
+  if (normalized.includes("jpeg") || normalized.includes("jpg")) {
+    return ".jpg";
+  }
+  if (normalized.includes("gif")) {
+    return ".gif";
+  }
+  if (normalized.includes("webp")) {
+    return ".webp";
+  }
+  if (normalized.includes("pdf")) {
+    return ".pdf";
+  }
+  if (normalized.includes("zip")) {
+    return ".zip";
+  }
+  if (normalized.includes("json")) {
+    return ".json";
+  }
+  if (normalized.includes("plain")) {
+    return ".txt";
+  }
+  return ".bin";
+}
+
+function isValidBase64(value: string): boolean {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized) && normalized.length % 4 === 0;
+}
+
+function safeParseUrlOrigin(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).origin;
+  } catch {
+    return null;
   }
 }
 

@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import http from "node:http";
 import type {
   AgentRuntimeClient,
   AgentRuntimeRunTaskInput,
@@ -21,6 +22,29 @@ async function main(): Promise<void> {
 
   const pool = createGatewayPool();
   const agentRuntimeClient = createMockAgentRuntimeClient();
+  const userId = `user_${randomUUID()}`;
+  const threadId = `thread_${randomUUID()}`;
+  const channelId = `channel_${randomUUID()}`;
+  const hostFilePath = path.resolve(
+    process.cwd(),
+    ".tmp",
+    `host-smoke-${randomUUID()}.txt`,
+  );
+  const hostCliSecret = `secret_${randomUUID()}`;
+  process.env.SMOKE_SECRET_HOST_CLI = hostCliSecret;
+  process.env.OLLAMA_API_KEY = "smoke-ollama-key";
+  process.env.OLLAMA_WEB_SEARCH_API_URL = "http://127.0.0.1:0/api/web_search";
+  const webFixtureServer = createWebFixtureServer();
+  await new Promise<void>((resolve, reject) => {
+    webFixtureServer.listen(0, "127.0.0.1", () => resolve());
+    webFixtureServer.once("error", reject);
+  });
+  const webFixtureAddress = webFixtureServer.address();
+  if (!webFixtureAddress || typeof webFixtureAddress === "string") {
+    throw new Error("[api:smoke] failed to resolve web fixture server address");
+  }
+  const webFixtureBaseUrl = `http://127.0.0.1:${webFixtureAddress.port}`;
+  process.env.OLLAMA_WEB_SEARCH_API_URL = `${webFixtureBaseUrl}/api/web_search`;
   const app = buildGatewayApiServer({
     logger: false,
     pool,
@@ -34,17 +58,6 @@ async function main(): Promise<void> {
     hostCliEnvAllowlist: [],
   });
   const reporter = new SmokeReporter();
-
-  const userId = `user_${randomUUID()}`;
-  const threadId = `thread_${randomUUID()}`;
-  const channelId = `channel_${randomUUID()}`;
-  const hostFilePath = path.resolve(
-    process.cwd(),
-    ".tmp",
-    `host-smoke-${randomUUID()}.txt`,
-  );
-  const hostCliSecret = `secret_${randomUUID()}`;
-  process.env.SMOKE_SECRET_HOST_CLI = hostCliSecret;
   let sessionId: string | null = null;
   let dbMigrated = false;
 
@@ -694,6 +707,252 @@ async function main(): Promise<void> {
     assert(
       hostCliParsed.hasPath === true,
       "host.cli_exec should preserve PATH via default env allowlist",
+    );
+
+    const webGetTextResult = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.get",
+      execution_target: "gateway_adapter",
+      arguments: {
+        url: `${webFixtureBaseUrl}/text`,
+      },
+      reason: "web get requires approval",
+    });
+    assert(
+      webGetTextResult.status === "error" &&
+        webGetTextResult.error_code === "approval_required",
+      "web.get should require approval before execution",
+    );
+    const webGetScope = (webGetTextResult as McpResultError).details?.scope;
+    assert(
+      webGetScope === webFixtureBaseUrl,
+      "web.get approval_required should include origin scope",
+    );
+
+    const webGetApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "http_request",
+        path: webFixtureBaseUrl,
+      },
+    });
+    const webGetApprovalRequestBody = parseJsonBody(
+      webGetApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      webGetApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(web-get)",
+    );
+    assert(
+      webGetApprovalRequestBody.approval.status === "requested",
+      "web get approval should start as requested",
+    );
+    const webGetApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${webGetApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      webGetApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(web-get)",
+    );
+
+    const webGetTextAfterApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.get",
+      execution_target: "gateway_adapter",
+      arguments: {
+        url: `${webFixtureBaseUrl}/text`,
+      },
+      reason: "web get after approval",
+    });
+    assert(webGetTextAfterApproval.status === "ok", "web.get should succeed after approval");
+    const webGetTextPayload = webGetTextAfterApproval.result as {
+      status: number;
+      body: string;
+      body_saved?: boolean;
+    };
+    assert(webGetTextPayload.status === 200, "web.get text should return 200");
+    assert(webGetTextPayload.body === "web text fixture", "web.get should return text body");
+    assert(webGetTextPayload.body_saved !== true, "web.get text should not be file-saved");
+
+    const webGetBinaryAfterApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.get",
+      execution_target: "gateway_adapter",
+      arguments: {
+        url: `${webFixtureBaseUrl}/binary`,
+      },
+      reason: "web get binary after approval",
+    });
+    assert(
+      webGetBinaryAfterApproval.status === "ok",
+      "web.get binary should succeed after approval",
+    );
+    const webGetBinaryPayload = webGetBinaryAfterApproval.result as {
+      status: number;
+      body_saved: boolean;
+      body_path: string;
+      body_bytes: number;
+    };
+    assert(webGetBinaryPayload.status === 200, "web.get binary should return 200");
+    assert(webGetBinaryPayload.body_saved === true, "web.get binary should be saved to file");
+    assert(
+      typeof webGetBinaryPayload.body_path === "string" &&
+        webGetBinaryPayload.body_path.includes("/artifacts/web/"),
+      "web.get binary should return saved body path",
+    );
+    const webGetBinaryDeliver = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "container.file_deliver",
+      execution_target: "gateway_adapter",
+      arguments: {
+        path: webGetBinaryPayload.body_path,
+        maxBytes: 64,
+      },
+      reason: "deliver saved binary fixture",
+    });
+    assert(
+      webGetBinaryDeliver.status === "ok",
+      "saved binary should be deliverable as base64",
+    );
+    const webGetBinaryDeliveredPayload = webGetBinaryDeliver.result as {
+      bytes: number;
+      content_base64: string;
+    };
+    assert(
+      webGetBinaryDeliveredPayload.bytes === webGetBinaryPayload.body_bytes,
+      "saved binary delivered bytes should match response bytes",
+    );
+    assert(
+      Buffer.compare(
+        Buffer.from(webGetBinaryDeliveredPayload.content_base64, "base64"),
+        Buffer.from([0x00, 0xff, 0x01, 0xfe]),
+      ) === 0,
+      "saved binary content should match fixture bytes",
+    );
+
+    const webPostAfterApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.post",
+      execution_target: "gateway_adapter",
+      arguments: {
+        url: `${webFixtureBaseUrl}/echo`,
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ hello: "world" }),
+      },
+      reason: "web post after approval",
+    });
+    assert(webPostAfterApproval.status === "ok", "web.post should succeed");
+    const webPostPayload = webPostAfterApproval.result as {
+      status: number;
+      body: string;
+    };
+    assert(webPostPayload.status === 200, "web.post should return 200");
+    const webPostBody = JSON.parse(webPostPayload.body) as { body?: string };
+    assert(
+      typeof webPostBody.body === "string" &&
+        webPostBody.body.includes('"hello":"world"'),
+      "web.post should return echoed body",
+    );
+
+    const webSearchBeforeApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.search",
+      execution_target: "gateway_adapter",
+      arguments: {
+        query: "what is yui ai",
+      },
+      reason: "web search requires approval",
+    });
+    assert(
+      webSearchBeforeApproval.status === "error" &&
+        webSearchBeforeApproval.error_code === "approval_required",
+      "web.search should require approval before execution",
+    );
+    const webSearchScope = (webSearchBeforeApproval as McpResultError).details?.scope;
+    assert(
+      webSearchScope === webFixtureBaseUrl,
+      "web.search approval_required should include web search origin scope",
+    );
+
+    const webSearchApprovalRequestResponse = await app.inject({
+      method: "POST",
+      url: `/v1/threads/${threadId}/approvals/request`,
+      payload: {
+        userId,
+        operation: "web_search",
+        path: webFixtureBaseUrl,
+      },
+    });
+    const webSearchApprovalRequestBody = parseJsonBody(
+      webSearchApprovalRequestResponse.body,
+    ) as {
+      approval: { approvalId: string; status: string };
+    };
+    assertStatusCode(
+      webSearchApprovalRequestResponse.statusCode,
+      200,
+      "threads/approvals/request(web-search)",
+    );
+    const webSearchApprovalRespondResponse = await app.inject({
+      method: "POST",
+      url: `/v1/approvals/${webSearchApprovalRequestBody.approval.approvalId}/respond`,
+      payload: {
+        userId,
+        decision: "approved",
+      },
+    });
+    assertStatusCode(
+      webSearchApprovalRespondResponse.statusCode,
+      200,
+      "approvals/respond(web-search)",
+    );
+
+    const webSearchAfterApproval = await callMcpTool(app, reporter, {
+      task_id: startBody.taskId,
+      session_id: startBody.session.sessionId,
+      call_id: `call_${randomUUID()}`,
+      tool_name: "web.search",
+      execution_target: "gateway_adapter",
+      arguments: {
+        query: "what is yui ai",
+        maxResults: 2,
+      },
+      reason: "web search after approval",
+    });
+    assert(webSearchAfterApproval.status === "ok", "web.search should succeed");
+    const webSearchPayload = webSearchAfterApproval.result as {
+      status: number;
+      results: Array<{ title: string; url: string; content: string }>;
+    };
+    assert(webSearchPayload.status === 200, "web.search should return 200");
+    assert(
+      Array.isArray(webSearchPayload.results) && webSearchPayload.results.length === 2,
+      "web.search should return limited results",
     );
 
     const memorySourceUpsertResult = await callMcpTool(app, reporter, {
@@ -1775,6 +2034,15 @@ async function main(): Promise<void> {
     }
     await fs.rm(containerSessionRoot, { recursive: true, force: true });
     await fs.rm(hostFilePath, { force: true });
+    await new Promise<void>((resolve, reject) => {
+      webFixtureServer.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
     await app.close();
     await pool.end();
   }
@@ -2226,6 +2494,77 @@ function truncateText(input: string, maxLength: number): string {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+function createWebFixtureServer(): http.Server {
+  return http.createServer((request, response) => {
+    const url = request.url ?? "/";
+    if (request.method === "GET" && url === "/text") {
+      response.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+      });
+      response.end("web text fixture");
+      return;
+    }
+    if (request.method === "GET" && url === "/binary") {
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+      });
+      response.end(Buffer.from([0x00, 0xff, 0x01, 0xfe]));
+      return;
+    }
+    if (request.method === "POST" && url === "/echo") {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        response.writeHead(200, {
+          "content-type": "application/json",
+        });
+        response.end(
+          JSON.stringify({
+            method: "POST",
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      });
+      return;
+    }
+    if (request.method === "POST" && url === "/api/web_search") {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const auth = request.headers.authorization;
+        if (auth !== "Bearer smoke-ollama-key") {
+          response.writeHead(401, {
+            "content-type": "application/json",
+          });
+          response.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const payload = raw ? (JSON.parse(raw) as { query?: string; max_results?: number }) : {};
+        const maxResults =
+          typeof payload.max_results === "number" && Number.isFinite(payload.max_results)
+            ? Math.max(1, Math.min(10, Math.trunc(payload.max_results)))
+            : 5;
+        const query = typeof payload.query === "string" ? payload.query : "";
+        const results = Array.from({ length: maxResults }, (_, index) => ({
+          title: `result-${index + 1}`,
+          url: `https://example.invalid/search/${index + 1}`,
+          content: `snippet for ${query} #${index + 1}`,
+        }));
+        response.writeHead(200, {
+          "content-type": "application/json",
+        });
+        response.end(JSON.stringify({ results }));
+      });
+      return;
+    }
+    response.writeHead(404, {
+      "content-type": "application/json",
+    });
+    response.end(JSON.stringify({ error: "not_found" }));
   });
 }
 

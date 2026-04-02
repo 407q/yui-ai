@@ -283,6 +283,39 @@ export class ContainerToolAdapter {
     };
   }
 
+  private async writeFileBase64InAgentContainer(
+    sessionId: string,
+    requestedPath: string,
+    contentBase64: string,
+  ): Promise<{
+    path: string;
+    bytes: number;
+  }> {
+    const containerPath = this.resolveContainerPath(sessionId, requestedPath);
+    if (!containerPath) {
+      return Promise.reject(new Error("container_path_out_of_scope"));
+    }
+    const script = [
+      "set -eu",
+      `mkdir -p ${shellQuote(path.posix.dirname(containerPath))}`,
+      `base64 -d > ${shellQuote(containerPath)}`,
+    ].join("\n");
+    const executed = await execCommand({
+      command: "docker",
+      args: ["exec", "-i", this.options.containerName, "sh", "-lc", script],
+      cwd: this.options.dockerProjectRoot,
+      timeoutSec: this.options.dockerCliTimeoutSec,
+      stdin: contentBase64,
+    });
+    if (executed.exitCode !== 0) {
+      throw new Error(executed.stderr || executed.stdout || "container_file_write_failed");
+    }
+    return {
+      path: containerPath,
+      bytes: Buffer.from(contentBase64, "base64").byteLength,
+    };
+  }
+
   private async deleteFileInAgentContainer(
     sessionId: string,
     requestedPath: string,
@@ -459,6 +492,34 @@ export class ContainerToolAdapter {
     return {
       path: scopedPath,
       bytes: Buffer.byteLength(content, "utf8"),
+    };
+  }
+
+  async fileWriteBinary(
+    sessionId: string,
+    requestedPath: string,
+    content: Buffer,
+  ): Promise<{
+    path: string;
+    bytes: number;
+  }> {
+    if (this.isDockerExecMode()) {
+      return this.writeFileBase64InAgentContainer(
+        sessionId,
+        requestedPath,
+        content.toString("base64"),
+      );
+    }
+    const scopedPath = this.resolveScopedPath(sessionId, requestedPath);
+    if (!scopedPath) {
+      return Promise.reject(new Error("container_path_out_of_scope"));
+    }
+
+    await fs.mkdir(path.dirname(scopedPath), { recursive: true });
+    await fs.writeFile(scopedPath, content);
+    return {
+      path: scopedPath,
+      bytes: content.byteLength,
     };
   }
 

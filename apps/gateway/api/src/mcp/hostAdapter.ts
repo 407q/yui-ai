@@ -19,8 +19,16 @@ export interface HostHttpRequestInput {
   url: string;
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   headers?: Record<string, string>;
-  body?: string;
+  body?: string | Buffer;
   timeoutSec?: number;
+}
+
+export interface HostHttpResponse {
+  url: string;
+  method: string;
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
 }
 
 export class HostToolAdapter {
@@ -96,27 +104,27 @@ export class HostToolAdapter {
     };
   }
 
-  async httpRequest(input: HostHttpRequestInput): Promise<{
-    url: string;
-    method: string;
-    status: number;
-    headers: Record<string, string>;
-    body: string;
-  }> {
+  async httpRequest(input: HostHttpRequestInput): Promise<HostHttpResponse> {
     const timeoutMs = (input.timeoutSec ?? this.options.httpTimeoutSec) * 1000;
     const controller = new AbortController();
     const timeout = setTimeout(() => {
       controller.abort();
     }, timeoutMs);
+    const requestBody: BodyInit | undefined =
+      typeof input.body === "string"
+        ? input.body
+        : input.body
+          ? new Uint8Array(input.body)
+          : undefined;
 
     try {
       const response = await fetch(input.url, {
         method: input.method,
         headers: input.headers,
-        body: input.body,
+        body: requestBody,
         signal: controller.signal,
       });
-      const body = await response.text();
+      const body = Buffer.from(await response.arrayBuffer());
       const headers: Record<string, string> = {};
       for (const [key, value] of response.headers.entries()) {
         headers[key] = value;

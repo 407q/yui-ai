@@ -217,7 +217,7 @@ Agent コンテナ内のファイル操作を行います。
 
 ### `host.http_request`
 
-ホストから HTTP リクエストを送信します。
+ホストから HTTP リクエストを送信します（互換用）。
 
 **引数:**
 | 名前 | 型 | 必須 | 説明 |
@@ -227,6 +227,98 @@ Agent コンテナ内のファイル操作を行います。
 | `headers` | object | - | ヘッダー |
 | `body` | string | - | リクエストボディ |
 | `timeoutSec` | number | - | タイムアウト（秒） |
+
+---
+
+## Web ツール (`web.*`)
+
+Web アクセス系の専用ツールです。  
+**承認**: **必要**
+
+### `web.get`
+
+HTTP GET を実行します。  
+テキストレスポンスは `body` として返却され、非テキストレスポンスはセッションフォルダへ保存されます。
+
+**引数:**
+| 名前 | 型 | 必須 | 説明 |
+|-----|---|------|------|
+| `url` | string | ✅ | URL |
+| `headers` | object | - | ヘッダー |
+| `timeoutSec` | number | - | タイムアウト（秒） |
+
+**レスポンス（テキスト）:**
+```json
+{
+  "url": "https://example.com",
+  "method": "GET",
+  "status": 200,
+  "headers": { "content-type": "text/html; charset=utf-8" },
+  "content_type": "text/html; charset=utf-8",
+  "body": "<html>...</html>"
+}
+```
+
+**レスポンス（非テキスト）:**
+```json
+{
+  "url": "https://example.com/logo.png",
+  "method": "GET",
+  "status": 200,
+  "headers": { "content-type": "image/png" },
+  "content_type": "image/png",
+  "body_saved": true,
+  "body_bytes": 12345,
+  "body_path": "/agent/session/<session_id>/artifacts/web/..."
+}
+```
+
+---
+
+### `web.post`
+
+HTTP POST を実行します。  
+`body`（テキスト）または `bodyBase64`（バイナリ）を利用できます（同時指定不可）。
+
+**引数:**
+| 名前 | 型 | 必須 | 説明 |
+|-----|---|------|------|
+| `url` | string | ✅ | URL |
+| `headers` | object | - | ヘッダー |
+| `body` | string | - | テキストボディ |
+| `bodyBase64` | string | - | Base64 ボディ |
+| `timeoutSec` | number | - | タイムアウト（秒） |
+
+---
+
+### `web.search`
+
+Ollama Web Search API を使って検索を実行します。
+
+**引数:**
+| 名前 | 型 | 必須 | 説明 |
+|-----|---|------|------|
+| `query` | string | ✅ | 検索クエリ |
+| `maxResults` | number | - | 最大件数（デフォルト: `5`, 最大: `10`） |
+| `apiUrl` | string | - | API URL 上書き（未指定時は `OLLAMA_WEB_SEARCH_API_URL`） |
+| `timeoutSec` | number | - | タイムアウト（秒） |
+
+**レスポンス:**
+```json
+{
+  "query": "what is ollama",
+  "max_results": 3,
+  "api_url": "https://ollama.com/api/web_search",
+  "status": 200,
+  "results": [
+    {
+      "title": "Ollama",
+      "url": "https://ollama.com/",
+      "content": "Cloud models are now available..."
+    }
+  ]
+}
+```
 
 ---
 
@@ -350,6 +442,8 @@ Discord API を呼び出します。
 | カテゴリ | ツール | 承認スコープ |
 |---------|-------|-------------|
 | `host.*` | 全て | パス / コマンド / URL origin |
+| `web.get` / `web.post` | `web.get`, `web.post` | URL origin |
+| `web.search` | `web.search` | 検索 API origin |
 | `discord.*` | 全て | チャンネル ID / ギルド ID |
 
 ### 承認の付与

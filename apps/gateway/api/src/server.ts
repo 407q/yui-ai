@@ -35,6 +35,8 @@ interface BuildGatewayApiServerOptions {
   hostCliAllowlist?: string[];
   hostCliEnvAllowlist?: string[];
   memoryNamespaceValidationMode?: "warn" | "enforce";
+  ollamaApiKey?: string;
+  ollamaWebSearchApiUrl?: string;
   agentRuntimeClient?: AgentRuntimeClient;
   agentRuntimeBaseUrl?: string;
   agentRuntimeTimeoutSec?: number;
@@ -102,6 +104,9 @@ export function buildGatewayApiServer(
     memoryNamespaceValidationMode:
       options.memoryNamespaceValidationMode ??
       resolveMemoryNamespaceValidationMode(),
+    ollamaApiKey: options.ollamaApiKey ?? process.env.OLLAMA_API_KEY,
+    ollamaWebSearchApiUrl:
+      options.ollamaWebSearchApiUrl ?? resolveOllamaWebSearchApiUrl(),
     discordBotToken: process.env.DISCORD_BOT_TOKEN,
     discordGuildId: process.env.DISCORD_GUILD_ID,
     discordApiBaseUrl: process.env.DISCORD_API_BASE_URL,
@@ -271,6 +276,14 @@ function resolveMemoryNamespaceValidationMode(): "warn" | "enforce" {
     return raw;
   }
   return "warn";
+}
+
+function resolveOllamaWebSearchApiUrl(): string | undefined {
+  const raw = process.env.OLLAMA_WEB_SEARCH_API_URL;
+  if (!raw || raw.trim().length === 0) {
+    return undefined;
+  }
+  return raw.trim();
 }
 
 function resolveAgentRuntimeBaseUrl(): string {

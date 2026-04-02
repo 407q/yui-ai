@@ -44,6 +44,7 @@ type ApprovalOperationCode =
   | "list"
   | "exec"
   | "http_request"
+  | "web_search"
   | "discord_channel_history"
   | "discord_channel_list"
   | "unknown";
@@ -779,7 +780,12 @@ function resolveToolEmoji(toolName: string): string {
   if (toolName.endsWith("cli_exec")) {
     return "💻";
   }
-  if (toolName === "host.http_request") {
+  if (
+    toolName === "host.http_request" ||
+    toolName === "web.get" ||
+    toolName === "web.post" ||
+    toolName === "web.search"
+  ) {
     return "🌐";
   }
   if (toolName.startsWith("discord.")) {
@@ -828,8 +834,11 @@ function resolveToolDetail(
   if (toolName.endsWith("cli_exec")) {
     return readString(args, "command");
   }
-  if (toolName === "host.http_request") {
+  if (toolName === "host.http_request" || toolName === "web.get" || toolName === "web.post") {
     return readString(args, "url");
+  }
+  if (toolName === "web.search") {
+    return readString(args, "query");
   }
   if (toolName === "discord.channel_history") {
     return readString(args, "channelId") ?? "session channel";
@@ -978,17 +987,28 @@ function resolveToolTargetLine(input: {
   ) {
     return formatCommandTarget(input.args);
   }
-  if (input.toolName === "host.http_request") {
+  if (
+    input.toolName === "host.http_request" ||
+    input.toolName === "web.get" ||
+    input.toolName === "web.post"
+  ) {
     const method =
       (readString(input.args, "method") ??
         readString(input.resultPayload, "method") ??
-        "GET").toUpperCase();
+        (input.toolName === "web.post" ? "POST" : "GET")).toUpperCase();
     const rawUrl =
       readString(input.args, "url") ??
       readString(input.resultPayload, "url") ??
       scope;
     const urlText = rawUrl ? shortenUrlForDisplay(rawUrl) : "(url不明)";
     return `${method} ${urlText}`;
+  }
+  if (input.toolName === "web.search") {
+    const query =
+      readString(input.args, "query") ?? readString(input.resultPayload, "query");
+    return query
+      ? truncateOperationLogValue(`search: ${query}`, 120)
+      : "web.search";
   }
   if (input.toolName === "discord.channel_history") {
     const scopeChannelId = parseScopeSuffix(scope, "discord_channel:");
@@ -1182,6 +1202,20 @@ function resolveToolSuccessLine(
     const status = readNumber(resultPayload, "status");
     return status !== null ? `HTTP ${status}` : "HTTP リクエスト完了";
   }
+  if (toolName === "web.get" || toolName === "web.post") {
+    const status = readNumber(resultPayload, "status");
+    const bodySaved = readBoolean(resultPayload, "body_saved");
+    if (bodySaved) {
+      const bytes = formatBytesHuman(readNumber(resultPayload, "body_bytes"));
+      return `${status !== null ? `HTTP ${status}` : "HTTP 応答"} / 非テキスト保存 ${bytes}`;
+    }
+    return status !== null ? `HTTP ${status}` : "HTTP リクエスト完了";
+  }
+  if (toolName === "web.search") {
+    const results = readArray(resultPayload, "results");
+    const count = results?.length ?? 0;
+    return `${count}件取得`;
+  }
   if (toolName === "memory.search") {
     const foundEntries = readArray(resultPayload, "entries");
     const keys = readNamedEntries(foundEntries);
@@ -1306,13 +1340,25 @@ function resolveToolErrorLine(input: {
   if (input.toolName === "container.file_deliver") {
     return `${input.targetLine} の返却に失敗しました（${reason}）`;
   }
-  if (input.toolName === "host.http_request") {
+  if (
+    input.toolName === "host.http_request" ||
+    input.toolName === "web.get" ||
+    input.toolName === "web.post"
+  ) {
     const statusCode =
       readNumber(input.detailsPayload, "status") ?? readNumber(input.resultPayload, "status");
     if (statusCode !== null) {
       return `${input.targetLine} で失敗しました（HTTP ${statusCode} / ${reason}）`;
     }
     return `${input.targetLine} で失敗しました（${reason}）`;
+  }
+  if (input.toolName === "web.search") {
+    const statusCode =
+      readNumber(input.detailsPayload, "status") ?? readNumber(input.resultPayload, "status");
+    if (statusCode !== null) {
+      return `${input.targetLine} に失敗しました（HTTP ${statusCode} / ${reason}）`;
+    }
+    return `${input.targetLine} に失敗しました（${reason}）`;
   }
   if (input.toolName === "memory.get") {
     return `${input.targetLine} の取得に失敗しました（${reason}）`;
@@ -2788,6 +2834,8 @@ function resolveApprovalTargetLine(request: {
       return `$ ${rawTarget}`;
     case "http_request":
       return `HTTP リクエスト: ${shortenUrlForDisplay(request.target)}`;
+    case "web_search":
+      return `Web検索: ${shortenUrlForDisplay(request.target)}`;
     case "discord_channel_history": {
       const channelId = parseScopeSuffix(request.target, "discord_channel:");
       if (channelId) {
@@ -2948,6 +2996,7 @@ function toApprovalOperationCode(value: string | null): ApprovalOperationCode {
     case "list":
     case "exec":
     case "http_request":
+    case "web_search":
     case "discord_channel_history":
     case "discord_channel_list":
       return value;

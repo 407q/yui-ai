@@ -173,6 +173,45 @@ const hostHttpRequestSchema = z.object({
   timeoutSec: z.number().int().min(1).max(600).optional(),
 });
 
+const webGetSchema = z.object({
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional().default({}),
+  timeoutSec: z.number().int().min(1).max(600).optional(),
+});
+
+const webPostSchema = z
+  .object({
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional().default({}),
+    body: z.string().optional(),
+    bodyBase64: z.string().optional(),
+    timeoutSec: z.number().int().min(1).max(600).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.body !== undefined && value.bodyBase64 !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bodyBase64"],
+        message: "Specify either body or bodyBase64, not both.",
+      });
+      return;
+    }
+    if (value.bodyBase64 !== undefined && !isValidBase64(value.bodyBase64)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bodyBase64"],
+        message: "bodyBase64 must be valid base64 text.",
+      });
+    }
+  });
+
+const webSearchSchema = z.object({
+  query: z.string().min(1),
+  maxResults: z.number().int().min(1).max(10).optional().default(5),
+  apiUrl: z.string().url().optional(),
+  timeoutSec: z.number().int().min(1).max(600).optional(),
+});
+
 const memoryUpsertSchema = z.object({
   namespace: z.string().min(1),
   key: z.string().min(1),
@@ -764,6 +803,27 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         "Send an HTTP request from the host machine via Gateway MCP approval flow.",
         hostHttpRequestSchema,
         "send host http request",
+      ),
+      this.defineGatewayTool(
+        state,
+        "web.get",
+        "Send a web GET request via Gateway MCP approval flow. For non-text responses, Gateway stores artifacts under the session workspace and returns the saved path.",
+        webGetSchema,
+        "send web get request",
+      ),
+      this.defineGatewayTool(
+        state,
+        "web.post",
+        "Send a web POST request via Gateway MCP approval flow. Use body for text payloads or bodyBase64 for binary payloads.",
+        webPostSchema,
+        "send web post request",
+      ),
+      this.defineGatewayTool(
+        state,
+        "web.search",
+        "Search the web via Ollama Web Search API through Gateway MCP approval flow.",
+        webSearchSchema,
+        "search web",
       ),
       this.defineGatewayTool(
         state,
@@ -1680,6 +1740,26 @@ function resolveApprovalScopeFromGatewayToolCall(
       path: origin,
     };
   }
+  if (toolName === "web.get" || toolName === "web.post") {
+    const origin = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!origin) {
+      return null;
+    }
+    return {
+      operation: "http_request",
+      path: origin,
+    };
+  }
+  if (toolName === "web.search") {
+    const origin = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!origin) {
+      return null;
+    }
+    return {
+      operation: "web_search",
+      path: origin,
+    };
+  }
   if (toolName === "discord.channel_history") {
     const channelScope = normalizeApprovalPathForGatewayToolCall(toolName, args);
     if (!channelScope) {
@@ -1719,10 +1799,22 @@ function normalizeApprovalPathForGatewayToolCall(
     }
     return pathValue;
   }
-  if (toolName === "host.http_request") {
+  if (toolName === "host.http_request" || toolName === "web.get" || toolName === "web.post") {
     const rawUrl = readStringFromRecord(args, "url");
     if (!rawUrl) {
       return null;
+    }
+    try {
+      const url = new URL(rawUrl);
+      return url.origin;
+    } catch {
+      return null;
+    }
+  }
+  if (toolName === "web.search") {
+    const rawUrl = readStringFromRecord(args, "apiUrl");
+    if (!rawUrl) {
+      return "web_search:__configured_origin__";
     }
     try {
       const url = new URL(rawUrl);
@@ -1763,6 +1855,14 @@ function readNumberFromRecord(
 ): number | null {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isValidBase64(value: string): boolean {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized) && normalized.length % 4 === 0;
 }
 
 function createToolProgressStartEvent(input: {

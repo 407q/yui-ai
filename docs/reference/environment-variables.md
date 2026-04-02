@@ -115,6 +115,8 @@ openssl rand -hex 32
 | `DOCKER_PROJECT_ROOT` | 任意 | `.` | Docker プロジェクトルート |
 | `HOST_CLI_TIMEOUT_SEC` | 任意 | `60` | host CLI タイムアウト（秒） |
 | `HOST_HTTP_TIMEOUT_SEC` | 任意 | `60` | host HTTP タイムアウト（秒） |
+| `OLLAMA_API_KEY` | 条件付き必須 | - | `web.search` 利用時の Ollama API キー |
+| `OLLAMA_WEB_SEARCH_API_URL` | 任意 | `https://ollama.com/api/web_search` | `web.search` の API endpoint |
 | `HOST_CLI_ALLOWLIST` | 任意 | `git,node,npm,yarn,curl` | host CLI 許可コマンド |
 | `HOST_CLI_ENV_ALLOWLIST` | 任意 | (空) | host CLI 子プロセスへ渡す環境変数 |
 | `MEMORY_NAMESPACE_VALIDATION_MODE` | 任意 | `warn` | `warn` / `enforce` |
