@@ -13,7 +13,8 @@
 
 - `apps/gateway/api`（Bot / Gateway API / MCP / Orchestrator）
 - `apps/agent`（Agent Runtime / Copilot SDK provider）
-- `docker-compose.yml`
+- `docker-compose.tcp.yml`
+- `docker-compose.uds.yml`
 - `.env.example` / `.env.op.example`
 - 主要 README / development docs
 
@@ -86,7 +87,7 @@
 
 該当:
 
-- `docker-compose.yml`
+- `docker-compose.tcp.yml` / `docker-compose.uds.yml`
 - `.env.example`
 - `.env.op.example`
 - `apps/agent/src/server.ts`（Gateway URL fallback）
@@ -324,7 +325,7 @@
 - `apps/agent/src/runtime/service.ts`
   - session/task 状態の永続復元導入
 
-- `docker-compose.yml`
+- `docker-compose.tcp.yml` / `docker-compose.uds.yml`
   - （採用案に応じて）Bot/Gateway を compose 化
   - internal network 前提へ `ports` 見直し
 
