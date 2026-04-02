@@ -9,3 +9,4 @@ dist
 .env.op
 .env.local
 .env.*.local
+pm2config.json

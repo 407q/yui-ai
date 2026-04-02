@@ -8,3 +8,4 @@ dist/
 .env.*.local
 yarn-error.log
 copilot-bootstrap-log/
+pm2config.json
