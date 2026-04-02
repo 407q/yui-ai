@@ -7,3 +7,4 @@ dist/
 .env.local
 .env.*.local
 yarn-error.log
+copilot-bootstrap-log/

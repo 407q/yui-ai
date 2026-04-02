@@ -17,6 +17,7 @@
 3. ユーザーへの事前許可依頼を文章で出さず、実行して承認 UI を発火させる。
 4. `standard` が失敗し、原因が `op run` / 1Password 由来なら `:local` フォールバックを提案する。
 5. 実行結果は「成功/失敗」「主要ログ」「次アクション」を短く要約する。
+6. 完了時は `copilot-bootstrap-log` ディレクトリへ日時付きログを保存する。
 
 ---
 
@@ -96,10 +97,30 @@ git --no-pager status
 - `yarn compose:up` と `yarn compose:down` 成功
 - smoke 系が少なくとも 1 本成功（推奨: 全本成功）
 - 最終 `git --no-pager status` を報告
+- `copilot-bootstrap-log/bootstrap-YYYYMMDD-HHMMSS.log` を保存
 
 ---
 
-## 6. ユーザーへの最終報告フォーマット
+## 6. 実行結果ログ保存（必須）
+
+最終 `git --no-pager status` 取得後、以下を実行してログを保存する。
+
+```bash
+mkdir -p copilot-bootstrap-log
+BOOTSTRAP_LOG_PATH="copilot-bootstrap-log/bootstrap-$(date +%Y%m%d-%H%M%S).log"
+cat > "$BOOTSTRAP_LOG_PATH" <<'EOF'
+承認ブートストラップを完了しました。
+- 実行モード: <standard|local>
+- 成功: <コマンド一覧>
+- 失敗/スキップ: <あれば>
+- 最終git状態: <clean or changed files>
+EOF
+echo "$BOOTSTRAP_LOG_PATH"
+```
+
+---
+
+## 7. ユーザーへの最終報告フォーマット
 
 ```text
 承認ブートストラップを完了しました。
@@ -107,11 +128,12 @@ git --no-pager status
 - 成功: <コマンド一覧>
 - 失敗/スキップ: <あれば>
 - 最終git状態: <clean or changed files>
+- ログ保存先: copilot-bootstrap-log/bootstrap-YYYYMMDD-HHMMSS.log
 ```
 
 ---
 
-## 7. 根拠（このリポジトリ）
+## 8. 根拠（このリポジトリ）
 
 - `package.json` scripts
 - `apps/gateway/api/src/orchestration/supervisor.ts`（compose/migrate/cleanup 実行）
