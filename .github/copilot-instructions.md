@@ -1,3 +1,10 @@
+## ブートストラップについて
+
+Copilot CLI を再起動する際、これまで承認した権限が全てリセットされます。  
+それを一度に再承認するため、ブートストラップ手順を用意してあります。
+
+`docs/development/copilot-cli-approval-bootstrap-runbook.md` から参照し、指示通りにコマンドを実行してください。
+
 ## Commit について
 
 - 以下の接頭辞を用いて Commit の種別を管理してください。
