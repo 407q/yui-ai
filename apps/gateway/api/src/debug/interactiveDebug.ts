@@ -70,13 +70,6 @@ const debugSessionId = new Date()
   .replace("T", "-");
 
 async function main(): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error(
-      "[debug] interactive mode requires TTY. use yarn dev(:local) for non-interactive run.",
-    );
-    process.exit(1);
-  }
-
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
