@@ -107,12 +107,20 @@ const DEFAULT_ENV_ALLOWLIST = [
 ] as const;
 
 function buildCommandEnvironment(input: ExecCommandInput): NodeJS.ProcessEnv {
-  if (
-    input.inheritProcessEnv !== false &&
-    input.envAllowlist === undefined &&
-    input.extraEnv === undefined
-  ) {
-    return process.env;
+  if (input.inheritProcessEnv !== false && input.envAllowlist === undefined) {
+    if (!input.extraEnv) {
+      return process.env;
+    }
+    const merged: NodeJS.ProcessEnv = {
+      ...process.env,
+    };
+    for (const [key, value] of Object.entries(input.extraEnv)) {
+      if (!isValidEnvKey(key)) {
+        continue;
+      }
+      merged[key] = value;
+    }
+    return merged;
   }
 
   const env: NodeJS.ProcessEnv = {};
