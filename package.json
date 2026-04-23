@@ -9,6 +9,8 @@
     "clean:appledouble": "find . -depth -name '._*' -exec rm -rf {} +",
     "dev:local": "tsx apps/gateway/api/src/bot.ts",
     "dev": "op run --env-file=.env.op -- yarn dev:local",
+    "debug:local": "BOT_DEBUG_INTERACTIVE=true tsx apps/gateway/api/src/debug/interactiveDebug.ts",
+    "debug": "op run --env-file=.env.op -- yarn debug:local",
     "dev:mock:local": "tsx apps/gateway/api/src/debug/mock-bot.ts",
     "dev:mock": "op run --env-file=.env.op -- yarn dev:mock:local",
     "dev:api:local": "tsx apps/gateway/api/src/server.ts",

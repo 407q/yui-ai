@@ -44,6 +44,11 @@ export interface RuntimeSupervisorOptions {
   agentRuntimeBaseUrl: string;
   agentRuntimeSocketPath?: string;
   composeBuild: boolean;
+  composeUpEnabled?: boolean;
+  composeServices?: string[];
+  dbMigrateEnabled?: boolean;
+  gatewayStartEnabled?: boolean;
+  autoRecoveryEnabled?: boolean;
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
@@ -76,8 +81,11 @@ export class RuntimeSupervisor {
   private booted = false;
   private fatalTriggered = false;
   private readonly composeExtraEnv = resolveComposeCurrentUserEnv();
+  private readonly composeServices: string[];
 
-  constructor(private readonly options: RuntimeSupervisorOptions) {}
+  constructor(private readonly options: RuntimeSupervisorOptions) {
+    this.composeServices = resolveComposeServices(options.composeServices);
+  }
 
   async boot(): Promise<void> {
     if (this.booted) {
@@ -86,15 +94,27 @@ export class RuntimeSupervisor {
 
     try {
       this.prepareRuntimeSocketArtifacts();
-      this.log("boot: compose up");
-      await this.runCommand(this.composeUpCommand());
-      this.log("boot: db migrate");
-      await this.runCommand({
-        command: "yarn",
-        args: ["db:migrate:local"],
-      });
-      this.log("boot: gateway-api start");
-      await this.startGatewayApi();
+      if (this.isComposeEnabled()) {
+        this.log("boot: compose up");
+        await this.runCommand(this.composeUpCommand());
+      } else {
+        this.log("boot: compose up skipped (disabled)");
+      }
+      if (this.isDbMigrateEnabled()) {
+        this.log("boot: db migrate");
+        await this.runCommand({
+          command: "yarn",
+          args: ["db:migrate:local"],
+        });
+      } else {
+        this.log("boot: db migrate skipped (disabled)");
+      }
+      if (this.isGatewayStartEnabled()) {
+        this.log("boot: gateway-api start");
+        await this.startGatewayApi();
+      } else {
+        this.log("boot: gateway-api start skipped (disabled)");
+      }
 
       const probe = await this.probeRuntime();
       if (!isHealthy(probe)) {
@@ -123,7 +143,7 @@ export class RuntimeSupervisor {
     this.stopMonitorLoop();
     this.stopCleanupLoop();
     await this.stopGatewayApiBestEffort("shutdown");
-    if (options.stopCompose) {
+    if (options.stopCompose && this.isComposeEnabled()) {
       await this.runCommandBestEffort(
         {
           command: "docker",
@@ -147,6 +167,10 @@ export class RuntimeSupervisor {
         options.stopCompose ? " (compose stopped)" : ""
       }`,
     );
+  }
+
+  async snapshotHealth(): Promise<RuntimeHealthSnapshot> {
+    return this.probeRuntime();
   }
 
   async runMonitorCycleNow(): Promise<void> {
@@ -254,6 +278,12 @@ export class RuntimeSupervisor {
         return;
       }
 
+      if (!this.isAutoRecoveryEnabled()) {
+        await this.alert(
+          `⚠️ [orchestrator] health degraded but auto recovery is disabled: ${formatHealth(probe)}`,
+        );
+        return;
+      }
       await this.recoverFromFailure(probe);
     } finally {
       this.monitorInFlight = false;
@@ -312,7 +342,7 @@ export class RuntimeSupervisor {
   ): Promise<RuntimeHealthSnapshot> {
     let attempted = false;
 
-    if (!lastProbe.gateway.ok) {
+    if (this.isGatewayStartEnabled() && !lastProbe.gateway.ok) {
       attempted = true;
       try {
         this.log("recovery: restarting gateway-api");
@@ -326,7 +356,11 @@ export class RuntimeSupervisor {
       }
     }
 
-    if (!lastProbe.agent.ok || !lastProbe.compose.ok) {
+    if (
+      this.isComposeEnabled() &&
+      ((!lastProbe.compose.ok && this.shouldProbeCompose()) ||
+        (!lastProbe.agent.ok && this.shouldProbeAgent()))
+    ) {
       attempted = true;
       try {
         this.log("recovery: restarting compose services (agent/postgres)");
@@ -337,15 +371,16 @@ export class RuntimeSupervisor {
             "-f",
             `docker-compose.${resolveInternalConnectionMode()}.yml`,
             "restart",
-            "agent",
-            "postgres",
+            ...this.composeServices,
           ],
           extraEnv: this.composeExtraEnv,
         });
-        await this.runCommand({
-          command: "yarn",
-          args: ["db:migrate:local"],
-        });
+        if (this.isDbMigrateEnabled()) {
+          await this.runCommand({
+            command: "yarn",
+            args: ["db:migrate:local"],
+          });
+        }
       } catch (error) {
         this.log(
           `recovery: compose service restart failed: ${
@@ -364,24 +399,32 @@ export class RuntimeSupervisor {
   private async tryFullRestart(): Promise<RuntimeHealthSnapshot> {
     try {
       this.log("recovery: full restart begin");
-      await this.stopGatewayApiBestEffort("recovery: full restart gateway stop");
-      await this.runCommand({
-        command: "docker",
-        args: [
-          "compose",
-          "-f",
-          `docker-compose.${resolveInternalConnectionMode()}.yml`,
-          "down",
-          "--remove-orphans",
-        ],
-        extraEnv: this.composeExtraEnv,
-      });
-      await this.runCommand(this.composeUpCommand());
-      await this.runCommand({
-        command: "yarn",
-        args: ["db:migrate:local"],
-      });
-      await this.startGatewayApi();
+      if (this.isGatewayStartEnabled()) {
+        await this.stopGatewayApiBestEffort("recovery: full restart gateway stop");
+      }
+      if (this.isComposeEnabled()) {
+        await this.runCommand({
+          command: "docker",
+          args: [
+            "compose",
+            "-f",
+            `docker-compose.${resolveInternalConnectionMode()}.yml`,
+            "down",
+            "--remove-orphans",
+          ],
+          extraEnv: this.composeExtraEnv,
+        });
+        await this.runCommand(this.composeUpCommand());
+      }
+      if (this.isDbMigrateEnabled()) {
+        await this.runCommand({
+          command: "yarn",
+          args: ["db:migrate:local"],
+        });
+      }
+      if (this.isGatewayStartEnabled()) {
+        await this.startGatewayApi();
+      }
     } catch (error) {
       this.log(
         `recovery: full restart failed: ${
@@ -394,41 +437,62 @@ export class RuntimeSupervisor {
   }
 
   private composeUpCommand(): CommandSpec {
-    return this.options.composeBuild
-      ? {
+    const isDefaultServices =
+      this.composeServices.length === 2 &&
+      this.composeServices[0] === "agent" &&
+      this.composeServices[1] === "postgres";
+    if (isDefaultServices) {
+      return this.options.composeBuild
+        ? {
+            command: "docker",
+            args: [
+              "compose",
+              "-f",
+              `docker-compose.${resolveInternalConnectionMode()}.yml`,
+              "up",
+              "-d",
+              "--build",
+            ],
+            extraEnv: this.composeExtraEnv,
+          }
+        : {
+            command: "yarn",
+            args: ["compose:up:local"],
+          };
+    }
+    return {
+      command: "docker",
+      args: [
+        "compose",
+        "-f",
+        `docker-compose.${resolveInternalConnectionMode()}.yml`,
+        "up",
+        "-d",
+        ...(this.options.composeBuild ? ["--build"] : []),
+        ...this.composeServices,
+      ],
+      extraEnv: this.composeExtraEnv,
+    };
+  }
+
+  private async runBootRollback(): Promise<void> {
+    await this.stopGatewayApiBestEffort("boot rollback: gateway stop");
+    if (this.isComposeEnabled()) {
+      await this.runCommandBestEffort(
+        {
           command: "docker",
           args: [
             "compose",
             "-f",
             `docker-compose.${resolveInternalConnectionMode()}.yml`,
-            "up",
-            "-d",
-            "--build",
+            "down",
+            "--remove-orphans",
           ],
           extraEnv: this.composeExtraEnv,
-        }
-      : {
-          command: "yarn",
-          args: ["compose:up:local"],
-        };
-  }
-
-  private async runBootRollback(): Promise<void> {
-    await this.stopGatewayApiBestEffort("boot rollback: gateway stop");
-    await this.runCommandBestEffort(
-      {
-        command: "docker",
-        args: [
-          "compose",
-          "-f",
-          `docker-compose.${resolveInternalConnectionMode()}.yml`,
-          "down",
-          "--remove-orphans",
-        ],
-        extraEnv: this.composeExtraEnv,
-      },
-      "boot rollback: compose down",
-    );
+        },
+        "boot rollback: compose down",
+      );
+    }
   }
 
   private async stopGatewayApiBestEffort(context: string): Promise<void> {
@@ -510,17 +574,37 @@ export class RuntimeSupervisor {
       return this.options.hooks.probeRuntime();
     }
 
-    const gatewayProbe = this.options.gatewayApiSocketPath
-      ? this.probeEndpointViaSocket(this.options.gatewayApiSocketPath, "/health")
-      : this.probeEndpoint(`${this.options.gatewayApiBaseUrl}/health`);
-    const agentProbe = this.options.agentRuntimeSocketPath
-      ? this.probeEndpointViaSocket(this.options.agentRuntimeSocketPath, "/health")
-      : this.probeEndpoint(`${this.options.agentRuntimeBaseUrl}/health`);
+    const gatewayProbe = this.shouldProbeGateway()
+      ? this.options.gatewayApiSocketPath
+        ? this.probeEndpointViaSocket(this.options.gatewayApiSocketPath, "/health")
+        : this.probeEndpoint(`${this.options.gatewayApiBaseUrl}/health`)
+      : Promise.resolve({
+          ok: true,
+          statusCode: null,
+          detail: "disabled",
+        } satisfies RuntimeHealthEndpointStatus);
+    const agentProbe = this.shouldProbeAgent()
+      ? this.options.agentRuntimeSocketPath
+        ? this.probeEndpointViaSocket(this.options.agentRuntimeSocketPath, "/health")
+        : this.probeEndpoint(`${this.options.agentRuntimeBaseUrl}/health`)
+      : Promise.resolve({
+          ok: true,
+          statusCode: null,
+          detail: "disabled",
+        } satisfies RuntimeHealthEndpointStatus);
+    const composeProbe = this.shouldProbeCompose()
+      ? this.probeComposeServices()
+      : Promise.resolve({
+          ok: true,
+          runningServices: [],
+          missingServices: [],
+          detail: "disabled",
+        } satisfies RuntimeComposeStatus);
 
     const [gateway, agent, compose] = await Promise.all([
       gatewayProbe,
       agentProbe,
-      this.probeComposeServices(),
+      composeProbe,
     ]);
 
     return {
@@ -627,7 +711,7 @@ export class RuntimeSupervisor {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
-    const required = ["agent", "postgres"];
+    const required = this.composeServices;
     const missingServices = required.filter(
       (service) => !runningServices.includes(service),
     );
@@ -655,6 +739,37 @@ export class RuntimeSupervisor {
         )}`,
       );
     }
+  }
+
+  private isComposeEnabled(): boolean {
+    if (this.options.composeUpEnabled === false) {
+      return false;
+    }
+    return this.composeServices.length > 0;
+  }
+
+  private isDbMigrateEnabled(): boolean {
+    return this.options.dbMigrateEnabled !== false;
+  }
+
+  private isGatewayStartEnabled(): boolean {
+    return this.options.gatewayStartEnabled !== false;
+  }
+
+  private isAutoRecoveryEnabled(): boolean {
+    return this.options.autoRecoveryEnabled !== false;
+  }
+
+  private shouldProbeGateway(): boolean {
+    return this.isGatewayStartEnabled();
+  }
+
+  private shouldProbeAgent(): boolean {
+    return this.isComposeEnabled() && this.composeServices.includes("agent");
+  }
+
+  private shouldProbeCompose(): boolean {
+    return this.isComposeEnabled();
   }
 
   private async runCommandRaw(spec: CommandSpec): Promise<ExecCommandOutput> {
@@ -755,6 +870,14 @@ function toErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function resolveComposeServices(input: string[] | undefined): string[] {
+  const configured = (input ?? ["agent", "postgres"])
+    .map((service) => service.trim())
+    .filter((service) => service.length > 0);
+  const deduped = [...new Set(configured)];
+  return deduped;
 }
 
 function resolveComposeCurrentUserEnv(): Record<string, string> {
