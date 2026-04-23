@@ -75,6 +75,7 @@ export class RuntimeSupervisor {
   private consecutiveFailures = 0;
   private booted = false;
   private fatalTriggered = false;
+  private readonly composeExtraEnv = resolveComposeCurrentUserEnv();
 
   constructor(private readonly options: RuntimeSupervisorOptions) {}
 
@@ -133,6 +134,7 @@ export class RuntimeSupervisor {
             "down",
             "--remove-orphans",
           ],
+          extraEnv: this.composeExtraEnv,
         },
         "shutdown: compose down",
       );
@@ -338,6 +340,7 @@ export class RuntimeSupervisor {
             "agent",
             "postgres",
           ],
+          extraEnv: this.composeExtraEnv,
         });
         await this.runCommand({
           command: "yarn",
@@ -371,6 +374,7 @@ export class RuntimeSupervisor {
           "down",
           "--remove-orphans",
         ],
+        extraEnv: this.composeExtraEnv,
       });
       await this.runCommand(this.composeUpCommand());
       await this.runCommand({
@@ -401,6 +405,7 @@ export class RuntimeSupervisor {
             "-d",
             "--build",
           ],
+          extraEnv: this.composeExtraEnv,
         }
       : {
           command: "yarn",
@@ -420,6 +425,7 @@ export class RuntimeSupervisor {
           "down",
           "--remove-orphans",
         ],
+        extraEnv: this.composeExtraEnv,
       },
       "boot rollback: compose down",
     );
@@ -598,6 +604,7 @@ export class RuntimeSupervisor {
         "--status",
         "running",
       ],
+      extraEnv: this.composeExtraEnv,
     });
     if (output.timedOut) {
       return {
@@ -748,6 +755,27 @@ function toErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function resolveComposeCurrentUserEnv(): Record<string, string> {
+  return {
+    CURRENT_UID: resolveCurrentUid(),
+    CURRENT_GID: resolveCurrentGid(),
+  };
+}
+
+function resolveCurrentUid(): string {
+  if (typeof process.getuid === "function") {
+    return String(process.getuid());
+  }
+  return "1000";
+}
+
+function resolveCurrentGid(): string {
+  if (typeof process.getgid === "function") {
+    return String(process.getgid());
+  }
+  return "1000";
 }
 
 interface UnixSocketHealthRequestInput {

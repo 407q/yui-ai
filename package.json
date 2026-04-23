@@ -43,13 +43,13 @@
     "mem:build": "op run --env-file=.env.op -- yarn mem:build:local || yarn mem:build:local",
     "mem:start:local": "yarn --cwd apps/memtool preview",
     "mem:start": "op run --env-file=.env.op -- yarn mem:start:local || yarn mem:start:local",
-    "compose:up:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml up -d'",
+    "compose:up:local": "sh -c 'CURRENT_UID=$(id -u) CURRENT_GID=$(id -g) docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml up -d'",
     "compose:up": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:up:local",
-    "compose:down:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml down --remove-orphans'",
+    "compose:down:local": "sh -c 'CURRENT_UID=$(id -u) CURRENT_GID=$(id -g) docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml down --remove-orphans'",
     "compose:down": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:down:local",
-    "compose:ps:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml ps'",
+    "compose:ps:local": "sh -c 'CURRENT_UID=$(id -u) CURRENT_GID=$(id -g) docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml ps'",
     "compose:ps": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:ps:local",
-    "compose:logs:local": "sh -c 'docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml logs -f --tail=100'",
+    "compose:logs:local": "sh -c 'CURRENT_UID=$(id -u) CURRENT_GID=$(id -g) docker compose -f docker-compose.${INTERNAL_CONNECTION_MODE:?INTERNAL_CONNECTION_MODE is required}.yml logs -f --tail=100'",
     "compose:logs": "yarn clean:appledouble && op run --env-file=.env.op -- yarn compose:logs:local"
   },
   "dependencies": {

@@ -33,6 +33,7 @@ services:
       dockerfile: apps/agent/Dockerfile
     container_name: yui-ai-agent
     restart: unless-stopped
+    user: "${CURRENT_UID:-1000}:${CURRENT_GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
