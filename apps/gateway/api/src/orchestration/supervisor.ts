@@ -49,6 +49,7 @@ export interface RuntimeSupervisorOptions {
   dbMigrateEnabled?: boolean;
   gatewayStartEnabled?: boolean;
   autoRecoveryEnabled?: boolean;
+  rollbackOnBootFailure?: boolean;
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
@@ -134,7 +135,11 @@ export class RuntimeSupervisor {
       this.stopMonitorLoop();
       this.stopCleanupLoop();
       this.booted = false;
-      await this.runBootRollback();
+      if (this.options.rollbackOnBootFailure !== false) {
+        await this.runBootRollback();
+      } else {
+        this.log("boot: rollback skipped (disabled)");
+      }
       throw error;
     }
   }

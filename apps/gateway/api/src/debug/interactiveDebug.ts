@@ -1,6 +1,8 @@
 import "dotenv/config";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -11,6 +13,7 @@ import {
 import { execCommand } from "../mcp/exec.js";
 
 type ComponentKey =
+  | "discord.bot"
   | "compose.agent"
   | "compose.postgres"
   | "db.migrate"
@@ -22,6 +25,8 @@ type SettingKey =
   | "composeBuild"
   | "autoRecoveryEnabled"
   | "stopComposeOnExit"
+  | "snapshotOnFailure"
+  | "envDumpOnStart"
   | "monitorIntervalSec"
   | "failureThreshold"
   | "commandTimeoutSec"
@@ -32,6 +37,7 @@ type SettingKey =
   | "agentRuntimeSocketPath";
 
 interface DebugComponents {
+  "discord.bot": boolean;
   "compose.agent": boolean;
   "compose.postgres": boolean;
   "db.migrate": boolean;
@@ -44,6 +50,8 @@ interface DebugSettings {
   composeBuild: boolean;
   autoRecoveryEnabled: boolean;
   stopComposeOnExit: boolean;
+  snapshotOnFailure: boolean;
+  envDumpOnStart: boolean;
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
@@ -59,10 +67,52 @@ interface DebugConfig {
   settings: DebugSettings;
 }
 
+type DebugEventLevel = "info" | "warn" | "error";
+
+interface DebugEvent {
+  timestamp: string;
+  level: DebugEventLevel;
+  scope: "preflight" | "runtime" | "system";
+  command: string;
+  message: string;
+}
+
+interface RuntimeFailureState {
+  errorCounts: {
+    ECONNREFUSED: number;
+    EACCES: number;
+    ENOENT: number;
+  };
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  consecutiveFailures: number;
+  lastFailureSummary: string | null;
+}
+
+interface EnvDisplayEntry {
+  value: string;
+  source: "explicit env" | "default" | "derived" | "unset";
+}
+
 const DEFAULT_CONFIG = createDefaultConfig();
 let currentConfig = cloneConfig(DEFAULT_CONFIG);
 let runtimeSupervisor: RuntimeSupervisor | null = null;
+let discordBotProcess: ChildProcess | null = null;
 const commandHistory: string[] = [];
+const eventHistory: DebugEvent[] = [];
+const discordBotLogBuffer: string[] = [];
+const runtimeFailureState: RuntimeFailureState = {
+  errorCounts: {
+    ECONNREFUSED: 0,
+    EACCES: 0,
+    ENOENT: 0,
+  },
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  consecutiveFailures: 0,
+  lastFailureSummary: null,
+};
+const DEBUG_PROFILE_DIR = path.resolve("debug", "profiles");
 const debugSessionId = new Date()
   .toISOString()
   .replace(/[-:]/g, "")
@@ -70,6 +120,7 @@ const debugSessionId = new Date()
   .replace("T", "-");
 
 async function main(): Promise<void> {
+  installProcessGuards();
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -81,9 +132,12 @@ async function main(): Promise<void> {
   printPreflightSummary(currentConfig);
 
   try {
-    await runPreflightLoop(rl);
-    await startInfrastructure();
-    console.log("[debug] infrastructure started. runtime console is ready.");
+    const preflightAction = await runPreflightLoop(rl);
+    if (preflightAction === "exit") {
+      return;
+    }
+    await attemptInfrastructureStart();
+    console.log("[debug] runtime console is ready.");
     await runRuntimeLoop(rl);
   } finally {
     rl.close();
@@ -95,68 +149,33 @@ async function main(): Promise<void> {
 
 async function runPreflightLoop(
   rl: ReturnType<typeof createInterface>,
-): Promise<void> {
+): Promise<"start" | "exit"> {
   for (;;) {
-    const line = (await rl.question("debug(preflight)> ")).trim();
-    if (!line) {
+    const line = await readLineSafely(rl, "debug(preflight)> ");
+    if (line === null) {
+      return "exit";
+    }
+    const trimmed = line.trim();
+    if (!trimmed) {
       continue;
     }
-    commandHistory.push(`preflight: ${line}`);
-    const [command, ...rawArgs] = splitArgs(line);
+    commandHistory.push(`preflight: ${trimmed}`);
+    const [command, ...rawArgs] = splitArgs(trimmed);
     if (!command) {
       continue;
     }
 
-    switch (command) {
-      case "help":
-        printPreflightHelp();
-        break;
-      case "preflight":
-        printPreflightSummary(currentConfig);
-        break;
-      case "components":
-        printComponents(currentConfig.components);
-        break;
-      case "enable":
-        updateComponent(rawArgs[0], true);
-        break;
-      case "disable":
-        updateComponent(rawArgs[0], false);
-        break;
-      case "preset":
-        applyPreset(rawArgs[0]);
-        break;
-      case "set":
-        applySetting(rawArgs[0], rawArgs.slice(1).join(" "));
-        break;
-      case "unset":
-        unsetSetting(rawArgs[0]);
-        break;
-      case "diff":
-        printDiff();
-        break;
-      case "env":
-        printEnv(rawArgs[0]);
-        break;
-      case "config":
-        printEffectiveConfig();
-        break;
-      case "validate":
-        printValidation();
-        break;
-      case "reset":
-        currentConfig = cloneConfig(DEFAULT_CONFIG);
-        console.log("[debug] preflight settings reset.");
-        break;
-      case "start":
-        if (!(await confirmStart(rl, rawArgs))) {
-          break;
-        }
-        return;
-      case "exit":
-        process.exit(0);
-      default:
-        console.log(`[debug] unknown command: ${command}`);
+    try {
+      const action = await handlePreflightCommand(rl, command, rawArgs);
+      if (action === "start" || action === "exit") {
+        return action;
+      }
+    } catch (error) {
+      await handleCommandError({
+        scope: "preflight",
+        command: trimmed,
+        error,
+      });
     }
   }
 }
@@ -166,66 +185,231 @@ async function runRuntimeLoop(
 ): Promise<void> {
   printRuntimeHelp();
   for (;;) {
-    const line = (await rl.question("debug(runtime)> ")).trim();
-    if (!line) {
+    const line = await readLineSafely(rl, "debug(runtime)> ");
+    if (line === null) {
+      return;
+    }
+    const trimmed = line.trim();
+    if (!trimmed) {
       continue;
     }
-    commandHistory.push(`runtime: ${line}`);
-    const [command, ...rawArgs] = splitArgs(line);
+    commandHistory.push(`runtime: ${trimmed}`);
+    const [command, ...rawArgs] = splitArgs(trimmed);
     if (!command) {
       continue;
     }
 
-    switch (command) {
-      case "help":
-        printRuntimeHelp();
-        break;
-      case "status":
-      case "probe":
-        await printRuntimeStatus();
-        break;
-      case "ps":
-        await runComposeAndPrint(["ps"]);
-        break;
-      case "logs":
-        await handleLogsCommand(rawArgs);
-        break;
-      case "restart":
-        await handleRestartCommand(rawArgs[0]);
-        break;
-      case "up":
-        await handleUpCommand();
-        break;
-      case "down":
-        await runComposeAndPrint(["down", "--remove-orphans"]);
-        break;
-      case "sockets":
-        await printSocketStatus();
-        break;
-      case "env":
-        printEnv(rawArgs[0]);
-        break;
-      case "config":
-        printEffectiveConfig();
-        break;
-      case "history":
-        printHistory();
-        break;
-      case "snapshot":
-        await writeSnapshot(rawArgs[0]);
-        break;
-      case "exit":
-        if (rawArgs.includes("--with-compose-down")) {
-          currentConfig.settings.stopComposeOnExit = true;
-        }
+    try {
+      const shouldExit = await handleRuntimeCommand(rl, command, rawArgs);
+      if (shouldExit) {
         return;
-      default:
-        console.log(`[debug] unknown command: ${command}`);
+      }
+    } catch (error) {
+      await handleCommandError({
+        scope: "runtime",
+        command: trimmed,
+        error,
+      });
     }
   }
 }
 
+async function handlePreflightCommand(
+  rl: ReturnType<typeof createInterface>,
+  command: string,
+  rawArgs: string[],
+): Promise<"start" | "exit" | "continue"> {
+  switch (command) {
+    case "help":
+      printPreflightHelp();
+      return "continue";
+    case "preflight":
+      printPreflightSummary(currentConfig);
+      return "continue";
+    case "components":
+      printComponents(currentConfig.components);
+      return "continue";
+    case "enable":
+      updateComponent(rawArgs[0], true);
+      return "continue";
+    case "disable":
+      updateComponent(rawArgs[0], false);
+      return "continue";
+    case "preset":
+      applyPreset(rawArgs[0]);
+      return "continue";
+    case "set":
+      applySetting(rawArgs[0], rawArgs.slice(1).join(" "));
+      return "continue";
+    case "unset":
+      unsetSetting(rawArgs[0]);
+      return "continue";
+    case "diff":
+      printDiff();
+      return "continue";
+    case "env":
+      printEnv(rawArgs[0]);
+      return "continue";
+    case "config":
+      printEffectiveConfig();
+      return "continue";
+    case "validate":
+      printValidation();
+      return "continue";
+    case "save-profile":
+      await saveProfile(rawArgs[0]);
+      return "continue";
+    case "load-profile":
+      await loadProfile(rawArgs[0]);
+      return "continue";
+    case "reset":
+      currentConfig = cloneConfig(DEFAULT_CONFIG);
+      console.log("[debug] preflight settings reset.");
+      return "continue";
+    case "start":
+      if (!(await confirmStart(rl, rawArgs))) {
+        return "continue";
+      }
+      appendDebugEvent({
+        level: "info",
+        scope: "preflight",
+        command: "start",
+        message: "preflight completed",
+      });
+      return "start";
+    case "exit":
+      return "exit";
+    default:
+      console.log(`[debug] unknown command: ${command}`);
+      return "continue";
+  }
+}
+
+async function handleRuntimeCommand(
+  rl: ReturnType<typeof createInterface>,
+  command: string,
+  rawArgs: string[],
+): Promise<boolean> {
+  switch (command) {
+    case "help":
+      printRuntimeHelp();
+      return false;
+    case "status":
+      await printRuntimeStatus();
+      markRuntimeCommandSuccess("status");
+      return false;
+    case "probe":
+      await printRuntimeProbe(rawArgs[0]);
+      markRuntimeCommandSuccess("probe");
+      return false;
+    case "ps":
+      await runComposeAndPrint(["ps"]);
+      markRuntimeCommandSuccess("ps");
+      return false;
+    case "logs":
+      if (await handleLogsCommand(rawArgs)) {
+        markRuntimeCommandSuccess("logs");
+      }
+      return false;
+    case "restart":
+      if (await handleRestartCommand(rawArgs[0])) {
+        markRuntimeCommandSuccess("restart");
+      }
+      return false;
+    case "bot":
+      if (await handleBotCommand(rawArgs[0])) {
+        markRuntimeCommandSuccess("bot");
+      }
+      return false;
+    case "up":
+      if (await handleUpCommand()) {
+        markRuntimeCommandSuccess("up");
+      }
+      return false;
+    case "down":
+      if (!(await confirmDownCommand(rl, rawArgs))) {
+        return false;
+      }
+      await runComposeAndPrint(["down", "--remove-orphans"]);
+      markRuntimeCommandSuccess("down");
+      return false;
+    case "sockets":
+      await printSocketStatus();
+      markRuntimeCommandSuccess("sockets");
+      return false;
+    case "env":
+      printEnv(rawArgs[0]);
+      return false;
+    case "config":
+      printEffectiveConfig();
+      return false;
+    case "history":
+      printHistory();
+      return false;
+    case "snapshot":
+      await writeSnapshot(rawArgs[0]);
+      markRuntimeCommandSuccess("snapshot");
+      return false;
+    case "exit":
+      if (rawArgs.includes("--with-compose-down")) {
+        currentConfig.settings.stopComposeOnExit = true;
+      }
+      return true;
+    default:
+      console.log(`[debug] unknown command: ${command}`);
+      return false;
+  }
+}
+
+async function readLineSafely(
+  rl: ReturnType<typeof createInterface>,
+  prompt: string,
+): Promise<string | null> {
+  try {
+    return await rl.question(prompt);
+  } catch (error) {
+    appendDebugEvent({
+      level: "warn",
+      scope: "system",
+      command: "readline",
+      message: `input stream closed: ${toErrorMessage(error)}`,
+    });
+    return null;
+  }
+}
+
+async function attemptInfrastructureStart(): Promise<boolean> {
+  try {
+    await startInfrastructure();
+    markRuntimeCommandSuccess("startup");
+    appendDebugEvent({
+      level: "info",
+      scope: "runtime",
+      command: "startup",
+      message: "infrastructure started",
+    });
+    if (currentConfig.settings.envDumpOnStart) {
+      console.log("[debug] startup env snapshot:");
+      printEnv(undefined);
+    }
+    return true;
+  } catch (error) {
+    await handleCommandError({
+      scope: "runtime",
+      command: "startup",
+      error,
+    });
+    console.log(
+      "[debug] startup failed. runtime shell remains available for investigation.",
+    );
+    return false;
+  }
+}
+
 async function startInfrastructure(): Promise<void> {
+  if (runtimeSupervisor) {
+    await shutdownInfrastructure({ stopCompose: false });
+  }
   applySettingsToEnvironment();
   const composeServices = resolveSelectedComposeServices(currentConfig.components);
   runtimeSupervisor = new RuntimeSupervisor({
@@ -256,6 +440,7 @@ async function startInfrastructure(): Promise<void> {
     failureThreshold: currentConfig.settings.failureThreshold,
     commandTimeoutSec: currentConfig.settings.commandTimeoutSec,
     cleanupIntervalSec: currentConfig.settings.cleanupIntervalSec,
+    rollbackOnBootFailure: false,
     onLog: (message) => {
       console.log(`[orchestrator] ${message}`);
     },
@@ -263,13 +448,25 @@ async function startInfrastructure(): Promise<void> {
       console.log(`[alert] ${message}`);
     },
     onFatal: async (reason) => {
+      appendDebugEvent({
+        level: "error",
+        scope: "runtime",
+        command: "orchestrator.onFatal",
+        message: reason,
+      });
       console.log(`[fatal] ${reason}`);
     },
   });
   await runtimeSupervisor.boot();
+  if (currentConfig.components["discord.bot"]) {
+    await startDiscordBotProcess();
+  } else {
+    console.log("[debug] discord bot start skipped (disabled)");
+  }
 }
 
 async function shutdownInfrastructure(input: { stopCompose: boolean }): Promise<void> {
+  await stopDiscordBotProcess();
   if (!runtimeSupervisor) {
     return;
   }
@@ -279,13 +476,144 @@ async function shutdownInfrastructure(input: { stopCompose: boolean }): Promise<
   runtimeSupervisor = null;
 }
 
+function installProcessGuards(): void {
+  process.on("unhandledRejection", (reason) => {
+    void handleCommandError({
+      scope: "system",
+      command: "unhandledRejection",
+      error: reason,
+    });
+  });
+  process.on("uncaughtException", (error) => {
+    void handleCommandError({
+      scope: "system",
+      command: "uncaughtException",
+      error,
+    });
+  });
+}
+
+async function handleCommandError(input: {
+  scope: DebugEvent["scope"];
+  command: string;
+  error: unknown;
+}): Promise<void> {
+  const detail = toErrorMessage(input.error);
+  appendDebugEvent({
+    level: "error",
+    scope: input.scope,
+    command: input.command,
+    message: detail,
+  });
+  if (input.scope !== "preflight") {
+    markRuntimeCommandFailure(input.command, detail);
+  }
+  console.log(`[debug][error] ${input.command}: ${detail}`);
+  if (currentConfig.settings.snapshotOnFailure) {
+    const tag = sanitizeSnapshotTag(`failure-${input.command}`);
+    try {
+      await writeSnapshot(tag);
+    } catch (snapshotError) {
+      console.log(
+        `[debug] snapshot on failure skipped: ${toErrorMessage(snapshotError)}`,
+      );
+    }
+  }
+}
+
+function markRuntimeCommandSuccess(command: string): void {
+  runtimeFailureState.lastSuccessAt = new Date().toISOString();
+  runtimeFailureState.consecutiveFailures = 0;
+  appendDebugEvent({
+    level: "info",
+    scope: "runtime",
+    command,
+    message: "ok",
+  });
+}
+
+function markRuntimeCommandFailure(command: string, detail: string): void {
+  runtimeFailureState.lastFailureAt = new Date().toISOString();
+  runtimeFailureState.consecutiveFailures += 1;
+  runtimeFailureState.lastFailureSummary = `${command}: ${detail}`;
+  const code = detectKnownErrorCode(detail);
+  if (code) {
+    runtimeFailureState.errorCounts[code] += 1;
+  }
+}
+
+function appendDebugEvent(input: Omit<DebugEvent, "timestamp">): void {
+  eventHistory.push({
+    ...input,
+    timestamp: new Date().toISOString(),
+  });
+  if (eventHistory.length > 1500) {
+    eventHistory.shift();
+  }
+}
+
+function detectKnownErrorCode(
+  text: string,
+): keyof RuntimeFailureState["errorCounts"] | null {
+  if (text.includes("ECONNREFUSED")) {
+    return "ECONNREFUSED";
+  }
+  if (text.includes("EACCES")) {
+    return "EACCES";
+  }
+  if (text.includes("ENOENT")) {
+    return "ENOENT";
+  }
+  return null;
+}
+
+function sanitizeSnapshotTag(raw: string): string {
+  const safe = raw.replace(/[^A-Za-z0-9._-]/g, "-");
+  return safe.slice(0, 64);
+}
+
 async function printRuntimeStatus(): Promise<void> {
+  console.log(
+    `[debug] shell=alive session=${debugSessionId} discord_bot=${resolveDiscordBotStatusLabel()}`,
+  );
   if (!runtimeSupervisor) {
     console.log("[debug] runtime supervisor is not started.");
+    printFailureSummary();
     return;
   }
   const snapshot = await runtimeSupervisor.snapshotHealth();
   printHealthSnapshot(snapshot);
+  printFailureSummary();
+}
+
+async function printRuntimeProbe(targetRaw: string | undefined): Promise<void> {
+  if (!runtimeSupervisor) {
+    console.log("[debug] runtime supervisor is not started.");
+    return;
+  }
+  const target = (targetRaw ?? "all").toLowerCase();
+  const snapshot = await runtimeSupervisor.snapshotHealth();
+  if (target === "all") {
+    printHealthSnapshot(snapshot);
+    return;
+  }
+  if (target === "gateway") {
+    console.log(
+      `gateway=${snapshot.gateway.ok ? "ok" : "ng"}(${snapshot.gateway.detail})`,
+    );
+    return;
+  }
+  if (target === "agent") {
+    console.log(`agent=${snapshot.agent.ok ? "ok" : "ng"}(${snapshot.agent.detail})`);
+    return;
+  }
+  if (target === "db") {
+    console.log(
+      `db=${snapshot.compose.ok ? "ok" : "ng"}(${snapshot.compose.detail})`,
+    );
+    return;
+  }
+  console.log("[debug] probe target must be one of: all | gateway | agent | db");
 }
 
 function printHealthSnapshot(snapshot: RuntimeHealthSnapshot): void {
@@ -294,47 +622,86 @@ function printHealthSnapshot(snapshot: RuntimeHealthSnapshot): void {
       `gateway=${snapshot.gateway.ok ? "ok" : "ng"}(${snapshot.gateway.detail})`,
       `agent=${snapshot.agent.ok ? "ok" : "ng"}(${snapshot.agent.detail})`,
       `compose=${snapshot.compose.ok ? "ok" : "ng"}(${snapshot.compose.detail})`,
+      `discord_bot=${resolveDiscordBotStatusLabel()}`,
     ].join(" "),
   );
 }
 
-async function handleLogsCommand(args: string[]): Promise<void> {
+function printFailureSummary(): void {
+  const payload = {
+    last_success_at: runtimeFailureState.lastSuccessAt,
+    last_failure_at: runtimeFailureState.lastFailureAt,
+    consecutive_failures: runtimeFailureState.consecutiveFailures,
+    last_failure: runtimeFailureState.lastFailureSummary,
+    error_counts: runtimeFailureState.errorCounts,
+  };
+  console.log(`[debug] failures=${JSON.stringify(payload)}`);
+}
+
+async function handleLogsCommand(args: string[]): Promise<boolean> {
   const target = args[0] ?? "all";
   const tail = parsePositiveInt(args[1], 120);
   if (target === "all") {
     await runComposeAndPrint(["logs", "--tail", String(tail)]);
-    return;
+    printDiscordBotLogs(tail);
+    return true;
+  }
+  if (target === "bot") {
+    printDiscordBotLogs(tail);
+    return true;
   }
   if (target !== "agent" && target !== "postgres") {
-    console.log("[debug] logs target must be one of: all | agent | postgres");
-    return;
+    console.log("[debug] logs target must be one of: all | agent | postgres | bot");
+    return false;
   }
   await runComposeAndPrint(["logs", target, "--tail", String(tail)]);
+  return true;
 }
 
-async function handleRestartCommand(targetRaw: string | undefined): Promise<void> {
+async function handleRestartCommand(targetRaw: string | undefined): Promise<boolean> {
   const target = targetRaw ?? "all";
   if (target === "all") {
-    const services = resolveSelectedComposeServices(currentConfig.components);
-    if (services.length === 0) {
-      console.log("[debug] no compose services are enabled.");
-      return;
-    }
-    await runComposeAndPrint(["restart", ...services]);
-    return;
+    return attemptInfrastructureStart();
+  }
+  if (target === "bot") {
+    await restartDiscordBotProcess();
+    return true;
   }
   if (target !== "agent" && target !== "postgres") {
-    console.log("[debug] restart target must be one of: all | agent | postgres");
-    return;
+    console.log("[debug] restart target must be one of: all | agent | postgres | bot");
+    return false;
   }
   await runComposeAndPrint(["restart", target]);
+  return true;
 }
 
-async function handleUpCommand(): Promise<void> {
+async function handleBotCommand(actionRaw: string | undefined): Promise<boolean> {
+  const action = (actionRaw ?? "status").toLowerCase();
+  if (action === "status") {
+    console.log(`[debug] discord bot: ${resolveDiscordBotStatusLabel()}`);
+    return true;
+  }
+  if (action === "start") {
+    await startDiscordBotProcess();
+    return true;
+  }
+  if (action === "stop") {
+    await stopDiscordBotProcess();
+    return true;
+  }
+  if (action === "restart") {
+    await restartDiscordBotProcess();
+    return true;
+  }
+  console.log("[debug] bot action must be one of: status | start | stop | restart");
+  return false;
+}
+
+async function handleUpCommand(): Promise<boolean> {
   const services = resolveSelectedComposeServices(currentConfig.components);
   if (services.length === 0) {
     console.log("[debug] no compose services are enabled.");
-    return;
+    return false;
   }
   await runComposeAndPrint([
     "up",
@@ -342,6 +709,7 @@ async function handleUpCommand(): Promise<void> {
     ...(currentConfig.settings.composeBuild ? ["--build"] : []),
     ...services,
   ]);
+  return true;
 }
 
 async function runComposeAndPrint(args: string[]): Promise<void> {
@@ -363,8 +731,172 @@ async function runComposeAndPrint(args: string[]): Promise<void> {
   if (output.stderr.trim().length > 0) {
     console.log(output.stderr.trimEnd());
   }
+  if (output.timedOut) {
+    throw new Error(`docker compose ${args.join(" ")} timed out`);
+  }
   if (output.exitCode !== 0) {
-    console.log(`[debug] command failed (exit=${output.exitCode})`);
+    throw new Error(
+      `docker compose ${args.join(" ")} failed (exit=${output.exitCode})`,
+    );
+  }
+}
+
+async function startDiscordBotProcess(): Promise<void> {
+  if (!currentConfig.components["discord.bot"]) {
+    console.log("[debug] discord bot component is disabled.");
+    return;
+  }
+  if (discordBotProcess) {
+    console.log(
+      `[debug] discord bot is already running (pid=${discordBotProcess.pid}).`,
+    );
+    return;
+  }
+  if (!process.env.DISCORD_BOT_TOKEN) {
+    throw new Error("DISCORD_BOT_TOKEN is required when discord.bot is enabled.");
+  }
+  const child = spawn("yarn", ["dev:local"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BOT_ORCHESTRATOR_ENABLED: "false",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    pushDiscordBotLog("stdout", chunk);
+  });
+  child.stderr.on("data", (chunk: string) => {
+    pushDiscordBotLog("stderr", chunk);
+  });
+  child.on("exit", (code, signal) => {
+    appendDebugEvent({
+      level: "warn",
+      scope: "runtime",
+      command: "discord.bot",
+      message: `process exited (code=${String(code)}, signal=${String(signal)})`,
+    });
+    pushDiscordBotLog(
+      "stderr",
+      `[debug] discord bot process exited (code=${String(code)}, signal=${String(signal)})`,
+    );
+    if (discordBotProcess === child) {
+      discordBotProcess = null;
+    }
+  });
+  discordBotProcess = child;
+  console.log(`[debug] discord bot started (pid=${child.pid}).`);
+  appendDebugEvent({
+    level: "info",
+    scope: "runtime",
+    command: "discord.bot",
+    message: `started pid=${child.pid}`,
+  });
+  await ensureDiscordBotStarted(child);
+}
+
+async function ensureDiscordBotStarted(child: ChildProcess): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve();
+    }, 800);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      reject(
+        new Error(
+          `discord bot exited immediately (code=${String(code)}, signal=${String(signal)})`,
+        ),
+      );
+    };
+    child.once("exit", onExit);
+  });
+}
+
+async function stopDiscordBotProcess(): Promise<void> {
+  const child = discordBotProcess;
+  if (!child) {
+    return;
+  }
+  discordBotProcess = null;
+  console.log(`[debug] stopping discord bot (pid=${child.pid})...`);
+  appendDebugEvent({
+    level: "info",
+    scope: "runtime",
+    command: "discord.bot",
+    message: `stopping pid=${child.pid}`,
+  });
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch (error) {
+        console.log(
+          `[debug] failed to SIGKILL discord bot: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      resolve();
+    }, 5000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      child.kill("SIGTERM");
+    } catch (error) {
+      console.log(
+        `[debug] failed to SIGTERM discord bot: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
+
+async function restartDiscordBotProcess(): Promise<void> {
+  await stopDiscordBotProcess();
+  await startDiscordBotProcess();
+}
+
+function resolveDiscordBotStatusLabel(): string {
+  if (!currentConfig.components["discord.bot"]) {
+    return "disabled";
+  }
+  if (!discordBotProcess) {
+    return "stopped";
+  }
+  return `running(pid=${discordBotProcess.pid})`;
+}
+
+function pushDiscordBotLog(stream: "stdout" | "stderr", chunk: string): void {
+  const lines = chunk
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+  for (const line of lines) {
+    const formatted = `[bot:${stream}] ${line}`;
+    discordBotLogBuffer.push(formatted);
+    if (discordBotLogBuffer.length > 1200) {
+      discordBotLogBuffer.shift();
+    }
+    console.log(formatted);
+  }
+}
+
+function printDiscordBotLogs(tail: number): void {
+  if (discordBotLogBuffer.length === 0) {
+    console.log("[debug] no discord bot logs captured yet.");
+    return;
+  }
+  const size = Math.max(1, tail);
+  for (const line of discordBotLogBuffer.slice(-size)) {
+    console.log(line);
   }
 }
 
@@ -383,10 +915,15 @@ async function printSocketStatus(): Promise<void> {
     }
     try {
       const info = await stat(socketPath);
+      const listener = info.isSocket()
+        ? await probeSocketListener(socketPath)
+        : "no(non-socket)";
       console.log(
         `[socket] ${socketPath} type=${
           info.isSocket() ? "socket" : "non-socket"
-        } mode=${(info.mode & 0o777).toString(8)}`,
+        } owner=${info.uid}:${info.gid} mode=${(info.mode & 0o777).toString(
+          8,
+        )} listener=${listener}`,
       );
     } catch (error) {
       console.log(
@@ -396,6 +933,32 @@ async function printSocketStatus(): Promise<void> {
       );
     }
   }
+}
+
+async function probeSocketListener(socketPath: string): Promise<string> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        socketPath,
+        path: "/health",
+        method: "GET",
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => {
+          resolve(`yes(status=${res.statusCode ?? "unknown"})`);
+        });
+      },
+    );
+    req.setTimeout(2500, () => {
+      req.destroy(new Error("timeout"));
+    });
+    req.on("error", (error) => {
+      const message = error.message || "unknown";
+      resolve(`no(${message})`);
+    });
+    req.end();
+  });
 }
 
 async function writeSnapshot(tag: string | undefined): Promise<void> {
@@ -408,22 +971,38 @@ async function writeSnapshot(tag: string | undefined): Promise<void> {
     session_id: debugSessionId,
     timestamp: new Date().toISOString(),
     config: currentConfig,
+    runtime_failures: runtimeFailureState,
+    discord_bot_status: resolveDiscordBotStatusLabel(),
+    discord_bot_log_tail: discordBotLogBuffer.slice(-200),
     health,
     history: commandHistory.slice(-200),
-    env: collectImportantEnv(),
+    events: eventHistory.slice(-400),
+    env: collectImportantEnvEntries(),
   };
   await writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
   console.log(`[debug] snapshot written: ${filePath}`);
 }
 
 function printHistory(): void {
-  const recent = commandHistory.slice(-100);
-  if (recent.length === 0) {
-    console.log("[debug] no command history.");
+  const recentCommands = commandHistory.slice(-80);
+  const recentEvents = eventHistory.slice(-80);
+  if (recentCommands.length === 0 && recentEvents.length === 0) {
+    console.log("[debug] no history.");
     return;
   }
-  for (const line of recent) {
-    console.log(line);
+  if (recentCommands.length > 0) {
+    console.log("[history] commands:");
+    for (const line of recentCommands) {
+      console.log(`  ${line}`);
+    }
+  }
+  if (recentEvents.length > 0) {
+    console.log("[history] events:");
+    for (const event of recentEvents) {
+      console.log(
+        `  ${event.timestamp} [${event.level}] ${event.scope}:${event.command} ${event.message}`,
+      );
+    }
   }
 }
 
@@ -441,6 +1020,8 @@ function printPreflightHelp(): void {
   console.log("  validate");
   console.log("  env [KEY|--all]");
   console.log("  config");
+  console.log("  save-profile <name>");
+  console.log("  load-profile <name>");
   console.log("  reset");
   console.log("  start [--yes]");
   console.log("  exit");
@@ -449,12 +1030,14 @@ function printPreflightHelp(): void {
 function printRuntimeHelp(): void {
   console.log("runtime commands:");
   console.log("  help");
-  console.log("  status | probe");
+  console.log("  status");
+  console.log("  probe [all|gateway|agent|db]");
   console.log("  ps");
-  console.log("  logs [all|agent|postgres] [tail]");
-  console.log("  restart [all|agent|postgres]");
+  console.log("  logs [all|agent|postgres|bot] [tail]");
+  console.log("  restart [all|agent|postgres|bot]");
+  console.log("  bot [status|start|stop|restart]");
   console.log("  up");
-  console.log("  down");
+  console.log("  down [--yes]");
   console.log("  sockets");
   console.log("  env [KEY|--all]");
   console.log("  config");
@@ -475,10 +1058,136 @@ async function confirmStart(
   if (args.includes("--yes")) {
     return true;
   }
-  const answer = (
-    await rl.question("start with current preflight settings? [y/N]: ")
-  ).trim();
+  const answerRaw = await readLineSafely(
+    rl,
+    "start with current preflight settings? [y/N]: ",
+  );
+  const answer = (answerRaw ?? "").trim();
   return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+}
+
+async function confirmDownCommand(
+  rl: ReturnType<typeof createInterface>,
+  args: string[],
+): Promise<boolean> {
+  if (args.includes("--yes")) {
+    return true;
+  }
+  const answerRaw = await readLineSafely(
+    rl,
+    "run compose down? this may remove debugging context [y/N]: ",
+  );
+  const answer = (answerRaw ?? "").trim().toLowerCase();
+  return answer === "y" || answer === "yes";
+}
+
+async function saveProfile(nameRaw: string | undefined): Promise<void> {
+  const name = normalizeProfileName(nameRaw);
+  if (!name) {
+    console.log("[debug] profile name is required.");
+    return;
+  }
+  await mkdir(DEBUG_PROFILE_DIR, { recursive: true });
+  const filePath = path.join(DEBUG_PROFILE_DIR, `${name}.json`);
+  await writeFile(filePath, JSON.stringify(currentConfig, null, 2), "utf8");
+  console.log(`[debug] profile saved: ${filePath}`);
+}
+
+async function loadProfile(nameRaw: string | undefined): Promise<void> {
+  const name = normalizeProfileName(nameRaw);
+  if (!name) {
+    console.log("[debug] profile name is required.");
+    return;
+  }
+  const filePath = path.join(DEBUG_PROFILE_DIR, `${name}.json`);
+  const raw = await readFile(filePath, "utf8");
+  const parsed = JSON.parse(raw);
+  currentConfig = hydrateConfigFromProfile(parsed);
+  console.log(`[debug] profile loaded: ${filePath}`);
+  printPreflightSummary(currentConfig);
+}
+
+function normalizeProfileName(nameRaw: string | undefined): string | null {
+  if (!nameRaw) {
+    return null;
+  }
+  const name = nameRaw.trim();
+  if (name.length === 0) {
+    return null;
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error(
+      "profile name must match /^[A-Za-z0-9._-]+$/ (no spaces or slashes)",
+    );
+  }
+  return name;
+}
+
+function hydrateConfigFromProfile(input: unknown): DebugConfig {
+  if (!input || typeof input !== "object") {
+    throw new Error("invalid profile format: root object required");
+  }
+  const source = input as Record<string, unknown>;
+  const next = cloneConfig(DEFAULT_CONFIG);
+  const sourceComponents = source.components;
+  if (sourceComponents && typeof sourceComponents === "object") {
+    const components = sourceComponents as Record<string, unknown>;
+    for (const key of Object.keys(next.components) as ComponentKey[]) {
+      if (typeof components[key] === "boolean") {
+        next.components[key] = components[key];
+      }
+    }
+  }
+  const sourceSettings = source.settings;
+  if (sourceSettings && typeof sourceSettings === "object") {
+    const settings = sourceSettings as Record<string, unknown>;
+    for (const key of Object.keys(next.settings) as SettingKey[]) {
+      const value = settings[key];
+      if (value === undefined) {
+        continue;
+      }
+      applyProfileSetting(next.settings, key, value);
+    }
+  }
+  return next;
+}
+
+function applyProfileSetting(
+  target: DebugSettings,
+  key: SettingKey,
+  value: unknown,
+): void {
+  switch (key) {
+    case "composeBuild":
+    case "autoRecoveryEnabled":
+    case "stopComposeOnExit":
+    case "snapshotOnFailure":
+    case "envDumpOnStart":
+      if (typeof value === "boolean") {
+        target[key] = value;
+      }
+      return;
+    case "monitorIntervalSec":
+    case "failureThreshold":
+    case "commandTimeoutSec":
+    case "cleanupIntervalSec":
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        target[key] = Math.floor(value);
+      }
+      return;
+    case "internalConnectionMode":
+      if (value === "tcp" || value === "uds") {
+        target.internalConnectionMode = value;
+      }
+      return;
+    case "runtimeSocketDir":
+    case "gatewayApiSocketPath":
+    case "agentRuntimeSocketPath":
+      if (typeof value === "string" && value.trim().length > 0) {
+        target[key] = path.resolve(value);
+      }
+      return;
+  }
 }
 
 function printPreflightSummary(config: DebugConfig): void {
@@ -513,6 +1222,7 @@ function applyPreset(presetRaw: string | undefined): void {
   const preset = (presetRaw ?? "").toLowerCase();
   if (preset === "full") {
     currentConfig.components = {
+      "discord.bot": true,
       "compose.agent": true,
       "compose.postgres": true,
       "db.migrate": true,
@@ -525,6 +1235,7 @@ function applyPreset(presetRaw: string | undefined): void {
   }
   if (preset === "minimal") {
     currentConfig.components = {
+      "discord.bot": false,
       "compose.agent": false,
       "compose.postgres": false,
       "db.migrate": false,
@@ -537,6 +1248,7 @@ function applyPreset(presetRaw: string | undefined): void {
   }
   if (preset === "infra-only") {
     currentConfig.components = {
+      "discord.bot": false,
       "compose.agent": true,
       "compose.postgres": true,
       "db.migrate": true,
@@ -549,6 +1261,7 @@ function applyPreset(presetRaw: string | undefined): void {
   }
   if (preset === "api-only") {
     currentConfig.components = {
+      "discord.bot": true,
       "compose.agent": false,
       "compose.postgres": false,
       "db.migrate": false,
@@ -581,6 +1294,8 @@ function applySetting(keyRaw: string | undefined, valueRaw: string): void {
       case "composeBuild":
       case "autoRecoveryEnabled":
       case "stopComposeOnExit":
+      case "snapshotOnFailure":
+      case "envDumpOnStart":
         currentConfig.settings[keyRaw] = parseBoolOrThrow(value);
         break;
       case "monitorIntervalSec":
@@ -678,18 +1393,24 @@ function printEnv(arg: string | undefined): void {
     }
     return;
   }
+  const importantEntries = collectImportantEnvEntries();
   if (arg && arg.length > 0) {
-    const value = process.env[arg];
-    if (typeof value !== "string") {
-      console.log(`${arg}=<unset>`);
+    const key = arg.trim();
+    if (importantEntries[key]) {
+      const entry = importantEntries[key];
+      console.log(`${key}=${entry.value} (source=${entry.source})`);
       return;
     }
-    console.log(`${arg}=${maskEnvValue(arg, value)}`);
+    const value = process.env[key];
+    if (typeof value !== "string") {
+      console.log(`${key}=<unset> (source=unset)`);
+      return;
+    }
+    console.log(`${key}=${maskEnvValue(key, value)} (source=explicit env)`);
     return;
   }
-  const entries = collectImportantEnv();
-  for (const [key, value] of Object.entries(entries)) {
-    console.log(`${key}=${value}`);
+  for (const [key, entry] of Object.entries(importantEntries)) {
+    console.log(`${key}=${entry.value} (source=${entry.source})`);
   }
 }
 
@@ -710,6 +1431,12 @@ function validateConfig(config: DebugConfig): {
 } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  if (config.components["discord.bot"] && !config.components["gateway.api"]) {
+    errors.push("discord.bot requires gateway.api=true");
+  }
+  if (config.components["discord.bot"] && !process.env.DISCORD_BOT_TOKEN) {
+    errors.push("discord.bot requires DISCORD_BOT_TOKEN");
+  }
   if (config.components["db.migrate"] && !config.components["compose.postgres"]) {
     errors.push("db.migrate requires compose.postgres=true");
   }
@@ -718,6 +1445,7 @@ function validateConfig(config: DebugConfig): {
   }
   if (
     config.components["orchestrator.monitor"] &&
+    !config.components["discord.bot"] &&
     !config.components["compose.agent"] &&
     !config.components["compose.postgres"] &&
     !config.components["gateway.api"]
@@ -752,32 +1480,84 @@ function applySettingsToEnvironment(): void {
   process.env.AGENT_RUNTIME_SOCKET_PATH = currentConfig.settings.agentRuntimeSocketPath;
 }
 
-function collectImportantEnv(): Record<string, string> {
-  const keys = [
-    "INTERNAL_CONNECTION_MODE",
-    "RUNTIME_SOCKET_DIR",
-    "GATEWAY_API_SOCKET_PATH",
-    "AGENT_RUNTIME_SOCKET_PATH",
-    "AGENT_SOCKET_PATH",
-    "BOT_MODE",
-    "BOT_ORCHESTRATOR_ENABLED",
-    "BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC",
-    "BOT_ORCHESTRATOR_FAILURE_THRESHOLD",
-    "BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC",
-    "BOT_ORCHESTRATOR_CLEANUP_ENABLED",
-    "BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC",
-    "BOT_ORCHESTRATOR_COMPOSE_BUILD",
-    "COPILOT_SDK_LOG_LEVEL",
-    "STATE_STORE_DSN",
-    "MEMORY_STORE_DSN",
-  ];
-  const result: Record<string, string> = {};
-  for (const key of keys) {
-    const value = process.env[key];
-    result[key] =
-      typeof value === "string" ? maskEnvValue(key, value) : "<unset>";
+function collectImportantEnvEntries(): Record<string, EnvDisplayEntry> {
+  const runtimeSocketDir = resolveDefaultRuntimeSocketDir();
+  const runtimeSocketDirSource = process.env.RUNTIME_SOCKET_DIR
+    ? "explicit env"
+    : process.env.XDG_RUNTIME_DIR
+      ? "derived"
+      : "default";
+  const mode = process.env.INTERNAL_CONNECTION_MODE;
+  const entries: Record<string, EnvDisplayEntry> = {
+    INTERNAL_CONNECTION_MODE: {
+      value: maskEnvValue("INTERNAL_CONNECTION_MODE", mode ?? "tcp"),
+      source: mode ? "explicit env" : "default",
+    },
+    RUNTIME_SOCKET_DIR: {
+      value: maskEnvValue("RUNTIME_SOCKET_DIR", runtimeSocketDir),
+      source: runtimeSocketDirSource,
+    },
+    GATEWAY_API_SOCKET_PATH: resolveEnvEntry(
+      "GATEWAY_API_SOCKET_PATH",
+      path.join(runtimeSocketDir, "gateway-api.sock"),
+      "derived",
+    ),
+    AGENT_RUNTIME_SOCKET_PATH: resolveEnvEntry(
+      "AGENT_RUNTIME_SOCKET_PATH",
+      path.join(runtimeSocketDir, "agent-runtime.sock"),
+      "derived",
+    ),
+    AGENT_SOCKET_PATH: resolveEnvEntry("AGENT_SOCKET_PATH"),
+    BOT_MODE: resolveEnvEntry("BOT_MODE"),
+    BOT_ORCHESTRATOR_ENABLED: resolveEnvEntry("BOT_ORCHESTRATOR_ENABLED"),
+    BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC",
+    ),
+    BOT_ORCHESTRATOR_FAILURE_THRESHOLD: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_FAILURE_THRESHOLD",
+    ),
+    BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC",
+    ),
+    BOT_ORCHESTRATOR_CLEANUP_ENABLED: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_CLEANUP_ENABLED",
+    ),
+    BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC",
+    ),
+    BOT_ORCHESTRATOR_COMPOSE_BUILD: resolveEnvEntry(
+      "BOT_ORCHESTRATOR_COMPOSE_BUILD",
+    ),
+    DISCORD_BOT_TOKEN: resolveEnvEntry("DISCORD_BOT_TOKEN"),
+    COPILOT_SDK_LOG_LEVEL: resolveEnvEntry("COPILOT_SDK_LOG_LEVEL"),
+    STATE_STORE_DSN: resolveEnvEntry("STATE_STORE_DSN"),
+    MEMORY_STORE_DSN: resolveEnvEntry("MEMORY_STORE_DSN"),
+  };
+  return entries;
+}
+
+function resolveEnvEntry(
+  key: string,
+  fallback?: string,
+  fallbackSource: "default" | "derived" = "default",
+): EnvDisplayEntry {
+  const value = process.env[key];
+  if (typeof value === "string") {
+    return {
+      value: maskEnvValue(key, value),
+      source: "explicit env",
+    };
   }
-  return result;
+  if (fallback !== undefined) {
+    return {
+      value: maskEnvValue(key, fallback),
+      source: fallbackSource,
+    };
+  }
+  return {
+    value: "<unset>",
+    source: "unset",
+  };
 }
 
 function maskEnvValue(key: string, value: string): string {
@@ -790,6 +1570,13 @@ function maskEnvValue(key: string, value: string): string {
   return value;
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 function createDefaultConfig(): DebugConfig {
   const mode = resolveInternalConnectionMode(
     process.env.INTERNAL_CONNECTION_MODE ?? "tcp",
@@ -797,6 +1584,7 @@ function createDefaultConfig(): DebugConfig {
   const runtimeSocketDir = resolveDefaultRuntimeSocketDir();
   return {
     components: {
+      "discord.bot": true,
       "compose.agent": true,
       "compose.postgres": true,
       "db.migrate": true,
@@ -808,6 +1596,8 @@ function createDefaultConfig(): DebugConfig {
       composeBuild: process.env.BOT_ORCHESTRATOR_COMPOSE_BUILD !== "false",
       autoRecoveryEnabled: false,
       stopComposeOnExit: false,
+      snapshotOnFailure: true,
+      envDumpOnStart: false,
       monitorIntervalSec: parsePositiveInt(
         process.env.BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC,
         15,
@@ -913,6 +1703,7 @@ function resolveInternalConnectionMode(raw: string): "tcp" | "uds" {
 
 function isComponentKey(value: string): value is ComponentKey {
   return (
+    value === "discord.bot" ||
     value === "compose.agent" ||
     value === "compose.postgres" ||
     value === "db.migrate" ||
@@ -927,6 +1718,8 @@ function isSettingKey(value: string): value is SettingKey {
     value === "composeBuild" ||
     value === "autoRecoveryEnabled" ||
     value === "stopComposeOnExit" ||
+    value === "snapshotOnFailure" ||
+    value === "envDumpOnStart" ||
     value === "monitorIntervalSec" ||
     value === "failureThreshold" ||
     value === "commandTimeoutSec" ||
@@ -962,6 +1755,5 @@ function resolveComposeCurrentUserEnv(): Record<string, string> {
 }
 
 main().catch((error) => {
-  console.error("[debug] startup failed:", error);
-  process.exit(1);
+  console.error("[debug] fatal shell failure:", error);
 });

@@ -1,311 +1,226 @@
-# デバッグ対話モード仕様（`yarn debug` / `yarn debug:local`）
+# デバッグ対話シェル要件定義（`yarn debug` / `yarn debug:local`）
 
-本書は、今回の UDS 障害調査だけでなく、今後の本番相当トラブルシュート全般を対象にした
-「デバッグ運用モード」の要件定義です。
-
----
-
-## 1. 背景
-
-通常モードは「安全に自動復旧してサービス継続する」ことを優先しており、障害調査では次の問題がある。
-
-- Orchestrator の復旧/終了シーケンスで `compose down` が走り、障害時の socket・コンテナ状態が消える
-- `gracefulTerminate...` / `uncaughtException` で Bot プロセスが終了し、現場観測が途切れる
-- 障害再現時に「実際に渡った環境変数・解決済み設定値」を即時に確認しづらい
+本書は、障害時に **デバッグシェル自体は終了せず**、そこから各種調査ツールへアクセスし続けられる運用モードの要件を定義する。
 
 ---
 
-## 2. 目的
+## 1. 基本方針
 
-- 障害発生後も **観測可能な状態を保持** し、原因分析に必要な情報を失わない
-- 復旧を自動化ではなく **オペレータ主導** に切り替える
-- 「渡った環境変数」と「有効設定」を **その場で可視化** できる
-- 通常モードと切り離し、運用安全性を保ったまま検証できる
+1. デバッグシェルはエラーで落ちない（明示 `exit` のみ終了）。
+2. コンポーネント障害とシェル障害を分離する。
+3. まず起動対象を選び、次に追加設定を調整する。
+4. すべての操作は観測可能（ログ・履歴・スナップショット）である。
 
 ---
 
-## 3. スコープ
+## 2. スコープ
 
-### 3.1 対象
+### 2.1 対象
 
 - `yarn debug:local`
 - `yarn debug`（`op run --env-file=.env.op -- yarn debug:local`）
-- Bot 本体とは別プロセスの debug 専用スクリプト
-- Gateway / Orchestrator / compose の起動・監視・終了・障害処理
-- debug 専用の対話コマンド、ログ、証跡保存
+- Bot 本体と分離された debug 専用スクリプト
+- Preflight、起動制御、観測、復旧、証跡採取
 
-### 3.2 非対象
+### 2.2 非対象
 
-- 通常モード（`yarn dev`, `yarn start`）の既定挙動変更
-- 障害原因そのものの修正
+- 通常運用モード（`yarn dev`, `yarn start`）の既定挙動変更
+- 各障害の根本修正そのもの
 
 ---
 
-## 4. モード定義
+## 3. 実行モデル
 
-### 4.1 起動コマンド
+デバッグモードは以下 2 段階で動作する。
 
-- `yarn debug:local`: デバッグ用対話スクリプトを起動
-- `yarn debug`: 1Password 経由で同上
+1. **Preflight フェーズ**
+   - 起動コンポーネント選択（既定: 全有効）
+   - 追加設定の確認・編集
+   - バリデーション
+   - `start` で実行フェーズへ遷移
+2. **Runtime フェーズ**
+   - 起動後の監視・調査・復旧・証跡採取
+   - エラー時もシェルを継続し、操作可能な状態を維持
 
-### 4.2 モードフラグ
+---
 
-- debug スクリプト側で `BOT_DEBUG_INTERACTIVE=true` を必須付与
-- Bot 本体（`yarn dev(:local)`）には組み込まない
+## 4. シェル継続性（最重要要件）
 
-### 4.3 前提
+### 4.1 継続性契約
 
-- `INTERNAL_CONNECTION_MODE=tcp|uds` の両方をサポート（UDS 固定にしない）
-- Agent は既存方針どおり現在ユーザー UID/GID で起動
+- コマンド失敗（非ゼロ終了・例外・タイムアウト）でシェルは終了しない。
+- 対象コンポーネント（discord bot / gateway / compose）が落ちてもシェルは終了しない。
+- シェル終了は `exit` のみ。
 
-### 4.4 起動前設定（Preflight）要件
+### 4.2 失敗時の標準挙動
 
-debug モードでは、システム起動前に設定を確認・編集できることを必須とする。
+- 失敗は `error` イベントとして記録する（時刻、コマンド、要約、詳細）。
+- 直近の失敗情報を `status` / `history` で参照可能にする。
+- 自動 `process.exit` は行わない。
 
-- 起動シーケンスに入る前に preflight フェーズへ入る
-- まず「起動するコンポーネント」を選択する（既定は全選択）
-- コンポーネント選択後に必要な追加設定を編集する
-- 現在値・既定値・値の出所（env/default/derived）を一覧表示する
-- 変更内容を確認後、明示操作（`start`）までインフラ起動を開始しない
-- 変更内容を破棄して既定値に戻せる（`reset`）
+---
 
-### 4.5 起動コンポーネント選択（既定: 全て）
+## 5. コンポーネントモデル（既定: 全有効）
 
-Preflight の最初のステップとして、以下の起動対象を選択できること。
+起動対象コンポーネント:
 
+- `discord.bot`（Discord Bot プロセス）
+- `gateway.api`（Gateway API プロセス）
+- `compose.postgres`（Postgres コンテナ）
 - `compose.agent`（Agent コンテナ）
-- `compose.postgres`（PostgreSQL コンテナ）
 - `db.migrate`（起動時マイグレーション）
-- `gateway.api`（Gateway API サーバー）
 - `orchestrator.monitor`（監視ループ）
 - `orchestrator.cleanup`（定期 cleanup）
 
-仕様:
+補足:
 
-- 既定は **全コンポーネント有効**
-- 依存関係違反は `validate` で検出する  
-  例: `db.migrate=true` かつ `compose.postgres=false` は不正
-- `start` 実行時は選択コンポーネントのみ起動/実行
+- MCP ツール群は `gateway.api` に内包（別コンポーネントに分離しない）。
 
-### 4.6 Preflight で編集可能な追加設定項目
+### 5.1 依存関係ルール
 
-最低限、以下のカテゴリを編集対象に含める。
-
-1. **起動シーケンス制御**
-   - `composeBuild`（compose up 時に build を行うか）
-   - `composeUpEnabled`（compose up を実行するか）
-   - `dbMigrateEnabled`（起動時に migrate を実行するか）
-   - `gatewayStartEnabled`（Gateway API 起動を行うか）
-2. **復旧・終了制御**
-   - `autoRecoveryEnabled`（自動 restart/down/up 実行可否）
-   - `stopComposeOnExit`（終了時に compose down するか）
-   - `failureThreshold` / `monitorIntervalSec`
-3. **接続経路**
-   - `INTERNAL_CONNECTION_MODE`（tcp/uds）
-   - `RUNTIME_SOCKET_DIR`
-   - `GATEWAY_API_SOCKET_PATH` / `AGENT_RUNTIME_SOCKET_PATH` / `AGENT_SOCKET_PATH`
-   - DB 接続関連（`POSTGRES_SOCKET_PATH`, `DB_SOCKET_MOUNT_PATH`, `POSTGRES_PORT` など）
-4. **観測・診断**
-   - `LOG_LEVEL`, `COPILOT_SDK_LOG_LEVEL`
-   - `snapshotOnFailure`（障害時に自動証跡採取）
-   - `envDumpOnStart`（起動時の環境変数スナップショット採取）
-5. **安全制御**
-   - `commandTimeoutSec`
-   - `allowDestructiveCommands`（`down` 等の許可方針）
+- `compose.agent=true` は `compose.postgres=true` を前提
+- `db.migrate=true` は `compose.postgres=true` を前提
+- `discord.bot=true` は `gateway.api=true` を前提
+- `discord.bot=true` は `DISCORD_BOT_TOKEN` 必須
 
 ---
 
-## 5. 起動・終了・復旧シーケンス要件
+## 6. Preflight 要件（起動前）
 
-### 5.1 自動停止抑止
+### 6.1 操作順序
 
-`BOT_DEBUG_INTERACTIVE=true` では以下を抑止する。
+1. コンポーネント選択
+2. 追加設定編集
+3. 差分確認
+4. バリデーション
+5. `start`
 
-- 障害時の `shutdownInfrastructure({ stopCompose: true })`
-- `gracefulTerminateFromInfrastructureFailure` からの `process.exit(1)`
-- `uncaughtException` での即時終了
+### 6.2 追加設定（最低限）
 
-期待挙動:
+- 起動制御: `composeBuild`, `stopComposeOnExit`
+- 復旧制御: `autoRecoveryEnabled`, `failureThreshold`, `monitorIntervalSec`
+- 接続制御: `INTERNAL_CONNECTION_MODE`, `RUNTIME_SOCKET_DIR`, socket path 群
+- 実行制御: `commandTimeoutSec`, `cleanupIntervalSec`
+- 観測制御: `snapshotOnFailure`, `envDumpOnStart`
 
-- Bot プロセスは継続
-- `runtimeInfrastructureStatus` を `failed` に遷移
-- 「debug mode により継続中」を明示ログ/alert出力
+### 6.3 Preflight コマンド
 
-### 5.2 compose down の明示化
-
-- debug モードでは `compose down` は明示操作時のみ実行
-- `/exit` `/reboot` の既定は `stopCompose=false`
-- `--with-compose-down` 明示時のみ down を許可
-
-### 5.3 Orchestrator 自動復旧の抑止
-
-debug モードでは監視は継続するが、自動 `restart/down/up` は実行しない。
-
-- 健全性は継続観測する
-- 復旧は対話コマンドで実施
-- 復旧判断材料（失敗回数、最終成功時刻）を保持
+- `components`
+- `enable <component>` / `disable <component>`
+- `preset full|minimal|infra-only|api-only`
+- `set <key> <value>` / `unset <key>`
+- `diff`
+- `validate`
+- `save-profile <name>` / `load-profile <name>`
+- `start` / `start --yes`
+- `reset`
 
 ---
 
-## 6. 対話コマンド要件（拡張版）
+## 7. Runtime ツール要件（起動後）
 
-Bot プロセス標準入力（TTY）で受け付ける。Discord コマンドとは分離する。
+### 7.1 状態確認
 
-### 6.0 起動前設定操作（Preflight）
-
-- `preflight`: 現在の preflight 設定一覧表示
-- `components`: 起動対象コンポーネント一覧と有効/無効状態を表示
-- `enable <component>` / `disable <component>`: コンポーネント選択の変更
-- `preset full|minimal|infra-only|api-only`: コンポーネント選択のプリセット適用
-- `set <key> <value>`: 設定値変更
-- `unset <key>`: 明示設定解除（既定値へ戻す）
-- `diff`: 既定値との差分表示
-- `validate`: 起動前バリデーション実行（必須値・整合性・path）
-- `save-profile <name>` / `load-profile <name>`: 設定プロファイル保存/読込
-- `start`: 現在設定で起動シーケンス開始
-- `reset`: preflight 変更を破棄
-
-要件:
-
-- `start` 前に「有効コンポーネント一覧 + 追加設定差分」を最終確認表示する
-- `start --yes` 以外では確認プロンプトを出す
-
-### 6.1 基本操作
-
-- `help`: コマンド一覧
-- `status`: 全体状態（infra/gateway/agent/compose）
+- `status`: shell + 各コンポーネント状態 + 最終失敗要約
+- `probe`: gateway/agent/db の疎通確認
 - `ps`: compose 状態
-- `up`, `down`, `restart agent|postgres|all`
-- `logs agent|postgres|all [--tail N] [--follow]`
+- `sockets`: UDS 実体（存在/種別/owner/mode/listener）
 
-### 6.2 接続・socket診断
+### 7.2 ログ・履歴
 
-- `probe`: gateway/agent/db の health probe 一括実行
-- `probe gateway|agent|db`: 個別 probe
-- `sockets`: UDS ファイル一覧・owner/mode/type・listener 有無
+- `logs all|agent|postgres|bot [tail]`
+- `history`（コマンド・イベント履歴）
+- `snapshot [tag]`（状態一括保存）
 
-### 6.3 環境変数・有効設定の可視化（必須）
+### 7.3 コンポーネント操作
 
-- `env`: デバッグ対象の主要環境変数を表示
-- `env <KEY>`: 単一キー表示
-- `env --all`: 全環境変数表示（秘密値はマスク）
-- `config`: 実際の解決済み設定値（socket path、mode、compose file など）を表示
+- `up`, `down`
+- `restart all|agent|postgres|bot`
+- `bot status|start|stop|restart`
+
+### 7.4 設定可視化
+
+- `env`
+- `env <KEY>`
+- `env --all`（秘密値はマスク）
+- `config`（有効設定の解決値表示）
 
 表示要件:
 
-- 値の出所を併記（`explicit env` / `fallback default` / `derived`）
-- 秘密値はマスク（トークン・パスワード・APIキー類）
-- 取得失敗時はエラーを握りつぶさず表示
-
-### 6.4 証跡採取
-
-- `snapshot`: 現在状態を bundle 保存
-- `snapshot --name <tag>`: 任意タグ付き保存
-- `history`: 直近コマンド履歴・重要イベント表示
-
-### 6.5 終了操作
-
-- `exit`: Bot プロセスのみ終了（compose維持）
-- `exit --with-compose-down`: Bot終了 + compose down
+- 値の出所を併記（`explicit env` / `default` / `derived`）
+- 失敗・未設定を隠さず表示
+- トークン/パスワード/DSN/APIキーは常にマスク
 
 ---
 
-## 7. 例外・障害時の挙動
+## 8. エラー処理要件
 
-### 7.1 uncaught / unhandled
+### 8.1 共通
 
-- 構造化ログ出力
-- system alert 送信
-- debug モードではプロセス継続
-- 直近 N 件の致命エラーをメモリ保持し `status` で参照可能
+- すべてのコマンドで `ok/error` を返す
+- `error` 時もプロンプトを復帰し、次コマンドを受付可能にする
 
-### 7.2 接続断続系（`ECONNREFUSED` / `EACCES` / `ENOENT`）
+### 8.2 典型障害の扱い
 
-- イベントを時系列で記録
-  - 最終 200 応答時刻
-  - 最終失敗時刻
-  - 失敗回数（連続/累積）
-  - エラー種別別カウント
-- `status` / `probe` / `history` から参照可能
+- `ECONNREFUSED`, `EACCES`, `ENOENT` は種別別に集計
+- 最終成功時刻、最終失敗時刻、連続失敗回数を保持
+- 自動終了せず、オペレータへ次アクション候補を表示
 
-### 7.3 非TTY実行時
+### 8.3 自動復旧の扱い
 
-- 対話入力は無効化
-- 代替として定期 `status` 出力を有効化
+- debug 既定は `autoRecoveryEnabled=false`
+- 有効化時のみ自動復旧を許可
+- 自動復旧実行有無は履歴へ記録
 
 ---
 
-## 8. ログ・証跡要件
+## 9. ログ・証跡
 
-### 8.1 保存先
+保存先:
 
 - `debug/YYYYMMDD-HHMMSS/`
 
-### 8.2 保存内容
+保存対象:
 
-- Bot stdout/stderr
-- orchestrator イベント（boot/monitor/recovery decision）
-- preflight 設定変更イベント（before/after, operator, timestamp）
-- 手動コマンド履歴（実行者/時刻付き）
-- health probe 結果
-- socket 状態スナップショット
-- 環境変数スナップショット（マスク済み）
-- 解決済み設定スナップショット
+- shell イベントログ（コマンド、結果、エラー）
+- preflight 変更履歴（before/after, operator, timestamp）
+- compose / gateway / bot のログ断片
+- probe / sockets / env / config のスナップショット
+- `snapshot` 出力（JSON）
 
-### 8.3 フォーマット
+フォーマット:
 
-- 人間可読ログ + JSONL（機械解析用）を併用
-- すべてのレコードに timestamp と debug session id を付与
+- 人間可読ログ + JSONL 併用
+- timestamp + session id を必須付与
 
 ---
 
-## 9. セキュリティ・安全要件
+## 10. 安全性要件
 
-- 環境変数表示は秘密値を必ずマスク
-- debug コマンドで実行可能な操作は allowlist 化
-- destructive 操作（down, prune 等）は確認付きまたは明示フラグ必須
-- debug モードであることをログと起動バナーで明確化
-
----
-
-## 10. 受け入れ条件
-
-- `yarn debug(:local)` で起動できる
-- 起動前に preflight 設定を確認・編集し、`start` まで起動を保留できる
-- 起動前にコンポーネント選択ができ、既定は全コンポーネント有効である
-- `enable/disable/preset` で起動対象を変更し、`start` 結果に反映される
-- `set/unset/diff/validate` で設定差分と妥当性を確認できる
-- `save-profile/load-profile` で検証条件を再利用できる
-- Agent/Gateway 障害後も Bot が終了しない
-- 障害後に `ps` / `logs` / `probe` / `sockets` / `snapshot` が継続利用できる
-- `env` / `config` で調査に必要な設定値を即時確認できる
-- 秘密値が平文出力されない
-- 明示操作なしで `compose down` されない
-- 通常モードの挙動が変わらない
+- destructive 操作（`down` 等）は確認付きまたは明示フラグ必須
+- 実行可能コマンドは allowlist 方式
+- debug モードであることを起動バナーとログで明示
 
 ---
 
-## 11. 実装タスク（高レベル）
+## 11. 受け入れ条件
 
-1. package scripts に `debug:local` / `debug` を追加
-2. debug フラグ解決ロジックを Bot 起動時に追加
-3. preflight 設定スキーマ（コンポーネント選択/既定値/型/バリデーション/由来情報）を実装
-4. preflight 対話コマンド（components/enable/disable/preset/set/unset/diff/validate/save-profile/load-profile/start/reset）を実装
-5. 選択コンポーネントに応じた起動シーケンス分岐（compose/migrate/gateway/monitor/cleanup）を実装
-6. 終了/障害経路（`gracefulTerminate...`, `uncaughtException`, `/exit` `/reboot`）を debug 分岐
-7. Orchestrator auto-recovery の debug 抑止
-8. stdin 対話コマンドループ（help/status/ps/logs/probe/sockets/env/config/snapshot/exit）追加
-9. 環境変数表示とマスキング実装
-10. 設定解決値（effective config）の可視化実装
-11. debug セッション証跡の保存基盤実装
+1. `yarn debug(:local)` で起動できる  
+2. いずれのコマンド失敗でもシェルが継続する  
+3. コンポーネントクラッシュ後も `status/logs/probe/snapshot` が利用できる  
+4. 起動前に「コンポーネント選択 → 追加設定編集」の順で操作できる  
+5. `env/config` で調査に必要な設定値を確認できる（秘密値はマスク）  
+6. 明示指示なしで `compose down` しない  
+7. 通常モードの挙動は不変  
 
 ---
 
-## 12. 互換性・リスク
+## 12. 実装タスク（更新版）
 
-- `process.exit` 抑止により不健康状態が残留するリスク
-  - debug モード限定 + 明示終了コマンドを提供
-- 収集ログ増加によるディスク使用量増加
-  - ローテーション/保存上限を別途設定
-- 環境変数可視化は秘密漏えいリスク
-  - マスクルールを必須化し、`--all` でも平文禁止
+1. shell 継続性の統一実装（例外時も prompt 復帰）
+2. Preflight の 2 段階 UI（コンポーネント選択 → 追加設定）
+3. 依存関係バリデーションと設定差分表示
+4. runtime ツール群（status/probe/sockets/logs/history/snapshot/env/config）
+5. コンポーネント操作（up/down/restart/bot control）
+6. エラー統計・最終失敗情報の保持と表示
+7. 証跡保存基盤（JSONL + snapshot）
