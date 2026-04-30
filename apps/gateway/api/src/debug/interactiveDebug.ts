@@ -98,6 +98,9 @@ const DEFAULT_CONFIG = createDefaultConfig();
 let currentConfig = cloneConfig(DEFAULT_CONFIG);
 let runtimeSupervisor: RuntimeSupervisor | null = null;
 let discordBotProcess: ChildProcess | null = null;
+let discordBotReady = false;
+let discordBotLastReadyAt: string | null = null;
+let discordBotLastExitDetail: string | null = null;
 const commandHistory: string[] = [];
 const eventHistory: DebugEvent[] = [];
 const discordBotLogBuffer: string[] = [];
@@ -748,18 +751,23 @@ async function startDiscordBotProcess(): Promise<void> {
   }
   if (discordBotProcess) {
     console.log(
-      `[debug] discord bot is already running (pid=${discordBotProcess.pid}).`,
+      `[debug] discord bot is already ${resolveDiscordBotStatusLabel()} (pid=${discordBotProcess.pid}).`,
     );
     return;
   }
   if (!process.env.DISCORD_BOT_TOKEN) {
     throw new Error("DISCORD_BOT_TOKEN is required when discord.bot is enabled.");
   }
+
+  discordBotReady = false;
+  discordBotLastExitDetail = null;
+
   const child = spawn("yarn", ["dev:local"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       BOT_ORCHESTRATOR_ENABLED: "false",
+      BOT_MODE: "standard",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -772,55 +780,87 @@ async function startDiscordBotProcess(): Promise<void> {
     pushDiscordBotLog("stderr", chunk);
   });
   child.on("exit", (code, signal) => {
+    const exitDetail = `process exited (code=${String(code)}, signal=${String(signal)})`;
+    discordBotReady = false;
+    discordBotLastExitDetail = exitDetail;
     appendDebugEvent({
       level: "warn",
       scope: "runtime",
       command: "discord.bot",
-      message: `process exited (code=${String(code)}, signal=${String(signal)})`,
+      message: exitDetail,
     });
     pushDiscordBotLog(
       "stderr",
-      `[debug] discord bot process exited (code=${String(code)}, signal=${String(signal)})`,
+      `[debug] discord bot ${exitDetail}`
     );
     if (discordBotProcess === child) {
       discordBotProcess = null;
     }
   });
+
   discordBotProcess = child;
-  console.log(`[debug] discord bot started (pid=${child.pid}).`);
+  console.log(`[debug] discord bot process spawned (pid=${child.pid}). waiting for ready...`);
   appendDebugEvent({
     level: "info",
     scope: "runtime",
     command: "discord.bot",
-    message: `started pid=${child.pid}`,
+    message: `spawned pid=${child.pid}`,
   });
-  await ensureDiscordBotStarted(child);
+
+  try {
+    await ensureDiscordBotStarted(child);
+    console.log(`[debug] discord bot is ready (pid=${child.pid}).`);
+    appendDebugEvent({
+      level: "info",
+      scope: "runtime",
+      command: "discord.bot",
+      message: `ready pid=${child.pid}`,
+    });
+  } catch (error) {
+    await stopDiscordBotProcess();
+    throw error;
+  }
 }
 
 async function ensureDiscordBotStarted(child: ChildProcess): Promise<void> {
+  if (discordBotReady) {
+    return;
+  }
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       child.off("exit", onExit);
+      child.off("discord-bot-ready", onReady);
+      reject(new Error("discord bot did not become ready within 30 seconds"));
+    }, 30_000);
+
+    const onReady = () => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
       resolve();
-    }, 800);
+    };
+
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
+      child.off("discord-bot-ready", onReady);
       reject(
         new Error(
-          `discord bot exited immediately (code=${String(code)}, signal=${String(signal)})`,
+          `discord bot exited before ready (code=${String(code)}, signal=${String(signal)})`,
         ),
       );
     };
+
+    child.once("discord-bot-ready", onReady);
     child.once("exit", onExit);
   });
 }
-
 async function stopDiscordBotProcess(): Promise<void> {
   const child = discordBotProcess;
   if (!child) {
     return;
   }
   discordBotProcess = null;
+  discordBotReady = false;
+  discordBotLastExitDetail = "stopped by operator";
   console.log(`[debug] stopping discord bot (pid=${child.pid})...`);
   appendDebugEvent({
     level: "info",
@@ -869,9 +909,15 @@ function resolveDiscordBotStatusLabel(): string {
     return "disabled";
   }
   if (!discordBotProcess) {
+    if (discordBotLastExitDetail) {
+      return `stopped(${discordBotLastExitDetail})`;
+    }
     return "stopped";
   }
-  return `running(pid=${discordBotProcess.pid})`;
+  if (!discordBotReady) {
+    return `starting(pid=${discordBotProcess.pid})`;
+  }
+  return `running(pid=${discordBotProcess.pid}, ready_at=${discordBotLastReadyAt ?? "unknown"})`;
 }
 
 function pushDiscordBotLog(stream: "stdout" | "stderr", chunk: string): void {
@@ -880,6 +926,7 @@ function pushDiscordBotLog(stream: "stdout" | "stderr", chunk: string): void {
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0);
   for (const line of lines) {
+    trackDiscordBotReadinessFromLog(line);
     const formatted = `[bot:${stream}] ${line}`;
     discordBotLogBuffer.push(formatted);
     if (discordBotLogBuffer.length > 1200) {
@@ -889,6 +936,19 @@ function pushDiscordBotLog(stream: "stdout" | "stderr", chunk: string): void {
   }
 }
 
+function trackDiscordBotReadinessFromLog(line: string): void {
+  if (discordBotReady) {
+    return;
+  }
+  if (!line.includes("Logged in as")) {
+    return;
+  }
+  discordBotReady = true;
+  discordBotLastReadyAt = new Date().toISOString();
+  if (discordBotProcess) {
+    discordBotProcess.emit("discord-bot-ready");
+  }
+}
 function printDiscordBotLogs(tail: number): void {
   if (discordBotLogBuffer.length === 0) {
     console.log("[debug] no discord bot logs captured yet.");
