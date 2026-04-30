@@ -171,6 +171,14 @@ const ORCHESTRATOR_COMMAND_TIMEOUT_SEC = parsePositiveInt(
   process.env.BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC,
   240,
 );
+const ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS = parsePositiveInt(
+  process.env.BOT_ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS,
+  5,
+);
+const ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC = parseNonNegativeInt(
+  process.env.BOT_ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC,
+  2,
+);
 const ORCHESTRATOR_CLEANUP_ENABLED =
   process.env.BOT_ORCHESTRATOR_CLEANUP_ENABLED !== "false";
 const ORCHESTRATOR_CLEANUP_INTERVAL_SEC = parsePositiveInt(
@@ -248,6 +256,19 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return fallback;
   }
 
@@ -2524,6 +2545,8 @@ async function bootInfrastructure(): Promise<void> {
     agentRuntimeBaseUrl: AGENT_RUNTIME_BASE_URL,
     agentRuntimeSocketPath: AGENT_RUNTIME_SOCKET_PATH ?? undefined,
     composeBuild: ORCHESTRATOR_COMPOSE_BUILD,
+    bootHealthMaxAttempts: ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS,
+    bootHealthRetryIntervalSec: ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC,
     monitorIntervalSec: ORCHESTRATOR_MONITOR_INTERVAL_SEC,
     failureThreshold: ORCHESTRATOR_FAILURE_THRESHOLD,
     commandTimeoutSec: ORCHESTRATOR_COMMAND_TIMEOUT_SEC,

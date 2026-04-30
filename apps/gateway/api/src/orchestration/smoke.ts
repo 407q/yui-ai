@@ -16,6 +16,7 @@ interface SupervisorHarness {
 
 async function main(): Promise<void> {
   await runBootScenario();
+  await runBootGraceRetryScenario();
   await runBootFailureRollbackScenario();
   await runTargetedRecoveryScenario();
   await runFullRestartRecoveryScenario();
@@ -71,6 +72,25 @@ async function runBootFailureRollbackScenario(): Promise<void> {
   );
   assert(harness.starts >= 1, "boot failure scenario should start gateway-api once");
   assert(harness.stops >= 1, "boot failure scenario should stop gateway-api");
+}
+
+async function runBootGraceRetryScenario(): Promise<void> {
+  const harness = createHarness([
+    unhealthySnapshot(),
+    unhealthySnapshot(),
+    healthySnapshot(),
+  ]);
+  const supervisor = createSupervisor(harness, 2, 3);
+
+  await supervisor.boot();
+  await supervisor.shutdown();
+
+  assert(
+    harness.logs.some((message) =>
+      message.includes("boot: health not ready (1/3)"),
+    ),
+    "boot grace retry should log retry progress",
+  );
 }
 
 async function runTargetedRecoveryScenario(): Promise<void> {
@@ -184,6 +204,7 @@ function createHarness(initialProbes: RuntimeHealthSnapshot[]): SupervisorHarnes
 function createSupervisor(
   harness: SupervisorHarness,
   failureThreshold: number,
+  bootHealthMaxAttempts = 1,
 ): RuntimeSupervisor {
   process.env.INTERNAL_CONNECTION_MODE = "tcp";
   return new RuntimeSupervisor({
@@ -195,6 +216,8 @@ function createSupervisor(
     agentRuntimeBaseUrl: "http://127.0.0.1:3801",
     agentRuntimeSocketPath: undefined,
     composeBuild: true,
+    bootHealthMaxAttempts,
+    bootHealthRetryIntervalSec: 0,
     monitorIntervalSec: 1,
     failureThreshold,
     commandTimeoutSec: 30,

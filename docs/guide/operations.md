@@ -84,6 +84,8 @@ Orchestrator は Bot 起動時に自動で動作し、以下を担当します:
 | `BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC` | `15` | 監視間隔（秒） |
 | `BOT_ORCHESTRATOR_FAILURE_THRESHOLD` | `3` | 復旧開始までの失敗回数 |
 | `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC` | `240` | コマンドタイムアウト（秒） |
+| `BOT_ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS` | `5` | 起動時 Ready 判定の最大試行回数（初回チェック含む） |
+| `BOT_ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC` | `2` | 起動時 Ready 判定リトライ間隔（秒） |
 | `BOT_ORCHESTRATOR_CLEANUP_ENABLED` | `true` | クリーンアップの有効化 |
 | `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC` | `86400` | クリーンアップ間隔（秒） |
 

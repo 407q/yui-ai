@@ -50,6 +50,8 @@ export interface RuntimeSupervisorOptions {
   gatewayStartEnabled?: boolean;
   autoRecoveryEnabled?: boolean;
   rollbackOnBootFailure?: boolean;
+  bootHealthMaxAttempts?: number;
+  bootHealthRetryIntervalSec?: number;
   monitorIntervalSec: number;
   failureThreshold: number;
   commandTimeoutSec: number;
@@ -117,10 +119,7 @@ export class RuntimeSupervisor {
         this.log("boot: gateway-api start skipped (disabled)");
       }
 
-      const probe = await this.probeRuntime();
-      if (!isHealthy(probe)) {
-        throw new Error(`Boot health check failed: ${formatHealth(probe)}`);
-      }
+      await this.waitForBootHealth();
 
       this.booted = true;
       this.consecutiveFailures = 0;
@@ -619,6 +618,35 @@ export class RuntimeSupervisor {
     };
   }
 
+  private async waitForBootHealth(): Promise<void> {
+    const maxAttempts = normalizePositiveInt(this.options.bootHealthMaxAttempts, 5);
+    const retryIntervalSec = normalizeNonNegativeInt(
+      this.options.bootHealthRetryIntervalSec,
+      2,
+    );
+    let probe = await this.probeRuntime();
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (isHealthy(probe)) {
+        return;
+      }
+      if (attempt >= maxAttempts) {
+        break;
+      }
+      this.log(
+        `boot: health not ready (${attempt}/${maxAttempts}) ${formatHealth(
+          probe,
+        )}; retry in ${retryIntervalSec}s`,
+      );
+      if (retryIntervalSec > 0) {
+        await waitMs(retryIntervalSec * 1000);
+      }
+      probe = await this.probeRuntime();
+    }
+    throw new Error(
+      `Boot health check failed after ${maxAttempts} attempt(s): ${formatHealth(probe)}`,
+    );
+  }
+
   private async probeEndpoint(url: string): Promise<RuntimeHealthEndpointStatus> {
     const timeoutSec = Math.min(10, Math.max(1, this.options.commandTimeoutSec));
     const controller = new AbortController();
@@ -904,6 +932,34 @@ function resolveCurrentGid(): string {
     return String(process.getgid());
   }
   return "1000";
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function normalizePositiveInt(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const floored = Math.floor(value);
+  if (floored <= 0) {
+    return fallback;
+  }
+  return floored;
+}
+
+function normalizeNonNegativeInt(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const floored = Math.floor(value);
+  if (floored < 0) {
+    return fallback;
+  }
+  return floored;
 }
 
 interface UnixSocketHealthRequestInput {
