@@ -166,7 +166,7 @@ postgres://user:password@host:port/database
 | `BOT_ORCHESTRATOR_MONITOR_INTERVAL_SEC` | 任意 | `15` | 監視間隔（秒） |
 | `BOT_ORCHESTRATOR_FAILURE_THRESHOLD` | 任意 | `3` | 復旧開始までの失敗回数 |
 | `BOT_ORCHESTRATOR_COMMAND_TIMEOUT_SEC` | 任意 | `240` | Orchestrator 実行コマンドのタイムアウト（秒） |
-| `BOT_ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS` | 任意 | `5` | 起動時 Ready 判定の最大試行回数（初回チェック含む） |
+| `BOT_ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS` | 任意 | `10` | 起動時 Ready 判定の最大試行回数（初回チェック含む） |
 | `BOT_ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC` | 任意 | `2` | 起動時 Ready 判定リトライ間隔（秒） |
 | `BOT_ORCHESTRATOR_CLEANUP_ENABLED` | 任意 | `true` | cleanup 実行有効化 |
 | `BOT_ORCHESTRATOR_CLEANUP_INTERVAL_SEC` | 任意 | `86400` | cleanup 実行間隔（秒） |

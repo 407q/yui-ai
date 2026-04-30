@@ -619,7 +619,7 @@ export class RuntimeSupervisor {
   }
 
   private async waitForBootHealth(): Promise<void> {
-    const maxAttempts = normalizePositiveInt(this.options.bootHealthMaxAttempts, 5);
+    const maxAttempts = normalizePositiveInt(this.options.bootHealthMaxAttempts, 10);
     const retryIntervalSec = normalizeNonNegativeInt(
       this.options.bootHealthRetryIntervalSec,
       2,
