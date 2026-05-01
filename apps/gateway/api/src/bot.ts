@@ -2590,7 +2590,7 @@ async function bootInfrastructure(): Promise<void> {
 }
 
 async function shutdownInfrastructure(
-  options: RuntimeSupervisorShutdownOptions = {},
+  options: RuntimeSupervisorShutdownOptions = { stopCompose: ORCHESTRATOR_ENABLED },
 ): Promise<void> {
   if (!runtimeSupervisor) {
     return;
@@ -4583,14 +4583,19 @@ process.on("unhandledRejection", (reason: unknown) => {
 });
 
 process.on("uncaughtException", (error: Error) => {
-  void reportRuntimeError("uncaughtException", error).finally(() => {
+  void (async () => {
+    await reportRuntimeError("uncaughtException", error);
+    await shutdownInfrastructure({ stopCompose: ORCHESTRATOR_ENABLED });
+    process.exit(1);
+  })().catch((shutdownError: unknown) => {
+    console.error(`${LOG_PREFIX} uncaughtException shutdown failed`, shutdownError);
     process.exit(1);
   });
 });
 
 process.once("SIGTERM", () => {
   void (async () => {
-    await shutdownInfrastructure();
+    await shutdownInfrastructure({ stopCompose: ORCHESTRATOR_ENABLED });
     process.exit(0);
   })().catch((error: unknown) => {
     console.error(`${LOG_PREFIX} SIGTERM shutdown failed`, error);
@@ -4600,7 +4605,7 @@ process.once("SIGTERM", () => {
 
 process.once("SIGINT", () => {
   void (async () => {
-    await shutdownInfrastructure();
+    await shutdownInfrastructure({ stopCompose: ORCHESTRATOR_ENABLED });
     process.exit(0);
   })().catch((error: unknown) => {
     console.error(`${LOG_PREFIX} SIGINT shutdown failed`, error);
