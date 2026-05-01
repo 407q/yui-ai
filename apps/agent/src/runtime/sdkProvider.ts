@@ -401,11 +401,9 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         ...activeSend.runtimeToolEvents,
       ];
       return {
-        final_answer: resolveFinalAnswer(
-          input.prompt,
-          input.sdk_session_id,
+        final_answer: await resolveFinalAnswer(
+          state.session,
           assistantMessage,
-          mergedToolResults,
         ),
         tool_results: mergedToolResults,
         tool_events: mergedToolEvents,
@@ -1450,24 +1448,51 @@ function buildPromptWithDeclaredToolResults(
   );
 }
 
-function resolveFinalAnswer(
-  prompt: string,
-  sdkSessionId: string,
+async function resolveFinalAnswer(
+  session: CopilotSession,
   assistantMessage: AssistantMessageEvent | undefined,
-  toolResults: ToolCallResult[],
-): string {
+): Promise<string> {
   const content = assistantMessage?.data.content;
   if (typeof content === "string" && content.trim().length > 0) {
     return content;
   }
 
-  const succeeded = toolResults.filter((result) => result.status === "ok").length;
-  const failed = toolResults.filter((result) => result.status === "error").length;
-  return (
-    `Processed prompt: ${prompt}\n` +
-    `sdk_session_id: ${sdkSessionId}\n` +
-    `tool_calls: ${toolResults.length} (ok=${succeeded}, error=${failed})`
-  );
+  return resolveLatestAssistantMessageFromHistory(session);
+}
+
+async function resolveLatestAssistantMessageFromHistory(
+  session: CopilotSession,
+): Promise<string> {
+  const events = await session.getMessages();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.type !== "assistant.message") {
+      continue;
+    }
+    const content = event.data.content;
+    if (typeof content === "string" && content.trim().length > 0) {
+      return content;
+    }
+  }
+
+  const deltaByMessageId = new Map<string, string[]>();
+  for (const event of events) {
+    if (event.type !== "assistant.message_delta") {
+      continue;
+    }
+    const current = deltaByMessageId.get(event.data.messageId) ?? [];
+    if (event.data.deltaContent.trim().length > 0) {
+      current.push(event.data.deltaContent);
+      deltaByMessageId.set(event.data.messageId, current);
+    }
+  }
+
+  const mergedDelta = [...deltaByMessageId.values()].at(-1)?.join("").trim() ?? "";
+  if (mergedDelta.length > 0) {
+    return mergedDelta;
+  }
+
+  throw new Error("assistant response is empty");
 }
 
 function mapToolErrorToResultType(

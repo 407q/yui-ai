@@ -392,15 +392,16 @@ function resolveAgentSessionRootDirectory(raw: string | undefined): string {
 }
 
 function resolveBotMode(): "mock" | "standard" {
+  const configuredMode = (process.env.BOT_MODE ?? "").trim().toLowerCase();
   if (
-    process.env.BOT_MODE === "mock" &&
-    process.env.BOT_ENABLE_MOCK_MODE === "true"
+    configuredMode === "mock" &&
+    parseBooleanEnvFlag(process.env.BOT_ENABLE_MOCK_MODE, false)
   ) {
     return "mock";
   }
-  if (process.env.BOT_MODE === "mock") {
+  if (configuredMode === "mock") {
     console.warn(
-      "[agent] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE=true. Falling back to standard mode.",
+      "[agent] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE is truthy. Falling back to standard mode.",
     );
   }
   return "standard";
@@ -449,6 +450,22 @@ function resolvePositiveInt(raw: string | undefined, fallback: number): number {
   }
 
   return parsed;
+}
+
+function parseBooleanEnvFlag(raw: string | undefined, fallback: boolean): boolean {
+  if (!raw) {
+    return fallback;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function resolveCopilotSdkLogLevel(

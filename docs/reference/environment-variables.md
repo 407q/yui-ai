@@ -37,8 +37,8 @@
 | `DISCORD_GUILD_ID` | 任意 | - | 指定時はギルドコマンドとして登録 |
 | `DISCORD_API_BASE_URL` | 任意 | `https://discord.com/api/v10` | Discord API ベース URL |
 | `BOT_SYSTEM_ALERT_CHANNEL_ID` | 任意 | - | システムアラート通知先 |
-| `BOT_MODE` | 任意 | `standard` | `standard` / `mock`（`mock` は `BOT_ENABLE_MOCK_MODE=true` のときのみ有効） |
-| `BOT_ENABLE_MOCK_MODE` | 任意 | `false` | `true` のときのみ `BOT_MODE=mock` を有効化（誤設定防止） |
+| `BOT_MODE` | 任意 | `standard` | `standard` / `mock`（`mock` は `BOT_ENABLE_MOCK_MODE` が truthy のときのみ有効） |
+| `BOT_ENABLE_MOCK_MODE` | 任意 | `false` | `true/1/yes/on` のときのみ `BOT_MODE=mock` を有効化（大文字小文字は無視） |
 | `BOT_IDLE_TIMEOUT_SEC` | 任意 | `600` | Bot 側のアイドルタイムアウト（秒） |
 | `BOT_AGENT_STATUS_TIMEOUT_SEC` | 任意 | `180` | Agent status ポーリングのタイムアウト（秒） |
 | `BOT_AGENT_POLL_INTERVAL_MS` | 任意 | `800` | Agent status ポーリング間隔（ms） |

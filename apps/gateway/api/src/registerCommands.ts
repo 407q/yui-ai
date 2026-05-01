@@ -37,12 +37,30 @@ const commands = [
     .setDescription("自分のセッション一覧を表示します"),
 ].map((builder) => builder.toJSON());
 
+const botModeRaw = (process.env.BOT_MODE ?? "").trim().toLowerCase();
+const botMockModeEnabled = parseBooleanEnvFlag(process.env.BOT_ENABLE_MOCK_MODE, false);
 const rest = new REST({ version: "10" }).setToken(token);
 const botMode =
-  process.env.BOT_MODE === "mock" && process.env.BOT_ENABLE_MOCK_MODE === "true"
+  botModeRaw === "mock" && botMockModeEnabled
     ? "mock"
     : "standard";
 const logPrefix = `[bot:${botMode}]`;
+
+function parseBooleanEnvFlag(raw: string | undefined, fallback: boolean): boolean {
+  if (!raw) {
+    return fallback;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
 
 if (guildId) {
   await rest.put(Routes.applicationGuildCommands(clientId, guildId), {

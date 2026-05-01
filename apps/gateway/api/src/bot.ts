@@ -128,7 +128,7 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 if (!DISCORD_BOT_TOKEN) {
   throw new Error("DISCORD_BOT_TOKEN is required.");
 }
-const BOT_MOCK_MODE_ENABLED = process.env.BOT_ENABLE_MOCK_MODE === "true";
+const BOT_MOCK_MODE_ENABLED = parseBooleanEnvFlag(process.env.BOT_ENABLE_MOCK_MODE, false);
 const BOT_MODE = resolveBotMode();
 const IS_MOCK_MODE = BOT_MODE === "mock";
 const LOG_PREFIX = `[bot:${BOT_MODE}]`;
@@ -264,15 +264,32 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 }
 
 function resolveBotMode(): "mock" | "standard" {
-  if (process.env.BOT_MODE === "mock" && BOT_MOCK_MODE_ENABLED) {
+  const configuredMode = (process.env.BOT_MODE ?? "").trim().toLowerCase();
+  if (configuredMode === "mock" && BOT_MOCK_MODE_ENABLED) {
     return "mock";
   }
-  if (process.env.BOT_MODE === "mock") {
+  if (configuredMode === "mock") {
     console.warn(
-      "[bot] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE=true. Falling back to standard mode.",
+      "[bot] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE is truthy. Falling back to standard mode.",
     );
   }
   return "standard";
+}
+
+function parseBooleanEnvFlag(raw: string | undefined, fallback: boolean): boolean {
+  if (!raw) {
+    return fallback;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
