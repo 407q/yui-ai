@@ -57,7 +57,7 @@ op signin
 
 **解決策**:
 1. `COPILOT_GITHUB_TOKEN` を設定
-2. または `BOT_MODE=mock` に変更（テスト用）
+2. または `BOT_ENABLE_MOCK_MODE=true BOT_MODE=mock` に変更（テスト用）
 
 ---
 
@@ -186,7 +186,7 @@ yarn register:commands
 **テスト**:
 ```bash
 # mock モードで動作確認
-BOT_MODE=mock yarn dev
+BOT_ENABLE_MOCK_MODE=true BOT_MODE=mock yarn dev
 ```
 
 ---
@@ -381,7 +381,7 @@ yarn db:smoke
 Copilot SDK を使用せずに動作確認:
 
 ```bash
-BOT_MODE=mock yarn dev
+BOT_ENABLE_MOCK_MODE=true BOT_MODE=mock yarn dev
 ```
 
 ---

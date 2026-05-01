@@ -128,7 +128,8 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 if (!DISCORD_BOT_TOKEN) {
   throw new Error("DISCORD_BOT_TOKEN is required.");
 }
-const BOT_MODE = process.env.BOT_MODE === "mock" ? "mock" : "standard";
+const BOT_MOCK_MODE_ENABLED = process.env.BOT_ENABLE_MOCK_MODE === "true";
+const BOT_MODE = resolveBotMode();
 const IS_MOCK_MODE = BOT_MODE === "mock";
 const LOG_PREFIX = `[bot:${BOT_MODE}]`;
 const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
@@ -260,6 +261,18 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   }
 
   return parsed;
+}
+
+function resolveBotMode(): "mock" | "standard" {
+  if (process.env.BOT_MODE === "mock" && BOT_MOCK_MODE_ENABLED) {
+    return "mock";
+  }
+  if (process.env.BOT_MODE === "mock") {
+    console.warn(
+      "[bot] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE=true. Falling back to standard mode.",
+    );
+  }
+  return "standard";
 }
 
 function parseNonNegativeInt(raw: string | undefined, fallback: number): number {

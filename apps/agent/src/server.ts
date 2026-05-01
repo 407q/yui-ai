@@ -392,7 +392,18 @@ function resolveAgentSessionRootDirectory(raw: string | undefined): string {
 }
 
 function resolveBotMode(): "mock" | "standard" {
-  return process.env.BOT_MODE === "mock" ? "mock" : "standard";
+  if (
+    process.env.BOT_MODE === "mock" &&
+    process.env.BOT_ENABLE_MOCK_MODE === "true"
+  ) {
+    return "mock";
+  }
+  if (process.env.BOT_MODE === "mock") {
+    console.warn(
+      "[agent] BOT_MODE=mock is ignored unless BOT_ENABLE_MOCK_MODE=true. Falling back to standard mode.",
+    );
+  }
+  return "standard";
 }
 
 function assertCopilotNodeVersion(): void {

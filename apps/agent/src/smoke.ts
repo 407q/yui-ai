@@ -6,6 +6,7 @@ import path from "node:path";
 import { buildAgentServer } from "./server.js";
 
 process.env.BOT_MODE ??= "mock";
+process.env.BOT_ENABLE_MOCK_MODE ??= "true";
 
 interface MockMcpServerContext {
   server: http.Server;

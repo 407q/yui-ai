@@ -38,7 +38,10 @@ const commands = [
 ].map((builder) => builder.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(token);
-const botMode = process.env.BOT_MODE === "mock" ? "mock" : "standard";
+const botMode =
+  process.env.BOT_MODE === "mock" && process.env.BOT_ENABLE_MOCK_MODE === "true"
+    ? "mock"
+    : "standard";
 const logPrefix = `[bot:${botMode}]`;
 
 if (guildId) {
