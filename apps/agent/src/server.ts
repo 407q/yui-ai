@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -296,6 +296,7 @@ async function main(): Promise<void> {
   if (socketPath) {
     cleanupStaleSocket(socketPath);
     await app.listen({ path: socketPath });
+    ensureSocketWritable(socketPath, app);
     app.log.info(`[agent] listening on socket ${socketPath}`);
   } else {
     await app.listen({ host, port });
@@ -547,6 +548,40 @@ function cleanupStaleSocket(socketPath: string): void {
     return;
   }
   unlinkSync(socketPath);
+}
+
+function ensureSocketWritable(socketPath: string, app: FastifyInstance): void {
+  const currentUid = parseOptionalNonNegativeInt(process.env.CURRENT_UID);
+  const currentGid = parseOptionalNonNegativeInt(process.env.CURRENT_GID);
+  if (currentUid !== null && currentGid !== null) {
+    try {
+      chownSync(socketPath, currentUid, currentGid);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      app.log.warn(`[agent] failed to set socket ownership ${socketPath}: ${detail}`);
+    }
+  }
+  try {
+    chmodSync(socketPath, 0o660);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    app.log.warn(`[agent] failed to set socket permissions ${socketPath}: ${detail}`);
+  }
+}
+
+function parseOptionalNonNegativeInt(raw: string | undefined): number | null {
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  const normalized = raw.trim();
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }
 
 function isEntrypoint(): boolean {

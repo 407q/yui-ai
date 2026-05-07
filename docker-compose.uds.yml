@@ -33,7 +33,6 @@ services:
       dockerfile: apps/agent/Dockerfile
     container_name: yui-ai-agent
     restart: unless-stopped
-    user: "${CURRENT_UID:-1000}:${CURRENT_GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +59,8 @@ services:
       COPILOT_SEND_TIMEOUT_MS: ${COPILOT_SEND_TIMEOUT_MS:-180000}
       COPILOT_SDK_LOG_LEVEL: ${COPILOT_SDK_LOG_LEVEL:-info}
       INTERNAL_CONNECTION_MODE: uds
+      CURRENT_UID: "${CURRENT_UID:-1000}"
+      CURRENT_GID: "${CURRENT_GID:-1000}"
       DB_SOCKET_MOUNT_PATH: ${DB_SOCKET_MOUNT_PATH:-/tmp/postgres-socket}
     volumes:
       - agent_workspace_data:/agent/session
