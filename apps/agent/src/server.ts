@@ -9,6 +9,10 @@ import { AgentRuntimeError } from "./runtime/errors.js";
 import { GatewayMcpClient } from "./runtime/gatewayMcpClient.js";
 import { AgentRuntimeService } from "./runtime/service.js";
 import {
+  createAgentTraceLoggerFromEnv,
+  type AgentTraceLoggerLike,
+} from "./runtime/traceLogger.js";
+import {
   CopilotCliSdkProvider,
   MockCopilotSdkProvider,
   type CopilotSdkProvider,
@@ -112,6 +116,7 @@ interface BuildAgentServerOptions {
   logger?: boolean;
   startedAt?: Date;
   sdkProvider?: CopilotSdkProvider;
+  traceLogger?: AgentTraceLoggerLike;
   gatewayBaseUrl?: string;
   gatewaySocketPath?: string;
   gatewayMcpTimeoutSec?: number;
@@ -124,8 +129,9 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
     logger: options.logger ?? true,
   });
 
+  const traceLogger = options.traceLogger ?? createAgentTraceLoggerFromEnv();
   const startedAt = options.startedAt ?? new Date();
-  const sdkProvider = options.sdkProvider ?? resolveSdkProvider();
+  const sdkProvider = options.sdkProvider ?? resolveSdkProvider(traceLogger);
   const gatewayMcpClient = new GatewayMcpClient({
     baseUrl: options.gatewayBaseUrl ?? resolveGatewayBaseUrl(),
     socketPath: resolveGatewaySocketPathForOptions(options),
@@ -135,8 +141,16 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
       options.gatewayInternalToken ??
       process.env.AGENT_TO_GATEWAY_INTERNAL_TOKEN ??
       process.env.GATEWAY_INTERNAL_TOKEN,
+    traceLogger,
   });
-  const runtimeService = new AgentRuntimeService(sdkProvider, gatewayMcpClient);
+  const runtimeService = new AgentRuntimeService(
+    sdkProvider,
+    gatewayMcpClient,
+    undefined,
+    {
+      traceLogger,
+    },
+  );
   const requiredInternalToken =
     options.requiredInternalToken ?? process.env.GATEWAY_TO_AGENT_INTERNAL_TOKEN;
 
@@ -217,6 +231,21 @@ export function buildAgentServer(options: BuildAgentServerOptions = {}): Fastify
       request.body,
       "invalid_agent_run_request",
     );
+    traceLogger.log({
+      actor: "gateway",
+      event: "gateway.agent.run.request",
+      trace_id: payload.task_id,
+      session_id: payload.session_id,
+      task_id: payload.task_id,
+      direction: "inbound",
+      peer: "agent-runtime",
+      status: "received",
+      hop: "G2A",
+      summary: `POST /v1/tasks/run mode=${payload.runtime_policy?.tool_routing?.mode ?? "gateway_only"}`,
+      payload: {
+        runtime_policy: payload.runtime_policy ?? null,
+      },
+    });
     const accepted = await runtimeService.runTask(payload);
     return reply.code(202).send(accepted);
   });
@@ -257,9 +286,11 @@ async function main(): Promise<void> {
   const host = process.env.AGENT_BIND_HOST ?? "0.0.0.0";
   const port = resolvePositiveInt(process.env.AGENT_PORT, 3801);
   const socketPath = resolveAgentSocketPath();
-  const sdkProvider = resolveSdkProvider();
+  const traceLogger = createAgentTraceLoggerFromEnv();
+  const sdkProvider = resolveSdkProvider(traceLogger);
   const app = buildAgentServer({
     sdkProvider,
+    traceLogger,
   });
 
   if (socketPath) {
@@ -294,10 +325,10 @@ async function main(): Promise<void> {
   });
 }
 
-function resolveSdkProvider(): CopilotSdkProvider {
+function resolveSdkProvider(traceLogger: AgentTraceLoggerLike): CopilotSdkProvider {
   const botMode = resolveBotMode();
   if (botMode === "mock") {
-    return new MockCopilotSdkProvider();
+    return new MockCopilotSdkProvider(traceLogger);
   }
 
   assertCopilotNodeVersion();
@@ -318,6 +349,8 @@ function resolveSdkProvider(): CopilotSdkProvider {
     ),
     sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
     sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
+    lmDeltaAggregateMs: resolvePositiveInt(process.env.AGENT_CONSOLE_DELTA_AGGREGATE_MS, 1000),
+    traceLogger,
   });
 }
 

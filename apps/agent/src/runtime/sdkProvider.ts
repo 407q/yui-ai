@@ -22,6 +22,7 @@ import type {
   ToolProgressEvent,
 } from "./types.js";
 import { buildActiveSystemMessage } from "./personaPolicy.js";
+import type { AgentTraceLoggerLike } from "./traceLogger.js";
 
 export interface SdkSessionHandle {
   sdk_session_id: string;
@@ -90,6 +91,8 @@ export interface CopilotCliSdkProviderOptions {
   sessionRootDirectory: string;
   sendTimeoutMs: number;
   sdkLogLevel: "none" | "error" | "warning" | "info" | "debug" | "all";
+  lmDeltaAggregateMs?: number;
+  traceLogger?: AgentTraceLoggerLike;
 }
 
 interface ActiveSendContext {
@@ -99,6 +102,8 @@ interface ActiveSendContext {
   declaredToolMap: Map<string, AgentToolCallSpec>;
   builtinToolByCallId: Map<string, BuiltInToolInvocation>;
   sendTimeoutLastToolActivityAtMs: number;
+  lmDeltaBufferedChars: number;
+  lmDeltaLastLoggedAtMs: number;
 }
 
 interface SdkSessionState {
@@ -306,9 +311,11 @@ const GATEWAY_ONLY_BUILTIN_BLOCKLIST: ReadonlySet<string> = new Set([
 export class CopilotCliSdkProvider implements CopilotSdkProvider {
   private readonly client: CopilotClient;
   private readonly sessionsByAppSessionId = new Map<string, SdkSessionState>();
+  private readonly traceLogger: AgentTraceLoggerLike;
   private startPromise: Promise<void> | null = null;
 
   constructor(private readonly options: CopilotCliSdkProviderOptions) {
+    this.traceLogger = options.traceLogger ?? { log: () => undefined };
     this.client = new CopilotClient({
       autoStart: false,
       autoRestart: false,
@@ -322,23 +329,73 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
 
   async createSession(input: CreateSdkSessionInput): Promise<SdkSessionHandle> {
     assertCallbacks(input.callbacks);
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.create.start",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      direction: "internal",
+      peer: "copilot_sdk",
+      status: "started",
+      hop: "A2S",
+      summary: `sdk_session_hint=${input.sdk_session_id_hint ?? "-"}`,
+    });
     const state = await this.ensureSessionState(
       input.session_id,
       input.callbacks,
       "create",
       input.sdk_session_id_hint,
     );
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.create.result",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      sdk_session_id: state.sdkSessionId,
+      direction: "internal",
+      peer: "copilot_sdk",
+      status: "ok",
+      hop: "A2S",
+      summary: `sdk_session_id=${state.sdkSessionId}`,
+    });
     return { sdk_session_id: state.sdkSessionId };
   }
 
   async resumeSession(input: CreateSdkSessionInput): Promise<SdkSessionHandle> {
     assertCallbacks(input.callbacks);
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.resume.start",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      direction: "internal",
+      peer: "copilot_sdk",
+      status: "started",
+      hop: "A2S",
+      summary: `sdk_session_hint=${input.sdk_session_id_hint ?? "-"}`,
+    });
     const state = await this.ensureSessionState(
       input.session_id,
       input.callbacks,
       "resume",
       input.sdk_session_id_hint,
     );
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.resume.result",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      sdk_session_id: state.sdkSessionId,
+      direction: "internal",
+      peer: "copilot_sdk",
+      status: "ok",
+      hop: "A2S",
+      summary: `sdk_session_id=${state.sdkSessionId}`,
+    });
     return { sdk_session_id: state.sdkSessionId };
   }
 
@@ -369,12 +426,32 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       declaredToolMap: mapDeclaredToolCalls(input.tool_calls),
       builtinToolByCallId: new Map(),
       sendTimeoutLastToolActivityAtMs: Date.now(),
+      lmDeltaBufferedChars: 0,
+      lmDeltaLastLoggedAtMs: Date.now(),
     };
     state.activeSend = activeSend;
     state.callbacks = {
       ...input.callbacks,
       systemMemoryRefs: normalizeSystemMemoryRefs(input.system_memory_refs),
     };
+
+    const sendStartedAtMs = Date.now();
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.send_and_wait.start",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      sdk_session_id: input.sdk_session_id,
+      direction: "outbound",
+      peer: "copilot_sdk",
+      status: "started",
+      hop: "A2S",
+      summary: `prompt=${input.prompt.length}ch tools=${input.tool_calls.length}`,
+      payload: {
+        system_memory_ref_count: input.system_memory_refs?.length ?? 0,
+      },
+    });
 
     try {
       if (!state.session) {
@@ -400,14 +477,52 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
         ...declaredToolExecution.toolEvents,
         ...activeSend.runtimeToolEvents,
       ];
+      const resolvedAnswer = await resolveFinalAnswer(state.session, assistantMessage);
+      this.traceLogger.log({
+        actor: "agent",
+        event: "agent.sdk.send_and_wait.result",
+        trace_id: input.task_id,
+        session_id: input.session_id,
+        task_id: input.task_id,
+        sdk_session_id: input.sdk_session_id,
+        direction: "inbound",
+        peer: "copilot_sdk",
+        status: "completed",
+        hop: "A2S",
+        latency_ms: Date.now() - sendStartedAtMs,
+        summary: `answer=${resolvedAnswer.answer.length}ch source=${resolvedAnswer.source}`,
+        payload: {
+          answer_source: resolvedAnswer.source,
+          tool_result_count: mergedToolResults.length,
+          tool_event_count: mergedToolEvents.length,
+        },
+      });
       return {
-        final_answer: await resolveFinalAnswer(
-          state.session,
-          assistantMessage,
-        ),
+        final_answer: resolvedAnswer.answer,
         tool_results: mergedToolResults,
         tool_events: mergedToolEvents,
       };
+    } catch (error) {
+      const message = toErrorMessage(error);
+      this.traceLogger.log({
+        level: "error",
+        actor: "agent",
+        event: "agent.sdk.send_and_wait.result",
+        trace_id: input.task_id,
+        session_id: input.session_id,
+        task_id: input.task_id,
+        sdk_session_id: input.sdk_session_id,
+        direction: "inbound",
+        peer: "copilot_sdk",
+        status: "error",
+        hop: "A2S",
+        latency_ms: Date.now() - sendStartedAtMs,
+        summary: message,
+        error: {
+          message,
+        },
+      });
+      throw error;
     } finally {
       state.activeSend = null;
     }
@@ -1124,6 +1239,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           if (!waitingForCurrentSend) {
             return;
           }
+          this.logSdkTurnEvent(activeSend, event);
           if (event.type === "assistant.message") {
             latestAssistantMessage = event;
             return;
@@ -1168,6 +1284,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
       ])) as AssistantMessageEvent | undefined;
     } finally {
       waitingForCurrentSend = false;
+      this.flushLmDelta(activeSend);
       if (timeoutWatcher) {
         clearInterval(timeoutWatcher);
       }
@@ -1179,11 +1296,105 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
   private markSendToolExecutionActivity(activeSend: ActiveSendContext): void {
     activeSend.sendTimeoutLastToolActivityAtMs = Date.now();
   }
+
+  private logSdkTurnEvent(activeSend: ActiveSendContext, event: SessionEvent): void {
+    if (event.type === "assistant.message_delta") {
+      const delta = event.data.deltaContent;
+      if (delta.trim().length > 0) {
+        activeSend.lmDeltaBufferedChars += delta.length;
+        const aggregateMs = this.options.lmDeltaAggregateMs ?? 1000;
+        const now = Date.now();
+        if (now - activeSend.lmDeltaLastLoggedAtMs >= aggregateMs) {
+          this.flushLmDelta(activeSend);
+        }
+      }
+      return;
+    }
+
+    const hasContent =
+      event.type === "assistant.message"
+        ? event.data.content.trim().length > 0
+        : undefined;
+    this.traceLogger.log({
+      actor: "copilot_sdk",
+      event: "copilot_sdk.turn.event",
+      trace_id: activeSend.input.task_id,
+      session_id: activeSend.input.session_id,
+      task_id: activeSend.input.task_id,
+      direction: "inbound",
+      peer: "agent_runtime",
+      status: "ok",
+      hop: "A2S",
+      summary:
+        hasContent === undefined
+          ? `type=${event.type}`
+          : `type=${event.type} has_content=${hasContent}`,
+      payload: {
+        sdk_event_type: event.type,
+        has_content: hasContent,
+      },
+    });
+  }
+
+  private flushLmDelta(activeSend: ActiveSendContext): void {
+    if (activeSend.lmDeltaBufferedChars <= 0) {
+      return;
+    }
+    const chunkChars = activeSend.lmDeltaBufferedChars;
+    activeSend.lmDeltaBufferedChars = 0;
+    activeSend.lmDeltaLastLoggedAtMs = Date.now();
+
+    this.traceLogger.log({
+      actor: "copilot_sdk",
+      event: "copilot_sdk.turn.event",
+      trace_id: activeSend.input.task_id,
+      session_id: activeSend.input.session_id,
+      task_id: activeSend.input.task_id,
+      direction: "inbound",
+      peer: "agent_runtime",
+      status: "ok",
+      hop: "A2S",
+      summary: "type=assistant.message_delta has_content=true",
+      payload: {
+        sdk_event_type: "assistant.message_delta",
+        has_content: true,
+      },
+    });
+    this.traceLogger.log({
+      actor: "lm",
+      event: "lm.response.chunk",
+      trace_id: activeSend.input.task_id,
+      session_id: activeSend.input.session_id,
+      task_id: activeSend.input.task_id,
+      direction: "inbound",
+      peer: "copilot_sdk",
+      status: "ok",
+      hop: "S2L",
+      summary: `chunk=${chunkChars}ch`,
+      payload: {
+        chunk_chars: chunkChars,
+      },
+    });
+  }
 }
 
 export class MockCopilotSdkProvider implements CopilotSdkProvider {
+  constructor(private readonly traceLogger: AgentTraceLoggerLike = { log: () => undefined }) {}
+
   async createSession(input: CreateSdkSessionInput): Promise<SdkSessionHandle> {
     assertCallbacks(input.callbacks);
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.create.result",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      direction: "internal",
+      peer: "mock_sdk",
+      status: "ok",
+      hop: "A2S",
+      summary: "mock session created",
+    });
     return {
       sdk_session_id: `mock_sdk_${input.session_id}_${randomUUID().slice(0, 8)}`,
     };
@@ -1191,6 +1402,18 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
 
   async resumeSession(input: CreateSdkSessionInput): Promise<SdkSessionHandle> {
     assertCallbacks(input.callbacks);
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.session.resume.result",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      direction: "internal",
+      peer: "mock_sdk",
+      status: "ok",
+      hop: "A2S",
+      summary: "mock session resumed",
+    });
     return {
       sdk_session_id: `mock_sdk_${input.session_id}_${randomUUID().slice(0, 8)}`,
     };
@@ -1199,6 +1422,20 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
   async sendAndWait(input: SendAndWaitInput): Promise<SendAndWaitResult> {
     assertCallbacks(input.callbacks);
     assertNotAborted(input.signal);
+    const startedAtMs = Date.now();
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.send_and_wait.start",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      sdk_session_id: input.sdk_session_id,
+      direction: "outbound",
+      peer: "mock_sdk",
+      status: "started",
+      hop: "A2S",
+      summary: `prompt=${input.prompt.length}ch tools=${input.tool_calls.length}`,
+    });
 
     const systemMemoryToolCalls = buildSystemMemoryToolCalls(input.system_memory_refs);
     const declaredToolExecution = await executeDeclaredToolCalls({
@@ -1213,6 +1450,23 @@ export class MockCopilotSdkProvider implements CopilotSdkProvider {
       `Processed prompt: ${input.prompt}\n` +
       `sdk_session_id: ${input.sdk_session_id}\n` +
       `tool_calls: ${toolResults.length} (ok=${succeeded}, error=${failed})`;
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.sdk.send_and_wait.result",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      sdk_session_id: input.sdk_session_id,
+      direction: "inbound",
+      peer: "mock_sdk",
+      status: "completed",
+      hop: "A2S",
+      latency_ms: Date.now() - startedAtMs,
+      summary: `answer=${finalAnswer.length}ch source=mock`,
+      payload: {
+        answer_source: "mock",
+      },
+    });
 
     return {
       final_answer: finalAnswer,
@@ -1451,10 +1705,16 @@ function buildPromptWithDeclaredToolResults(
 async function resolveFinalAnswer(
   session: CopilotSession,
   assistantMessage: AssistantMessageEvent | undefined,
-): Promise<string> {
+): Promise<{
+  answer: string;
+  source: "assistant.message" | "assistant.message_delta";
+}> {
   const content = assistantMessage?.data.content;
   if (typeof content === "string" && content.trim().length > 0) {
-    return content;
+    return {
+      answer: content,
+      source: "assistant.message",
+    };
   }
 
   return resolveLatestAssistantMessageFromHistory(session);
@@ -1462,7 +1722,10 @@ async function resolveFinalAnswer(
 
 async function resolveLatestAssistantMessageFromHistory(
   session: CopilotSession,
-): Promise<string> {
+): Promise<{
+  answer: string;
+  source: "assistant.message" | "assistant.message_delta";
+}> {
   const events = await session.getMessages();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
@@ -1471,7 +1734,10 @@ async function resolveLatestAssistantMessageFromHistory(
     }
     const content = event.data.content;
     if (typeof content === "string" && content.trim().length > 0) {
-      return content;
+      return {
+        answer: content,
+        source: "assistant.message",
+      };
     }
   }
 
@@ -1489,7 +1755,10 @@ async function resolveLatestAssistantMessageFromHistory(
 
   const mergedDelta = [...deltaByMessageId.values()].at(-1)?.join("").trim() ?? "";
   if (mergedDelta.length > 0) {
-    return mergedDelta;
+    return {
+      answer: mergedDelta,
+      source: "assistant.message_delta",
+    };
   }
 
   throw new Error("assistant response is empty");

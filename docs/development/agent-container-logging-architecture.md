@@ -57,9 +57,40 @@
 
 ---
 
-## 4. イベント分類（4 者の通信線で統一）
+## 4. 二層ログ出力モデル（即時要約 + 完全ログ）
 
-### 4.1 Gateway -> Agent
+### 4.1 方針
+
+1. **コンソール即時ログ（短文）**
+   - 1 イベント 1 行、120 文字前後を上限
+   - 通信の要点（誰→誰、何をしたか、結果、遅延）だけ表示
+   - すべての行に `trace_id` を含める
+2. **完全ログ（JSONL 永続化）**
+   - 共通エンベロープ + 詳細 payload を保存
+   - 事後調査は `trace_id` で抽出して展開
+
+### 4.2 保存先
+
+- Agent は**コンテナ内パス**に JSONL を追記保存（例: `/var/log/yui-ai/agent-trace.jsonl`）
+- 運用では上記ディレクトリを **bind mount でホストへ永続化**する（推奨）
+  - 例: `host:/srv/yui-ai/logs/agent` -> `container:/var/log/yui-ai`
+- 既存の `task_events` / `audit_logs` と `trace_id` で相互参照可能にする
+- ローテーションは日次 + サイズ閾値（例: 100MB）で実施
+
+### 4.3 展開インターフェース
+
+コンソールには必ず `trace=<trace_id>` を表示し、必要時に次で展開できるようにする。
+
+- 例1: helper コマンド（推奨）
+  - `yarn logs:trace --trace <trace_id>`
+- 例2: 直接抽出
+  - `jq 'select(.trace_id=="<trace_id>")' /var/log/yui-ai/agent-trace.jsonl`
+
+---
+
+## 5. イベント分類（4 者の通信線で統一）
+
+### 5.1 Gateway -> Agent
 
 | event | actor | direction | 必須追加項目 |
 |---|---|---|---|
@@ -68,7 +99,7 @@
 | `gateway.agent.status.poll` | gateway | outbound | `poll_reason` |
 | `agent.gateway.status.snapshot` | agent | inbound | `status`, `completed_at` |
 
-### 4.2 Agent -> Copilot SDK -> LM
+### 5.2 Agent -> Copilot SDK -> LM
 
 | event | actor | direction | 必須追加項目 |
 |---|---|---|---|
@@ -79,7 +110,7 @@
 | `lm.response.chunk` | lm | inbound | `chunk_chars` |
 | `agent.sdk.send_and_wait.result` | agent | inbound | `final_answer_chars`, `tool_result_count` |
 
-### 4.3 Agent <-> Gateway MCP（tool）
+### 5.3 Agent <-> Gateway MCP（tool）
 
 | event | actor | direction | 必須追加項目 |
 |---|---|---|---|
@@ -90,9 +121,9 @@
 
 ---
 
-## 5. 実装配置（最小侵襲）
+## 6. 実装配置（最小侵襲）
 
-### 5.1 Agent 側（主対象）
+### 6.1 Agent 側（主対象）
 
 - `apps/agent/src/runtime/service.ts`
   - task 開始/完了/失敗/キャンセル時に共通エンベロープで出力
@@ -106,7 +137,7 @@
 - `apps/agent/src/server.ts`
   - ロガー初期化（JSONL, log level, redaction）と全体設定注入
 
-### 5.2 Gateway 側（相関補完）
+### 6.2 Gateway 側（相関補完）
 
 - `apps/gateway/api/src/gateway/service.ts`
   - `runTask`, `status`, `cancel`, `approval` 呼び出し時に同じ `trace_id` を payload に含める
@@ -115,7 +146,49 @@
 
 ---
 
-## 6. マスキング/機密対策
+## 7. コンソール要約ログの表示仕様（具体メッセージ）
+
+### 7.1 共通フォーマット
+
+```text
+[<hop>][<event>][trace=<trace_id>] <summary> | <status> <latency_ms>ms
+```
+
+- `<hop>` は通信区間を短縮表示
+  - `G2A` (Gateway -> Agent)
+  - `A2S` (Agent -> Copilot SDK)
+  - `S2L` (SDK -> LM)
+  - `A2M` (Agent -> Gateway MCP)
+- `<summary>` は具体通信内容を 1 要素だけ含める（例: endpoint, sdk_event_type, tool_name）
+
+### 7.2 表示メッセージ例
+
+1. Gateway -> Agent run 要求
+   - `[G2A][run.request][trace=task_abc] POST /v1/agent/tasks/run mode=hybrid | sent 3ms`
+2. Agent が run を受理
+   - `[G2A][run.accepted][trace=task_abc] bootstrap=create send_wait=0 | accepted 1ms`
+3. Agent -> SDK sendAndWait 開始
+   - `[A2S][send_wait.start][trace=task_abc] prompt=842ch tools=2 | started 0ms`
+4. SDK から LM イベント受信
+   - `[S2L][turn.event][trace=task_abc] type=assistant.message_delta has_content=true | ok 12ms`
+5. Agent -> Gateway MCP ツール実行
+   - `[A2M][tool_call][trace=task_abc] tool=host.file_read call=call_17 | ok 44ms`
+6. 承認待ち発生
+   - `[A2M][approval.wait][trace=task_abc] op=host_read path=/repo/.env | waiting 0ms`
+7. 失敗（タイムアウト）
+   - `[A2M][tool_call][trace=task_abc] tool=host.cli_exec call=call_21 | timeout 30000ms`
+8. 最終回答確定
+   - `[A2S][send_wait.result][trace=task_abc] answer=532ch source=assistant.message | completed 1842ms`
+
+### 7.3 ノイズ抑制ルール
+
+1. `message_delta` は一定間隔で集約（例: 1 秒ごとに 1 行）
+2. 同一 `call_id` の中間進捗は抑制し、`start/result` を優先表示
+3. `debug` レベルは完全ログにのみ保存し、コンソール既定は `info` 以上
+
+---
+
+## 8. マスキング/機密対策
 
 ログ対象は原則メタデータ中心。本文は次の制御を入れる:
 
@@ -126,7 +199,7 @@
 
 ---
 
-## 7. 設定値案
+## 9. 設定値案
 
 | env | default | 用途 |
 |---|---|---|
@@ -135,10 +208,13 @@
 | `AGENT_LOG_INCLUDE_PAYLOAD` | `false` | payload 詳細出力 |
 | `AGENT_LOG_REDACT_KEYS` | `token,authorization,secret,password` | redact 対象キー |
 | `AGENT_LOG_EVENT_SAMPLE_RATE` | `1.0` | 高頻度イベントのサンプリング |
+| `AGENT_CONSOLE_SUMMARY` | `true` | 即時要約ログを出すか |
+| `AGENT_TRACE_LOG_PATH` | `/var/log/yui-ai/agent-trace.jsonl` | コンテナ内の完全ログ保存先（bind mount でホスト永続化） |
+| `AGENT_CONSOLE_DELTA_AGGREGATE_MS` | `1000` | delta 集約間隔 |
 
 ---
 
-## 8. ロールアウト段階
+## 10. ロールアウト段階
 
 1. **Phase 1: Agent 内部統一**
    - `service.ts` / `sdkProvider.ts` / `gatewayMcpClient.ts` を共通エンベロープ化
@@ -150,16 +226,17 @@
 
 ---
 
-## 9. 受け入れ基準
+## 11. 受け入れ基準
 
 1. 単一 `task_id` で Gateway/Agent/SDK/LM の主要イベントが時系列で復元できる
 2. `gateway_mcp_timeout` / `approval_timeout` / `task_execution_failed` をログだけで識別できる
 3. 「LM 無応答」時に、SDK イベント欠落なのか最終回答抽出失敗なのかを判別できる
 4. 既存の `yarn build` と smoke 系（agent/orchestrator）を維持できる
+5. コンソールは短文のまま、`trace_id` 指定で完全ログを即展開できる
 
 ---
 
-## 10. 期待効果
+## 12. 期待効果
 
 - 本番障害の初動で「通信断点」を数分で特定しやすくなる
 - 「Bot は動いているが Agent が返していない」状況を、SDK/LM 層まで分解して説明できる

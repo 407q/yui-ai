@@ -9,6 +9,7 @@ import {
   createDefaultRuntimeSessionRegistryStore,
   closeDefaultRuntimeSessionRegistryStore,
 } from "./runtimeStore.js";
+import type { AgentTraceLoggerLike } from "./traceLogger.js";
 import type {
   AgentAttachmentSource,
   AgentRunAcceptedResponse,
@@ -68,6 +69,7 @@ export class AgentRuntimeService {
   private readonly sessions = new Map<string, SessionState>();
   private readonly tasks = new Map<string, TaskExecutionState>();
   private readonly shouldCloseRegistryStore: boolean;
+  private readonly traceLogger: AgentTraceLoggerLike;
   private restorePromise: Promise<void> | null = null;
   private readonly runtimeInstanceId = randomUUID();
 
@@ -77,9 +79,11 @@ export class AgentRuntimeService {
     private readonly registryStore: RuntimeSessionRegistryStore = createDefaultRuntimeSessionRegistryStore(),
     options?: {
       closeRegistryStoreOnShutdown?: boolean;
+      traceLogger?: AgentTraceLoggerLike;
     },
   ) {
     this.shouldCloseRegistryStore = options?.closeRegistryStoreOnShutdown ?? true;
+    this.traceLogger = options?.traceLogger ?? { log: () => undefined };
   }
 
   async initialize(): Promise<void> {
@@ -149,6 +153,21 @@ export class AgentRuntimeService {
     };
     this.tasks.set(input.task_id, state);
     await this.persistTaskSnapshot(state);
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.gateway.run.accepted",
+      trace_id: input.task_id,
+      session_id: input.session_id,
+      task_id: input.task_id,
+      direction: "inbound",
+      peer: "gateway",
+      status: "accepted",
+      hop: "G2A",
+      summary: `bootstrap=${bootstrapMode} send_wait=${state.sendAndWaitCount}`,
+      payload: {
+        runtime_policy: input.runtime_policy ?? null,
+      },
+    });
     void this.executeTask(state, input);
 
     return this.toAcceptedResponse(state);
@@ -263,6 +282,17 @@ export class AgentRuntimeService {
       state.abortController.abort();
       state.updatedAt = new Date();
       void this.persistTaskSnapshot(state);
+      this.traceLogger.log({
+        actor: "agent",
+        event: "agent.task.cancel.requested",
+        trace_id: state.taskId,
+        session_id: state.sessionId,
+        task_id: state.taskId,
+        direction: "internal",
+        status: "cancel_requested",
+        hop: "INT",
+        summary: "cancel requested by gateway",
+      });
     }
 
     return this.toStatusResponse(state);
@@ -436,6 +466,21 @@ export class AgentRuntimeService {
     state.error = null;
     state.updatedAt = new Date();
     state.completedAt = state.updatedAt;
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.task.completed",
+      trace_id: state.taskId,
+      session_id: state.sessionId,
+      task_id: state.taskId,
+      direction: "internal",
+      status: "completed",
+      hop: "INT",
+      summary: `tool_results=${sendResult.tool_results.length}`,
+      payload: {
+        final_answer_chars: sendResult.final_answer.length,
+        tool_event_count: sendResult.tool_events.length,
+      },
+    });
   }
 
   private cancelTaskState(state: TaskExecutionState): void {
@@ -448,6 +493,17 @@ export class AgentRuntimeService {
     };
     state.updatedAt = new Date();
     state.completedAt = state.updatedAt;
+    this.traceLogger.log({
+      actor: "agent",
+      event: "agent.task.canceled",
+      trace_id: state.taskId,
+      session_id: state.sessionId,
+      task_id: state.taskId,
+      direction: "internal",
+      status: "canceled",
+      hop: "INT",
+      summary: "task execution was canceled",
+    });
   }
 
   private failTask(state: TaskExecutionState, error: unknown): void {
@@ -457,6 +513,23 @@ export class AgentRuntimeService {
     state.error = toTaskError(error);
     state.updatedAt = new Date();
     state.completedAt = state.updatedAt;
+    this.traceLogger.log({
+      level: "error",
+      actor: "agent",
+      event: "agent.task.failed",
+      trace_id: state.taskId,
+      session_id: state.sessionId,
+      task_id: state.taskId,
+      direction: "internal",
+      status: "failed",
+      hop: "INT",
+      summary: state.error.message,
+      error: {
+        code: state.error.code,
+        message: state.error.message,
+        details: state.error.details,
+      },
+    });
   }
 
   private toAcceptedResponse(state: TaskExecutionState): AgentRunAcceptedResponse {

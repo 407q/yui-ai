@@ -19,7 +19,11 @@ async function main(): Promise<void> {
     ".tmp",
     "agent-smoke-session-root",
   );
+  const traceLogDir = path.resolve(process.cwd(), ".tmp", "agent-smoke-trace");
+  const traceLogPath = path.resolve(traceLogDir, "agent-trace.jsonl");
   process.env.AGENT_SESSION_ROOT_DIR = sessionRootDir;
+  process.env.AGENT_TRACE_LOG_PATH = traceLogPath;
+  process.env.AGENT_CONSOLE_SUMMARY = "false";
   const mockMcp = createMockMcpServer();
   const mcpServer = mockMcp.server;
   await new Promise<void>((resolve, reject) => {
@@ -318,10 +322,26 @@ async function main(): Promise<void> {
     const canceled = await waitUntilTerminal(app, taskId3);
     assert(canceled.status === "canceled", "cancelled run should become canceled");
 
+    await sleep(50);
+    const traceLogText = await fs.readFile(traceLogPath, "utf8");
+    assert(
+      traceLogText.includes(`"trace_id":"${taskId1}"`),
+      "trace log should include task trace_id",
+    );
+    assert(
+      traceLogText.includes('"event":"agent.sdk.send_and_wait.result"'),
+      "trace log should include sdk result event",
+    );
+    assert(
+      traceLogText.includes('"event":"agent.mcp.tool_call.result"'),
+      "trace log should include mcp tool call result event",
+    );
+
     console.log("[agent:smoke] agent runtime checks passed.");
   } finally {
     await app.close();
     await fs.rm(sessionRootDir, { recursive: true, force: true });
+    await fs.rm(traceLogDir, { recursive: true, force: true });
     await new Promise<void>((resolve, reject) => {
       mcpServer.close((error) => {
         if (error) {

@@ -38,6 +38,12 @@ services:
       MEMORY_STORE_DSN: ${MEMORY_STORE_DSN:?MEMORY_STORE_DSN is required}
       AGENT_GATEWAY_BASE_URL: ${AGENT_GATEWAY_BASE_URL:-http://127.0.0.1:3800}
       AGENT_MCP_TIMEOUT_SEC: ${AGENT_MCP_TIMEOUT_SEC:-30}
+      AGENT_LOG_LEVEL: ${AGENT_LOG_LEVEL:-info}
+      AGENT_CONSOLE_SUMMARY: ${AGENT_CONSOLE_SUMMARY:-true}
+      AGENT_TRACE_LOG_PATH: ${AGENT_TRACE_LOG_PATH:-/var/log/yui-ai/agent-trace.jsonl}
+      AGENT_LOG_INCLUDE_PAYLOAD: ${AGENT_LOG_INCLUDE_PAYLOAD:-false}
+      AGENT_LOG_REDACT_KEYS: ${AGENT_LOG_REDACT_KEYS:-token,authorization,secret,password}
+      AGENT_CONSOLE_DELTA_AGGREGATE_MS: ${AGENT_CONSOLE_DELTA_AGGREGATE_MS:-1000}
       AGENT_TO_GATEWAY_INTERNAL_TOKEN: ${AGENT_TO_GATEWAY_INTERNAL_TOKEN:-}
       GATEWAY_TO_AGENT_INTERNAL_TOKEN: ${GATEWAY_TO_AGENT_INTERNAL_TOKEN:-}
       COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
@@ -48,6 +54,7 @@ services:
       INTERNAL_CONNECTION_MODE: tcp
     volumes:
       - agent_workspace_data:/agent/session
+      - ${AGENT_TRACE_LOG_HOST_DIR:-./.data/agent-logs}:/var/log/yui-ai
     healthcheck:
       test:
         [

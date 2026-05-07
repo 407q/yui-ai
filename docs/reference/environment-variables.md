@@ -65,6 +65,13 @@
 | `AGENT_GATEWAY_BASE_URL` | 任意 | `http://host.docker.internal:3800` | Agent -> Gateway の HTTP ベース URL |
 | `AGENT_GATEWAY_API_SOCKET_PATH` | 任意 | `${RUNTIME_SOCKET_DIR}/gateway-api.sock`（`RUNTIME_SOCKET_DIR` 未指定時は `${XDG_RUNTIME_DIR}/yui-ai`、さらに未指定時は `/tmp/yui-ai`） | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Agent -> Gateway socket を使用 |
 | `AGENT_MCP_TIMEOUT_SEC` | 任意 | `30` | Agent -> Gateway MCP 呼び出しタイムアウト（秒） |
+| `AGENT_LOG_LEVEL` | 任意 | `info` | Agent 統合トレースログの最小レベル（`debug/info/warn/error`） |
+| `AGENT_CONSOLE_SUMMARY` | 任意 | `true` | 1行要約ログをコンソールへ即時表示するか |
+| `AGENT_TRACE_LOG_PATH` | 任意 | `/var/log/yui-ai/agent-trace.jsonl` | Agent コンテナ内の完全ログ（JSONL）保存先 |
+| `AGENT_TRACE_LOG_HOST_DIR` | 任意 | `./.data/agent-logs` | compose で `/var/log/yui-ai` に bind mount するホスト側ディレクトリ |
+| `AGENT_LOG_INCLUDE_PAYLOAD` | 任意 | `false` | JSONL に payload 詳細を含めるか |
+| `AGENT_LOG_REDACT_KEYS` | 任意 | `token,authorization,secret,password` | マスク対象キー（カンマ区切り） |
+| `AGENT_CONSOLE_DELTA_AGGREGATE_MS` | 任意 | `1000` | `assistant.message_delta` の集約表示間隔（ms） |
 | `AGENT_SESSION_ROOT_DIR` | 任意 | `/agent/session` | セッション作業ルート |
 | `AGENT_ATTACHMENT_MAX_BYTES` | 任意 | `26214400`（25MB） | 添付 stage 時の 1 ファイル上限 |
 | `BOT_APPROVAL_TIMEOUT_SEC` | 任意 | `120` | Agent 側 approval wait タイムアウト（秒） |
