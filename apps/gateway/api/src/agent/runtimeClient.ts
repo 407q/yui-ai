@@ -1,5 +1,6 @@
 import { GatewayApiError } from "../gateway/errors.js";
 import http from "node:http";
+import type { GatewaySummaryLogger } from "../logging/summaryLogger.js";
 
 export type AgentRuntimeTaskStatus =
   | "queued"
@@ -112,6 +113,7 @@ export interface HttpAgentRuntimeClientOptions {
   timeoutSec: number;
   internalToken?: string;
   socketPath?: string;
+  summaryLogger?: Pick<GatewaySummaryLogger, "log">;
 }
 
 export class HttpAgentRuntimeClient implements AgentRuntimeClient {
@@ -158,6 +160,17 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     pathname: string,
     payload?: unknown,
   ): Promise<unknown> {
+    const traceContext = extractTraceContext(pathname, payload);
+    const startedAtMs = Date.now();
+    const startEvent = inferStartEvent(method, pathname, payload);
+    this.options.summaryLogger?.log({
+      hop: "G2A",
+      event: startEvent.event,
+      traceId: traceContext.traceId,
+      summary: startEvent.summary,
+      status: "sent",
+    });
+
     const hasBody = payload !== undefined;
     const headers: Record<string, string> = {};
     if (hasBody) {
@@ -167,20 +180,44 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
       headers["x-internal-token"] = this.options.internalToken;
     }
 
-    if (this.options.socketPath && this.options.socketPath.trim().length > 0) {
-      return this.requestViaSocket(
-        method,
-        pathname,
-        hasBody ? JSON.stringify(payload) : null,
-        headers,
-      );
+    try {
+      const response =
+        this.options.socketPath && this.options.socketPath.trim().length > 0
+          ? await this.requestViaSocket(
+              method,
+              pathname,
+              hasBody ? JSON.stringify(payload) : null,
+              headers,
+            )
+          : await this.requestViaHttp(
+              method,
+              pathname,
+              hasBody ? JSON.stringify(payload) : null,
+              headers,
+            );
+      const resultEvent = inferResultEvent(method, pathname, response);
+      this.options.summaryLogger?.log({
+        hop: "G2A",
+        event: resultEvent.event,
+        traceId: traceContext.traceId,
+        summary: resultEvent.summary,
+        status: resultEvent.status,
+        latencyMs: Date.now() - startedAtMs,
+      });
+      return response;
+    } catch (error) {
+      const gatewayError = toGatewayApiError(error);
+      this.options.summaryLogger?.log({
+        level: gatewayError.statusCode >= 500 ? "error" : "warn",
+        hop: "G2A",
+        event: "gateway.agent.request.result",
+        traceId: traceContext.traceId,
+        summary: `${method} ${pathname}`,
+        status: gatewayError.code,
+        latencyMs: Date.now() - startedAtMs,
+      });
+      throw error;
     }
-    return this.requestViaHttp(
-      method,
-      pathname,
-      hasBody ? JSON.stringify(payload) : null,
-      headers,
-    );
   }
 
   private async requestViaHttp(
@@ -396,4 +433,157 @@ function parseTextAsJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function inferStartEvent(
+  method: "GET" | "POST",
+  pathname: string,
+  payload: unknown,
+): { event: string; summary: string } {
+  if (method === "POST" && pathname === "/v1/tasks/run") {
+    const body = asRecord(payload);
+    const mode =
+      asRecord(body?.runtime_policy)?.tool_routing &&
+      typeof asRecord(asRecord(body?.runtime_policy)?.tool_routing)?.mode === "string"
+        ? String(asRecord(asRecord(body?.runtime_policy)?.tool_routing)?.mode)
+        : "unknown";
+    return {
+      event: "gateway.agent.run.request",
+      summary: `POST /v1/tasks/run mode=${mode}`,
+    };
+  }
+  if (method === "GET" && pathname.startsWith("/v1/tasks/")) {
+    return {
+      event: "gateway.agent.status.poll",
+      summary: `GET ${pathname}`,
+    };
+  }
+  if (method === "POST" && pathname.endsWith("/cancel")) {
+    return {
+      event: "gateway.agent.cancel.request",
+      summary: `POST ${pathname}`,
+    };
+  }
+  if (method === "POST" && pathname.includes("/attachments/stage")) {
+    return {
+      event: "gateway.agent.attachments.stage",
+      summary: `POST ${pathname}`,
+    };
+  }
+  return {
+    event: "gateway.agent.request",
+    summary: `${method} ${pathname}`,
+  };
+}
+
+function inferResultEvent(
+  method: "GET" | "POST",
+  pathname: string,
+  response: unknown,
+): { event: string; summary: string; status: string } {
+  const payload = asRecord(response);
+  if (method === "POST" && pathname === "/v1/tasks/run") {
+    const bootstrapMode = readString(payload, "bootstrap_mode") ?? "unknown";
+    return {
+      event: "agent.gateway.run.accepted",
+      summary: `bootstrap=${bootstrapMode}`,
+      status: "accepted",
+    };
+  }
+  if (method === "GET" && pathname.startsWith("/v1/tasks/")) {
+    const status = readString(payload, "status") ?? "unknown";
+    return {
+      event: "agent.gateway.status.snapshot",
+      summary: `status=${status}`,
+      status,
+    };
+  }
+  if (method === "POST" && pathname.endsWith("/cancel")) {
+    const status = readString(payload, "status") ?? "canceled";
+    return {
+      event: "agent.gateway.cancel.result",
+      summary: `status=${status}`,
+      status,
+    };
+  }
+  if (method === "POST" && pathname.includes("/attachments/stage")) {
+    const stagedCount = readNumber(payload, "staged_count");
+    return {
+      event: "agent.gateway.attachments.staged",
+      summary: `staged=${stagedCount ?? 0}`,
+      status: "ok",
+    };
+  }
+  return {
+    event: "gateway.agent.request.result",
+    summary: `${method} ${pathname}`,
+    status: "ok",
+  };
+}
+
+function extractTraceContext(
+  pathname: string,
+  payload: unknown,
+): {
+  traceId: string;
+} {
+  const body = asRecord(payload);
+  const traceFromBody =
+    readString(body, "task_id") ??
+    readString(body, "taskId") ??
+    extractTaskIdFromPath(pathname);
+  return {
+    traceId: traceFromBody ?? `gateway-${Date.now()}`,
+  };
+}
+
+function extractTaskIdFromPath(pathname: string): string | null {
+  const matched = pathname.match(/^\/v1\/tasks\/([^/]+)/);
+  if (!matched) {
+    return null;
+  }
+  const raw = matched[1];
+  if (!raw || raw.trim().length === 0) {
+    return null;
+  }
+  return decodeURIComponent(raw);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(value: Record<string, unknown> | null, key: string): string | null {
+  if (!value) {
+    return null;
+  }
+  const raw = value[key];
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+  return raw;
+}
+
+function readNumber(value: Record<string, unknown> | null, key: string): number | null {
+  if (!value) {
+    return null;
+  }
+  const raw = value[key];
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return null;
+  }
+  return raw;
+}
+
+function toGatewayApiError(error: unknown): GatewayApiError {
+  if (error instanceof GatewayApiError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return new GatewayApiError(500, "gateway_runtime_client_error", error.message);
+  }
+  return new GatewayApiError(500, "gateway_runtime_client_error", String(error));
 }

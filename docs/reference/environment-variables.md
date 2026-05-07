@@ -110,6 +110,9 @@ openssl rand -hex 32
 | `GATEWAY_API_HOST` | 任意 | `127.0.0.1`（Bot側）/`0.0.0.0`（API側） | Gateway listen host |
 | `GATEWAY_API_PORT` | 任意 | `3800` | Gateway listen port |
 | `GATEWAY_API_BASE_URL` | 任意 | `http://127.0.0.1:3800` | Bot -> Gateway ベース URL |
+| `GATEWAY_LOG_LEVEL` | 任意 | `info` | Gateway コンソール要約ログの最小レベル（`debug/info/warn/error`） |
+| `GATEWAY_CONSOLE_SUMMARY` | 任意 | `true` | Gateway の1行要約ログを有効化するか |
+| `GATEWAY_CONSOLE_SUMMARY_MAX_CHARS` | 任意 | `160` | Gateway 要約ログ1行の最大文字数 |
 | `GATEWAY_API_SOCKET_PATH` | 任意 | `${RUNTIME_SOCKET_DIR}/gateway-api.sock`（`RUNTIME_SOCKET_DIR` 未指定時は `${XDG_RUNTIME_DIR}/yui-ai`、さらに未指定時は `/tmp/yui-ai`） | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Bot/Agent -> Gateway socket を使用 |
 | `AGENT_RUNTIME_BASE_URL` | 任意 | `http://127.0.0.1:3801` | Gateway/Bot -> Agent ベース URL |
 | `AGENT_RUNTIME_SOCKET_PATH` | 任意 | `${RUNTIME_SOCKET_DIR}/agent-runtime.sock`（`RUNTIME_SOCKET_DIR` 未指定時は `${XDG_RUNTIME_DIR}/yui-ai`、さらに未指定時は `/tmp/yui-ai`） | `INTERNAL_CONNECTION_MODE=uds` 時は未指定でも既定値で Gateway/Bot -> Agent socket を使用 |

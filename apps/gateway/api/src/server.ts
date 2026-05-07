@@ -2,12 +2,16 @@ import "dotenv/config";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import {
   HttpAgentRuntimeClient,
   type AgentRuntimeClient,
 } from "./agent/runtimeClient.js";
+import {
+  createGatewaySummaryLoggerFromEnv,
+  type GatewaySummaryLogger,
+} from "./logging/summaryLogger.js";
 import { createGatewayPool } from "./gateway/db.js";
 import { GatewayApiError } from "./gateway/errors.js";
 import {
@@ -21,6 +25,7 @@ import { McpToolService } from "./mcp/service.js";
 
 interface BuildGatewayApiServerOptions {
   logger?: boolean;
+  summaryLogger?: Pick<GatewaySummaryLogger, "log">;
   pool?: Pool;
   repository?: GatewayRepository;
   sessionIdleTimeoutSec?: number;
@@ -50,9 +55,11 @@ interface BuildGatewayApiServerOptions {
 export function buildGatewayApiServer(
   options: BuildGatewayApiServerOptions = {},
 ): FastifyInstance {
+  const summaryLogger = options.summaryLogger ?? createGatewaySummaryLoggerFromEnv();
   const app = Fastify({
-    logger: options.logger ?? true,
+    logger: options.logger ?? false,
   });
+  const requestStartedAtMs = new WeakMap<object, number>();
 
   const pool = options.pool ?? createGatewayPool();
   const repository = options.repository ?? new PostgresGatewayRepository(pool);
@@ -78,6 +85,7 @@ export function buildGatewayApiServer(
         options.agentRuntimeInternalToken ??
         process.env.GATEWAY_TO_AGENT_INTERNAL_TOKEN ??
         process.env.AGENT_INTERNAL_TOKEN,
+      summaryLogger,
     });
   const service = new GatewayApiService(repository, {
     sessionIdleTimeoutSec:
@@ -110,6 +118,7 @@ export function buildGatewayApiServer(
     discordBotToken: process.env.DISCORD_BOT_TOKEN,
     discordGuildId: process.env.DISCORD_GUILD_ID,
     discordApiBaseUrl: process.env.DISCORD_API_BASE_URL,
+    summaryLogger,
   });
 
   if (!options.pool) {
@@ -127,7 +136,7 @@ export function buildGatewayApiServer(
       });
     }
 
-    requestLogError(error);
+    requestLogError(error, summaryLogger);
     return reply.code(500).send({
       error: "internal_error",
       message: "Unexpected error occurred.",
@@ -135,6 +144,7 @@ export function buildGatewayApiServer(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    requestStartedAtMs.set(request.raw, Date.now());
     const requestPath = request.url.split("?")[0] ?? request.url;
     if (requestPath === "/health") {
       return;
@@ -163,6 +173,22 @@ export function buildGatewayApiServer(
       },
     });
   });
+  app.addHook("onResponse", async (request, reply) => {
+    const requestPath = request.url.split("?")[0] ?? request.url;
+    if (requestPath === "/health") {
+      return;
+    }
+    const startedAtMs = requestStartedAtMs.get(request.raw) ?? Date.now();
+    const traceId = extractTraceIdFromRequest(request);
+    summaryLogger.log({
+      hop: resolveHopFromPath(requestPath),
+      event: "gateway.http.request",
+      traceId,
+      summary: `${request.method} ${requestPath}`,
+      status: `${reply.statusCode}`,
+      latencyMs: Date.now() - startedAtMs,
+    });
+  });
 
   void registerGatewayRoutes(app, service);
   void registerMcpRoutes(app, mcpService);
@@ -174,23 +200,44 @@ async function main(): Promise<void> {
   const port = parsePositiveInt(process.env.GATEWAY_API_PORT, 3800);
   const socketPath = resolveGatewayApiSocketPath();
 
-  const app = buildGatewayApiServer();
+  const summaryLogger = createGatewaySummaryLoggerFromEnv();
+  const app = buildGatewayApiServer({
+    summaryLogger,
+  });
   if (socketPath) {
     cleanupStaleSocket(socketPath);
     await app.listen({ path: socketPath });
-    app.log.info(`[gateway-api] listening on socket ${socketPath}`);
+    summaryLogger.log({
+      hop: "INT",
+      event: "gateway.server.listen",
+      traceId: "gateway-bootstrap",
+      summary: `listening on socket ${socketPath}`,
+      status: "ready",
+    });
   } else {
     await app.listen({ host, port });
-    app.log.info(`[gateway-api] listening on ${host}:${port}`);
+    summaryLogger.log({
+      hop: "INT",
+      event: "gateway.server.listen",
+      traceId: "gateway-bootstrap",
+      summary: `listening on ${host}:${port}`,
+      status: "ready",
+    });
   }
 
   const shutdown = async (signal: string): Promise<void> => {
-    app.log.info(`[gateway-api] received ${signal}, shutting down...`);
+    summaryLogger.log({
+      hop: "INT",
+      event: "gateway.server.shutdown",
+      traceId: "gateway-bootstrap",
+      summary: `received ${signal}`,
+      status: "shutting_down",
+    });
     try {
       await app.close();
       process.exit(0);
     } catch (error) {
-      requestLogError(error);
+      requestLogError(error, summaryLogger);
       process.exit(1);
     }
   };
@@ -353,13 +400,73 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function requestLogError(error: unknown): void {
+function requestLogError(
+  error: unknown,
+  summaryLogger: Pick<GatewaySummaryLogger, "log">,
+): void {
+  const message = error instanceof Error ? error.message : String(error);
+  summaryLogger.log({
+    level: "error",
+    hop: "INT",
+    event: "gateway.error",
+    traceId: "gateway-error",
+    summary: message,
+    status: "error",
+  });
   if (error instanceof Error) {
     console.error("[gateway-api] error:", error);
     return;
   }
 
   console.error("[gateway-api] error:", String(error));
+}
+
+function extractTraceIdFromRequest(request: FastifyRequest): string {
+  const params = toRecord(request.params);
+  const body = toRecord(request.body);
+  const fromParams = readString(params, "taskId") ?? readString(params, "task_id");
+  if (fromParams) {
+    return fromParams;
+  }
+  const fromBody =
+    readString(body, "taskId") ??
+    readString(body, "task_id") ??
+    readString(body, "call_id");
+  if (fromBody) {
+    return fromBody;
+  }
+  return request.id;
+}
+
+function resolveHopFromPath(pathname: string): "A2M" | "INT" {
+  if (
+    pathname.startsWith("/v1/mcp/") ||
+    pathname === "/v1/agent/approvals/request-and-wait"
+  ) {
+    return "A2M";
+  }
+  return "INT";
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(
+  value: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  if (!value) {
+    return null;
+  }
+  const raw = value[key];
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+  return raw;
 }
 
 function cleanupStaleSocket(socketPath: string): void {
@@ -396,7 +503,7 @@ function isEntrypoint(): boolean {
 
 if (isEntrypoint()) {
   main().catch((error) => {
-    requestLogError(error);
+    requestLogError(error, createGatewaySummaryLoggerFromEnv());
     process.exit(1);
   });
 }

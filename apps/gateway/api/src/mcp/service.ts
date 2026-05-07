@@ -10,6 +10,7 @@ import {
 import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
 import type { ToolCallRequest, ToolCallResult } from "./types.js";
+import type { GatewaySummaryLogger } from "../logging/summaryLogger.js";
 
 const DEFAULT_OLLAMA_WEB_SEARCH_API_URL = "https://ollama.com/api/web_search";
 
@@ -153,12 +154,14 @@ export interface McpToolServiceOptions {
   discordBotToken?: string;
   discordGuildId?: string;
   discordApiBaseUrl?: string;
+  summaryLogger?: Pick<GatewaySummaryLogger, "log">;
 }
 
 export class McpToolService {
   private readonly containerAdapter: ContainerToolAdapter;
   private readonly hostAdapter: HostToolAdapter;
   private readonly memoryNamespaceValidationMode: "warn" | "enforce";
+  private readonly summaryLogger: Pick<GatewaySummaryLogger, "log">;
   private discordGuildChannelsCache:
     | {
         fetchedAt: number;
@@ -185,11 +188,21 @@ export class McpToolService {
     });
     this.memoryNamespaceValidationMode =
       options.memoryNamespaceValidationMode ?? "warn";
+    this.summaryLogger = options.summaryLogger ?? { log: () => undefined };
   }
 
   async executeToolCall(input: ToolCallRequest): Promise<ToolCallResult> {
     const correlationId = `${input.taskId}:${input.callId}`;
     let taskIdForEvent: string | null = null;
+    const startedAtMs = Date.now();
+    let finalStatus = "error";
+    this.summaryLogger.log({
+      hop: "A2M",
+      event: "gateway.mcp.tool_call.received",
+      traceId: input.taskId,
+      summary: `tool=${input.toolName} call=${input.callId}`,
+      status: "received",
+    });
 
     try {
       const task = await this.repository.findTaskById(input.taskId);
@@ -267,6 +280,7 @@ export class McpToolService {
           status: "ok",
         },
       });
+      finalStatus = "ok";
       return {
         task_id: input.taskId,
         call_id: input.callId,
@@ -307,6 +321,7 @@ export class McpToolService {
           details: toolError.details ?? {},
         },
       });
+      finalStatus = toolError.code;
       return {
         task_id: input.taskId,
         call_id: input.callId,
@@ -315,6 +330,15 @@ export class McpToolService {
         message: toolError.message,
         details: toolError.details,
       };
+    } finally {
+      this.summaryLogger.log({
+        hop: "A2M",
+        event: "gateway.mcp.tool_call.result",
+        traceId: input.taskId,
+        summary: `tool=${input.toolName} call=${input.callId}`,
+        status: finalStatus,
+        latencyMs: Date.now() - startedAtMs,
+      });
     }
   }
 
