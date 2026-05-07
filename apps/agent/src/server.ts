@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -296,6 +296,7 @@ async function main(): Promise<void> {
   if (socketPath) {
     cleanupStaleSocket(socketPath);
     await app.listen({ path: socketPath });
+    ensureSocketWritable(socketPath);
     app.log.info(`[agent] listening on socket ${socketPath}`);
   } else {
     await app.listen({ host, port });
@@ -547,6 +548,15 @@ function cleanupStaleSocket(socketPath: string): void {
     return;
   }
   unlinkSync(socketPath);
+}
+
+function ensureSocketWritable(socketPath: string): void {
+  try {
+    chmodSync(socketPath, 0o666);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[agent] failed to chmod socket ${socketPath}: ${detail}`);
+  }
 }
 
 function isEntrypoint(): boolean {
