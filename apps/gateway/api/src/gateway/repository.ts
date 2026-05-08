@@ -46,6 +46,8 @@ export interface CreateApprovalInput {
   sessionId: string;
   operation: string;
   path: string;
+  approvalType?: "operation" | "system_memory_write";
+  approverRoleId?: string | null;
 }
 
 export interface AppendAuditLogInput {
@@ -430,9 +432,11 @@ export class PostgresGatewayRepository implements GatewayRepository {
         operation,
         path,
         status,
+        approval_type,
+        approver_role_id,
         requested_at
       )
-      VALUES ($1, $2, $3, $4, $5, 'requested', NOW())
+      VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, NOW())
       RETURNING *
       `,
       [
@@ -441,6 +445,8 @@ export class PostgresGatewayRepository implements GatewayRepository {
         input.sessionId,
         input.operation,
         input.path,
+        input.approvalType ?? 'operation',
+        input.approverRoleId ?? null,
       ],
     );
 
@@ -1068,6 +1074,8 @@ interface ApprovalRow {
   requested_at: Date;
   responded_at: Date | null;
   responder_id: string | null;
+  approval_type?: "operation" | "system_memory_write";
+  approver_role_id?: string | null;
 }
 
 interface SessionPathPermissionRow {
@@ -1166,6 +1174,8 @@ function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
     requestedAt: row.requested_at,
     respondedAt: row.responded_at,
     responderId: row.responder_id,
+    approvalType: row.approval_type ?? "operation",
+    approverRoleId: row.approver_role_id ?? undefined,
   };
 }
 

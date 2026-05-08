@@ -135,6 +135,7 @@ const LOG_PREFIX = `[bot:${BOT_MODE}]`;
 const ALERT_TAG = BOT_MODE === "mock" ? "bot-mock" : "bot";
 
 const SYSTEM_ALERT_CHANNEL_ID = process.env.BOT_SYSTEM_ALERT_CHANNEL_ID;
+const MEMORY_ADMIN_ROLE_ID = process.env.BOT_MEMORY_ADMIN_ROLE_ID;
 const GATEWAY_API_BASE_URL = process.env.GATEWAY_API_BASE_URL ?? "http://127.0.0.1:3800";
 const AGENT_RUNTIME_BASE_URL = process.env.AGENT_RUNTIME_BASE_URL ?? "http://127.0.0.1:3801";
 const DEFAULT_RUNTIME_SOCKET_DIR = resolveDefaultRuntimeSocketDir();
@@ -3180,8 +3181,16 @@ async function syncPendingApprovalMessage(
       .setStyle(ButtonStyle.Danger),
   );
 
+  const isSystemMemoryApproval =
+    pending.toolName === "memory.upsert" ||
+    pending.toolName === "memory.delete";
+  const adminRoleMention =
+    isSystemMemoryApproval && MEMORY_ADMIN_ROLE_ID
+      ? ` <@&${MEMORY_ADMIN_ROLE_ID}>`
+      : "";
+
   const sent = await sendToThread(session.threadId, {
-    content: `<@${session.ownerUserId}>\n${buildApprovalRequestMessageContent({
+    content: `<@${session.ownerUserId}>${adminRoleMention}\n${buildApprovalRequestMessageContent({
       toolName: pending.toolName,
       operationCode: pending.operationCode,
       target: pending.target,
@@ -4039,6 +4048,37 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
 
   const decision: "approved" | "rejected" =
     action === "approve" ? "approved" : "rejected";
+
+  // Check admin role for System Memory approvals
+  if (
+    decision === "approved" &&
+    (pending.request.toolName === "memory.upsert" ||
+      pending.request.toolName === "memory.delete") &&
+    MEMORY_ADMIN_ROLE_ID
+  ) {
+    const guildId = interaction.guildId;
+    if (guildId) {
+      try {
+        const member = await interaction.guild?.members.fetch(interaction.user.id);
+        const hasAdminRole = member?.roles.cache.has(MEMORY_ADMIN_ROLE_ID);
+        if (!hasAdminRole) {
+          await interaction.reply({
+            content: `この承認はシステムメモリ変更です。<@&${MEMORY_ADMIN_ROLE_ID}> ロールを持つユーザーのみ承認できます。`,
+            ephemeral: true,
+          });
+          return;
+        }
+      } catch (error) {
+        console.error(`${LOG_PREFIX} admin role check failed`, error);
+        await interaction.reply({
+          content: "ロール確認中にエラーが発生しました。",
+          ephemeral: true,
+        });
+        return;
+      }
+    }
+  }
+
   try {
     await gatewayApiRequest(
       "POST",

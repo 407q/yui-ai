@@ -65,6 +65,8 @@ export interface ApprovalRecord {
   requestedAt: Date;
   respondedAt: Date | null;
   responderId: string | null;
+  approvalType?: "operation" | "system_memory_write";
+  approverRoleId?: string | null;
 }
 
 export interface ThreadStatusResponse {

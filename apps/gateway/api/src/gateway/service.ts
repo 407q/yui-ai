@@ -1541,12 +1541,21 @@ export class GatewayApiService {
       );
     }
 
+    const isSystemMemoryWrite =
+      (input.operation === "memory.upsert" ||
+        input.operation === "memory.delete") &&
+      input.path.startsWith("system.");
+
     const approval = await this.repository.createApproval({
       approvalId: newId("apr"),
       taskId: input.task.taskId,
       sessionId: input.session.sessionId,
       operation: input.operation,
       path: input.path,
+      approvalType: isSystemMemoryWrite ? "system_memory_write" : "operation",
+      approverRoleId: isSystemMemoryWrite
+        ? process.env.BOT_MEMORY_ADMIN_ROLE_ID
+        : undefined,
     });
     await this.repository.updateTaskStatus(input.task.taskId, "waiting_approval");
     await this.repository.updateSessionStatus(

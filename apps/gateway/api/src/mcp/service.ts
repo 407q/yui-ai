@@ -503,12 +503,10 @@ export class McpToolService {
         const args = parseToolArgs(memoryUpsertSchema, input.arguments);
         this.validateMemoryNamespace(args.namespace, input.callId);
         if (isSystemMemoryNamespace(args.namespace)) {
-          throw new McpToolError(
-            "memory_system_entry_read_only",
-            "System memory entries are read-only for normal tool calls.",
-            {
-              namespace: args.namespace,
-            },
+          await this.assertMemoryWriteApprovalGranted(
+            input.sessionId,
+            "memory.upsert",
+            args.namespace,
           );
         }
         const stored = await this.repository.upsertMemory({
@@ -595,12 +593,10 @@ export class McpToolService {
         const args = parseToolArgs(memoryDeleteSchema, input.arguments);
         this.validateMemoryNamespace(args.namespace, input.callId);
         if (isSystemMemoryNamespace(args.namespace)) {
-          throw new McpToolError(
-            "memory_system_entry_read_only",
-            "System memory entries are read-only for normal tool calls.",
-            {
-              namespace: args.namespace,
-            },
+          await this.assertMemoryWriteApprovalGranted(
+            input.sessionId,
+            "memory.delete",
+            args.namespace,
           );
         }
         await this.repository.deleteMemory(userId, args.namespace, args.key);
@@ -1323,6 +1319,25 @@ export class McpToolService {
     }
 
     return grantedValue === scopeValue;
+  }
+
+  private async assertMemoryWriteApprovalGranted(
+    sessionId: string,
+    operation: "memory.upsert" | "memory.delete",
+    namespace: string,
+  ): Promise<void> {
+    const permissions = await this.repository.listPathPermissions(sessionId, operation);
+    const isApproved = permissions.some((perm) => perm.path === namespace);
+    if (!isApproved) {
+      throw new McpToolError(
+        "system_memory_write_approval_required",
+        "System memory modifications require administrator approval.",
+        {
+          namespace,
+          operation,
+        },
+      );
+    }
   }
 
   private validateMemoryNamespace(namespace: string, callId: string): void {
