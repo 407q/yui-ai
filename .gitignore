@@ -10,3 +10,4 @@ yarn-error.log
 copilot-bootstrap-log/
 debug/
 pm2config.json
+.data/
