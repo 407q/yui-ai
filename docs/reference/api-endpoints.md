@@ -241,6 +241,10 @@ Gateway API と Agent Runtime API のエンドポイント一覧です。
 }
 ```
 
+**注記: System Memory 承認時のロール要件**
+
+`operation` が `memory.upsert` または `memory.delete` で `path` が `system.` で始まる場合、この承認は "System Memory 変更" として扱われます。この場合、`/v1/approvals/:approvalId/respond` で承認する際、ユーザーは `BOT_MEMORY_ADMIN_ROLE_ID` で指定された Discord ロールを保有している必要があります。ロールの検証は Discord のボタンクリック時に行われます。
+
 ---
 
 ### Agent タスク
