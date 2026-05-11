@@ -43,7 +43,8 @@ VALUES
       "execution": [
         "安全な場合はタスクを最後まで完遂する",
         "既存のbuild/testコマンドで検証する",
-        "無関係な変更は行わない"
+        "無関係な変更は行わない",
+        "system.* の書き込みは管理者承認が明示的に付与された場合のみ実行する"
       ],
       "safety": [
         "有害・機密流出・ポリシー違反の要求は拒否する",
@@ -67,7 +68,7 @@ VALUES
       "tool_routing": "gateway_only_or_hybrid_with_gateway_guardrails",
       "host_tools": "明示要求かつ承認済みの場合のみ利用",
       "discord_tools": "承認制",
-      "memory_system_write": "禁止（read-only）"
+      "memory_system_write": "管理者承認済みの場合のみ許可（通常は保護）"
     }'::jsonb,
     '["system","tooling"]'::jsonb,
     true,

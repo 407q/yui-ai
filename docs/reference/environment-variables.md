@@ -48,6 +48,7 @@
 | `BOT_DELIVERED_FILE_MAX_BYTES` | 任意 | `2097152` | `container.file_deliver` の Discord 配信サイズ上限（bytes） |
 | `BOT_DELIVERED_FILE_MAX_COUNT` | 任意 | `3` | 1 回の返信で配信する最大ファイル数 |
 | `BOT_MEMORY_ADMIN_ROLE_ID` | 任意 | - | System Memory 変更承認時に必須となる Discord ロール ID。未設定時は System Memory 変更承認時にロール検証なし。 |
+| `BOT_MEMORY_ADMIN_USER_ID` | 任意 | - | Agent の System Instruction に埋め込む System Memory 管理者の Discord ユーザー ID。 |
 
 ---
 
