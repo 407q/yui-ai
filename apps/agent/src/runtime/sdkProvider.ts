@@ -563,8 +563,13 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
 
     await this.ensureStarted();
 
-    const sdkSessionId = sdkSessionIdHint ?? toSdkSessionId(appSessionId);
     const routingMode = resolvedRoutingMode;
+    const sdkSessionId = resolveSdkSessionId({
+      appSessionId,
+      sdkSessionIdHint,
+      routingMode,
+      memoryAdminRoleId: this.options.memoryAdminRoleId,
+    });
     const workspaceRoot = resolveSessionWorkspaceRoot(
       appSessionId,
       this.options.sessionRootDirectory,
@@ -1790,6 +1795,36 @@ function mapToolErrorToResultType(
 
 function toSdkSessionId(sessionId: string): string {
   return `yui_sdk_${sessionId}`;
+}
+
+function resolveSdkSessionId(input: {
+  appSessionId: string;
+  sdkSessionIdHint?: string;
+  routingMode: ToolRoutingMode;
+  memoryAdminRoleId?: string;
+}): string {
+  const revision = createSystemPromptRevision({
+    routingMode: input.routingMode,
+    memoryAdminRoleId: input.memoryAdminRoleId,
+  });
+  const expectedSessionId = `${toSdkSessionId(input.appSessionId)}_${revision}`;
+  if (input.sdkSessionIdHint && input.sdkSessionIdHint.endsWith(`_${revision}`)) {
+    return input.sdkSessionIdHint;
+  }
+  return expectedSessionId;
+}
+
+function createSystemPromptRevision(input: {
+  routingMode: ToolRoutingMode;
+  memoryAdminRoleId?: string;
+}): string {
+  const fingerprintSource = buildSystemMessageWithRuntimeContracts(
+    buildActiveSystemMessage(),
+    "/agent/session/__fingerprint__",
+    input.routingMode,
+    input.memoryAdminRoleId,
+  );
+  return createStableHexHash(fingerprintSource).slice(0, 10);
 }
 
 function resolveSessionWorkspaceRoot(
