@@ -74,6 +74,12 @@ export interface RuntimeSupervisorShutdownOptions {
   stopCompose?: boolean;
 }
 
+export interface RuntimeSupervisorShutdownReport {
+  gatewayStopped: boolean;
+  composeRequested: boolean;
+  composeStopped: boolean;
+}
+
 export class RuntimeSupervisor {
   private gatewayApp: FastifyInstance | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
@@ -143,12 +149,16 @@ export class RuntimeSupervisor {
     }
   }
 
-  async shutdown(options: RuntimeSupervisorShutdownOptions = {}): Promise<void> {
+  async shutdown(
+    options: RuntimeSupervisorShutdownOptions = {},
+  ): Promise<RuntimeSupervisorShutdownReport> {
     this.stopMonitorLoop();
     this.stopCleanupLoop();
-    await this.stopGatewayApiBestEffort("shutdown");
+    const gatewayStopped = await this.stopGatewayApiBestEffort("shutdown");
+    const composeRequested = Boolean(options.stopCompose && this.isComposeEnabled());
+    let composeStopped = false;
     if (options.stopCompose && this.isComposeEnabled()) {
-      await this.runCommandBestEffort(
+      composeStopped = await this.runCommandBestEffort(
         {
           command: "docker",
           args: [
@@ -171,6 +181,11 @@ export class RuntimeSupervisor {
         options.stopCompose ? " (compose stopped)" : ""
       }`,
     );
+    return {
+      gatewayStopped,
+      composeRequested,
+      composeStopped,
+    };
   }
 
   async snapshotHealth(): Promise<RuntimeHealthSnapshot> {
@@ -499,30 +514,34 @@ export class RuntimeSupervisor {
     }
   }
 
-  private async stopGatewayApiBestEffort(context: string): Promise<void> {
+  private async stopGatewayApiBestEffort(context: string): Promise<boolean> {
     try {
       await this.stopGatewayApi();
+      return true;
     } catch (error) {
       this.log(
         `${context} failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return false;
     }
   }
 
   private async runCommandBestEffort(
     spec: CommandSpec,
     context: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await this.runCommand(spec);
+      return true;
     } catch (error) {
       this.log(
         `${context} failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return false;
     }
   }
 

@@ -21,6 +21,7 @@ import {
 } from "discord.js";
 import {
   RuntimeSupervisor,
+  type RuntimeSupervisorShutdownReport,
   type RuntimeSupervisorShutdownOptions,
 } from "./orchestration/supervisor.js";
 
@@ -2585,6 +2586,9 @@ async function bootInfrastructure(): Promise<void> {
     cleanupIntervalSec: ORCHESTRATOR_CLEANUP_INTERVAL_SEC,
     onLog: (message) => {
       console.log(`[orchestrator] ${message}`);
+      if (shouldMirrorOrchestratorLogToAlert(message)) {
+        void sendSystemAlert(`ℹ️ [orchestrator] ${message}`);
+      }
     },
     onAlert: async (message) => {
       await sendSystemAlert(message);
@@ -2595,7 +2599,14 @@ async function bootInfrastructure(): Promise<void> {
   });
   runtimeSupervisor = supervisor;
 
-  await sendSystemAlert("🟡 [orchestrator] 起動準備を開始します。");
+  await sendSystemAlert(
+    "🟡 [orchestrator] 起動準備を開始します。\n" +
+      `- compose_build=${ORCHESTRATOR_COMPOSE_BUILD}\n` +
+      `- boot_health_attempts=${ORCHESTRATOR_BOOT_HEALTH_MAX_ATTEMPTS}\n` +
+      `- boot_health_retry_interval_sec=${ORCHESTRATOR_BOOT_HEALTH_RETRY_INTERVAL_SEC}\n` +
+      `- monitor_interval_sec=${ORCHESTRATOR_MONITOR_INTERVAL_SEC}\n` +
+      `- failure_threshold=${ORCHESTRATOR_FAILURE_THRESHOLD}`,
+  );
   try {
     await supervisor.boot();
     runtimeInfrastructureStatus = "ready";
@@ -2609,14 +2620,27 @@ async function bootInfrastructure(): Promise<void> {
 
 async function shutdownInfrastructure(
   options: RuntimeSupervisorShutdownOptions = { stopCompose: ORCHESTRATOR_ENABLED },
-): Promise<void> {
+): Promise<RuntimeSupervisorShutdownReport & { supervisorActive: boolean }> {
   if (!runtimeSupervisor) {
-    return;
+    return {
+      supervisorActive: false,
+      gatewayStopped: false,
+      composeRequested: false,
+      composeStopped: false,
+    };
   }
 
   const supervisor = runtimeSupervisor;
   runtimeSupervisor = null;
-  await supervisor.shutdown(options);
+  const report = await supervisor.shutdown(options);
+  return {
+    supervisorActive: true,
+    ...report,
+  };
+}
+
+function shouldMirrorOrchestratorLogToAlert(message: string): boolean {
+  return message.startsWith("boot:") || message.startsWith("shutdown:");
 }
 
 async function gracefulTerminateFromInfrastructureFailure(
@@ -4188,24 +4212,44 @@ async function executeSystemControl(
   }
 
   isSystemControlPending = true;
-  const closedCount = await closeAllSessions(requestedBy);
-
   await notify(formatSessionControlMessage(`/${mode}`));
   await sendSystemAlert(
-    `⚠️ [${ALERT_TAG}:control] /${mode} requested by <@${requestedBy}> ` +
-      `(closed_sessions: ${closedCount})`,
+    `⚠️ [${ALERT_TAG}:control] /${mode} requested by <@${requestedBy}>`,
+  );
+  await sendSystemAlert(`🟡 [${ALERT_TAG}:control] セッション終了処理を開始します。`);
+  const closedCount = await closeAllSessions(requestedBy);
+  await sendSystemAlert(
+    `🟢 [${ALERT_TAG}:control] セッション終了処理が完了しました。` +
+      ` (closed_sessions: ${closedCount})`,
   );
 
   const shutdownOptions: RuntimeSupervisorShutdownOptions = {
     stopCompose: ORCHESTRATOR_ENABLED,
   };
+  await sendSystemAlert(
+    `🟡 [${ALERT_TAG}:control] インフラ停止処理を開始します。` +
+      ` (stop_compose=${shutdownOptions.stopCompose ? "yes" : "no"})`,
+  );
   try {
-    await shutdownInfrastructure(shutdownOptions);
+    const shutdownReport = await shutdownInfrastructure(shutdownOptions);
+    const shutdownSummary = shutdownReport.supervisorActive
+      ? [
+          `gateway_api=${shutdownReport.gatewayStopped ? "stopped" : "stop_failed"}`,
+          shutdownReport.composeRequested
+            ? `compose=${shutdownReport.composeStopped ? "stopped" : "stop_failed"}`
+            : "compose=skipped",
+        ].join(", ")
+      : "runtime_supervisor=inactive";
+    await sendSystemAlert(`🟢 [${ALERT_TAG}:control] インフラ停止処理が完了しました。 (${shutdownSummary})`);
   } catch (error) {
     console.error(`${LOG_PREFIX} infrastructure shutdown failed`, error);
+    await sendSystemAlert(
+      `🚨 [${ALERT_TAG}:control] インフラ停止処理に失敗しました: ${summarizeError(error)}`,
+    );
   }
 
   if (mode === "reboot") {
+    await sendSystemAlert(`🟡 [${ALERT_TAG}:control] Bot 再起動を開始します。`);
     try {
       await rebootInProcess();
       return;
@@ -4216,9 +4260,13 @@ async function executeSystemControl(
   }
 
   try {
+    await sendSystemAlert(`🟡 [${ALERT_TAG}:control] Bot をオフライン化して終了します。`);
     await setOfflineImmediately();
   } catch (error) {
     console.error(`${LOG_PREFIX} failed to set offline during exit`, error);
+    await sendSystemAlert(
+      `🚨 [${ALERT_TAG}:control] Bot のオフライン化に失敗しました: ${summarizeError(error)}`,
+    );
   }
 
   setTimeout(() => {
