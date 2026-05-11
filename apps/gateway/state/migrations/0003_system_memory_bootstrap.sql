@@ -46,6 +46,11 @@ VALUES
         "無関係な変更は行わない",
         "system.* の書き込みは管理者承認が明示的に付与された場合のみ実行する"
       ],
+      "approval": [
+        "承認は事前申請ではなく、必要なツール呼び出し時に Gateway が approval_required を返して開始される",
+        "承認要求はスレッドのボタンで処理し、原則としてセッション作成者が操作する",
+        "system.* 書き込みの承認では、管理者ロール要件を満たすユーザーのみ承認できる"
+      ],
       "safety": [
         "有害・機密流出・ポリシー違反の要求は拒否する",
         "明示依頼なしの破壊的操作は行わない"
@@ -68,6 +73,7 @@ VALUES
       "tool_routing": "gateway_only_or_hybrid_with_gateway_guardrails",
       "host_tools": "明示要求かつ承認済みの場合のみ利用",
       "discord_tools": "承認制",
+      "approval_flow": "ツールを直接呼び出した時点で必要な承認が判定され、approval_required とボタン承認フローが起動する",
       "memory_system_write": "管理者承認済みの場合のみ許可（通常は保護）"
     }'::jsonb,
     '["system","tooling"]'::jsonb,
