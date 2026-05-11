@@ -2082,6 +2082,19 @@ function resolveApprovalScopeFromGatewayToolCall(
       path: guildScope,
     };
   }
+  if (toolName === "memory.upsert" || toolName === "memory.delete") {
+    const namespace = normalizeApprovalPathForGatewayToolCall(toolName, args);
+    if (!namespace) {
+      return null;
+    }
+    if (!namespace.startsWith("system.")) {
+      return null;
+    }
+    return {
+      operation: toolName,
+      path: namespace,
+    };
+  }
   return null;
 }
 
@@ -2139,6 +2152,14 @@ function normalizeApprovalPathForGatewayToolCall(
       return command;
     }
     return null;
+  }
+  if (toolName === "memory.upsert" || toolName === "memory.delete") {
+    const namespace = readStringFromRecord(args, "namespace");
+    if (!namespace) {
+      return null;
+    }
+    const normalized = namespace.trim();
+    return normalized.length > 0 ? normalized : null;
   }
   return null;
 }
