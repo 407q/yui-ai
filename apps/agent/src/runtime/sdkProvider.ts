@@ -91,7 +91,7 @@ export interface CopilotCliSdkProviderOptions {
   sessionRootDirectory: string;
   sendTimeoutMs: number;
   sdkLogLevel: "none" | "error" | "warning" | "info" | "debug" | "all";
-  memoryAdminUserId?: string;
+  memoryAdminRoleId?: string;
   lmDeltaAggregateMs?: number;
   traceLogger?: AgentTraceLoggerLike;
 }
@@ -658,7 +658,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           buildActiveSystemMessage(),
           state.workspaceRoot,
           state.routingMode,
-          this.options.memoryAdminUserId,
+          this.options.memoryAdminRoleId,
         ),
       },
       onPermissionRequest: this.createPermissionHandler(state),
@@ -1803,15 +1803,15 @@ function buildSystemMessageWithRuntimeContracts(
   baseSystemMessage: string,
   workspaceRoot: string,
   routingMode: ToolRoutingMode,
-  memoryAdminUserId?: string,
+  memoryAdminRoleId?: string,
 ): string {
   const routingContract =
     routingMode === "hybrid_container_builtin_gateway_host"
       ? "- tool_routing_mode: hybrid_container_builtin_gateway_host (container built-ins allowed, host operations via gateway tools)"
       : "- tool_routing_mode: gateway_only (all operations via gateway tools)";
-  const normalizedMemoryAdminUserId =
-    memoryAdminUserId && memoryAdminUserId.trim().length > 0
-      ? memoryAdminUserId.trim()
+  const normalizedMemoryAdminRoleId =
+    memoryAdminRoleId && memoryAdminRoleId.trim().length > 0
+      ? memoryAdminRoleId.trim()
       : "unset";
   return [
     baseSystemMessage,
@@ -1828,7 +1828,7 @@ function buildSystemMessageWithRuntimeContracts(
     "- discord_tool_usage_rule: discord.* tools are approval-gated; call the required discord.* tool directly so gateway can trigger approval_required flow with concrete scope",
     "- system_memory_contract: treat provided system_memory_refs as mandatory context; execute memory.get for each ref before other knowledge-heavy reasoning",
     "- system_memory_write_guard: system.* updates/deletes are protected; attempt them only when administrator approval is explicitly required and then granted by Gateway",
-    `- system_memory_admin_user_id: ${normalizedMemoryAdminUserId}`,
+    `- system_memory_admin_role_id: ${normalizedMemoryAdminRoleId}`,
     routingContract,
     "- host_approval_error_contract: on approval_required/rejected/timeout, explain next step and do not continue host operation silently",
     "- infra_status_contract: if infrastructure_status is booting/failed, avoid pretending completion and ask for retry/confirmation",

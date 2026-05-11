@@ -350,7 +350,7 @@ function resolveSdkProvider(traceLogger: AgentTraceLoggerLike): CopilotSdkProvid
     ),
     sendTimeoutMs: resolvePositiveInt(process.env.COPILOT_SEND_TIMEOUT_MS, 180000),
     sdkLogLevel: resolveCopilotSdkLogLevel(process.env.COPILOT_SDK_LOG_LEVEL),
-    memoryAdminUserId: process.env.BOT_MEMORY_ADMIN_USER_ID,
+    memoryAdminRoleId: process.env.BOT_MEMORY_ADMIN_ROLE_ID,
     lmDeltaAggregateMs: resolvePositiveInt(process.env.AGENT_CONSOLE_DELTA_AGGREGATE_MS, 1000),
     traceLogger,
   });
