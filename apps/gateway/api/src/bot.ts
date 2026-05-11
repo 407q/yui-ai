@@ -765,6 +765,10 @@ function summarizeOperationLog(title: string, lines: string[]): string[] {
         return [];
       }
       if (terminalStatus === "failed") {
+        const runtimeErrorMessage = extractOperationLogValue(lines, "- error_message=");
+        if (runtimeErrorMessage) {
+          return [`❌ Agent 実行が失敗: ${runtimeErrorMessage}`];
+        }
         return ["❌ Agent 実行が失敗"];
       }
       if (terminalStatus === "canceled") {
@@ -803,8 +807,13 @@ function summarizeOperationLog(title: string, lines: string[]): string[] {
       return [];
     case "run.final_answer":
       return [];
-    case "run.error":
+    case "run.error": {
+      const summary = extractOperationLogErrorSummary(lines);
+      if (summary) {
+        return [`❌ 実行エラーを検出: ${summary}`];
+      }
       return ["❌ 実行エラーを検出"];
+    }
     default:
       return [];
   }
@@ -816,6 +825,22 @@ function extractOperationLogValue(lines: string[], prefix: string): string | nul
     if (line.startsWith(prefix)) {
       return line.slice(prefix.length).trim();
     }
+  }
+  return null;
+}
+
+function extractOperationLogErrorSummary(lines: string[]): string | null {
+  const message = extractOperationLogValue(lines, "- message=");
+  if (message) {
+    return message;
+  }
+  const response = extractOperationLogValue(lines, "- response=");
+  if (response) {
+    return response;
+  }
+  const status = extractOperationLogValue(lines, "- status=");
+  if (status) {
+    return status;
   }
   return null;
 }
@@ -3623,6 +3648,8 @@ async function waitForAgentTaskTerminalStatus(
         `- terminal_status=${status.agentTask.status}`,
         `- send_and_wait_count=${status.agentTask.send_and_wait_count}`,
         `- completed_at=${status.agentTask.completed_at ?? "null"}`,
+        `- error_code=${status.agentTask.error?.code ?? "none"}`,
+        `- error_message=${truncateOperationLogValue(status.agentTask.error?.message ?? "none", BOT_OPERATION_LOG_MAX_FIELD_CHARS)}`,
       ]);
       return status;
     }
