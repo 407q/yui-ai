@@ -4,6 +4,12 @@ import { z } from "zod";
 import type { GatewayRepository } from "../gateway/repository.js";
 import type { DiscordRecentMessageRecord } from "../gateway/types.js";
 import {
+  DEFAULT_OLLAMA_WEB_SEARCH_API_URL,
+  isPermissionMatch,
+  normalizeHostPath,
+  resolveWebSearchOrigin,
+} from "./permissionMatch.js";
+import {
   RECOMMENDED_MEMORY_NAMESPACES,
   isSystemMemoryNamespace,
 } from "../gateway/memoryPolicy.js";
@@ -11,8 +17,6 @@ import { ContainerToolAdapter } from "../container-tools/adapter.js";
 import { HostToolAdapter } from "./hostAdapter.js";
 import type { ToolCallRequest, ToolCallResult } from "./types.js";
 import type { GatewaySummaryLogger } from "../logging/summaryLogger.js";
-
-const DEFAULT_OLLAMA_WEB_SEARCH_API_URL = "https://ollama.com/api/web_search";
 
 const containerFileReadSchema = z.object({
   path: z.string().min(1),
@@ -1343,45 +1347,11 @@ export class McpToolService {
     grantedValue: string,
     scopeValue: string,
   ): boolean {
-    if (operation === "web_search") {
-      if (grantedValue === scopeValue) {
-        return true;
-      }
-      if (grantedValue === "web_search:__configured_origin__") {
-        const configuredOrigin = safeParseUrlOrigin(
-          this.resolveOllamaWebSearchApiUrl(undefined),
-        );
-        return configuredOrigin !== null && configuredOrigin === scopeValue;
-      }
-      return false;
-    }
-    if (
-      operation === "discord_channel_history" &&
-      grantedValue === "discord_channel:__session_channel__"
-    ) {
-      return scopeValue.startsWith("discord_channel:");
-    }
-    if (
-      operation === "discord_channel_list" &&
-      grantedValue === "discord_guild:__session_guild__"
-    ) {
-      return scopeValue.startsWith("discord_guild:");
-    }
-    if (
-      operation === "read" ||
-      operation === "write" ||
-      operation === "delete" ||
-      operation === "list"
-    ) {
-      const grantedPath = normalizeHostPath(grantedValue);
-      const targetPath = normalizeHostPath(scopeValue);
-      if (targetPath === grantedPath) {
-        return true;
-      }
-      return targetPath.startsWith(`${grantedPath}${path.sep}`);
-    }
-
-    return grantedValue === scopeValue;
+    return isPermissionMatch(operation, grantedValue, scopeValue, {
+      webSearchOrigin: resolveWebSearchOrigin(
+        this.resolveOllamaWebSearchApiUrl(undefined),
+      ),
+    });
   }
 
   private async isApprovalIdMatch(
@@ -1538,10 +1508,6 @@ function toMcpToolError(error: unknown): McpToolError {
   return new McpToolError("tool_execution_failed", "Unexpected tool execution error.");
 }
 
-function normalizeHostPath(rawPath: string): string {
-  return path.resolve(rawPath);
-}
-
 function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random()
     .toString(36)
@@ -1641,14 +1607,6 @@ function isValidBase64(value: string): boolean {
     return true;
   }
   return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized) && normalized.length % 4 === 0;
-}
-
-function safeParseUrlOrigin(rawUrl: string): string | null {
-  try {
-    return new URL(rawUrl).origin;
-  } catch {
-    return null;
-  }
 }
 
 interface DiscordGuildChannel {

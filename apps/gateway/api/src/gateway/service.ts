@@ -31,10 +31,16 @@ import type {
   TaskStatus,
   ThreadStatusResponse,
 } from "./types.js";
+import {
+  isPermissionMatch,
+  resolveWebSearchOrigin,
+} from "../mcp/permissionMatch.js";
 
 export interface GatewayApiServiceOptions {
   sessionIdleTimeoutSec: number;
   agentRuntimeClient?: AgentRuntimeClient;
+  ollamaWebSearchApiUrl?: string;
+  discordGuildId?: string;
 }
 
 export interface MentionStartInput {
@@ -86,6 +92,7 @@ export interface ApprovalRespondInput {
   approvalId: string;
   decision: "approved" | "rejected" | "timeout";
   responderId?: string | null;
+  allowAll?: boolean;
 }
 
 export interface AgentApprovalRequestAndWaitInput {
@@ -1197,12 +1204,38 @@ export class GatewayApiService {
     }
 
     this.assertSessionOpen(session);
+    const normalizedScope = this.normalizeApprovalScopeForSession({
+      operation: input.operation,
+      path: input.path,
+      session,
+    });
+    const existingPermissions = await this.repository.listPathPermissions(
+      session.sessionId,
+      normalizedScope.operation,
+    );
+    const webSearchOrigin = resolveWebSearchOrigin(
+      this.options.ollamaWebSearchApiUrl,
+    );
+    const hasPermission = existingPermissions.some((permission) =>
+      isPermissionMatch(
+        normalizedScope.operation,
+        permission.path,
+        normalizedScope.path,
+        { webSearchOrigin },
+      ),
+    );
+    if (hasPermission) {
+      return {
+        decision: "approved",
+        approval: null,
+      };
+    }
     const pending = await this.ensureRuntimePendingApproval({
       task,
       session,
       toolName: input.toolName,
-      operation: input.operation,
-      path: input.path,
+      operation: normalizedScope.operation,
+      path: normalizedScope.path,
     });
     const decision = await this.waitForApprovalDecision(
       pending.approvalId,
@@ -1501,6 +1534,41 @@ export class GatewayApiService {
       return "failed";
     }
     return "idle_waiting";
+  }
+
+  private normalizeApprovalScopeForSession(input: {
+    operation: string;
+    path: string;
+    session: SessionRecord;
+  }): { operation: string; path: string } {
+    const operation = input.operation;
+    const path = input.path;
+    if (
+      operation === "discord_channel_history" &&
+      path === "discord_channel:__session_channel__"
+    ) {
+      return {
+        operation,
+        path: `discord_channel:${input.session.channelId}`,
+      };
+    }
+    if (
+      operation === "discord_channel_list" &&
+      path === "discord_guild:__session_guild__"
+    ) {
+      const guildId = this.options.discordGuildId?.trim();
+      if (guildId) {
+        return {
+          operation,
+          path: `discord_guild:${guildId}`,
+        };
+      }
+      return {
+        operation,
+        path: "discord_guild:known_channels",
+      };
+    }
+    return { operation, path };
   }
 
   private async ensureRuntimePendingApproval(input: {
