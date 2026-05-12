@@ -64,6 +64,7 @@ export interface SendAndWaitInput {
     task_id: string;
     session_id: string;
     call_id: string;
+    approval_id?: string;
     tool_name: string;
     execution_target: string;
     arguments: Record<string, unknown>;
@@ -1129,6 +1130,7 @@ export class CopilotCliSdkProvider implements CopilotSdkProvider {
           task_id: activeSend.input.task_id,
           session_id: activeSend.input.session_id,
           call_id: callId,
+          approval_id: permission.approval_id,
           tool_name: input.toolName,
           execution_target: executionTarget,
           arguments: input.arguments,
@@ -1575,6 +1577,7 @@ async function executeDeclaredToolCalls(
       task_id: input.task_id,
       session_id: input.session_id,
       call_id: callId,
+      approval_id: permission.approval_id,
       tool_name: toolCall.tool_name,
       execution_target: executionTarget,
       arguments: toolCall.arguments,

@@ -403,25 +403,45 @@ export class McpToolService {
       case "host.file_read": {
         const args = parseToolArgs(containerFileReadSchema, input.arguments);
         const normalizedPath = normalizeHostPath(args.path);
-        await this.assertHostScopeAllowed(input.sessionId, "read", normalizedPath);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "read",
+          normalizedPath,
+          input.approvalId,
+        );
         return this.hostAdapter.fileRead(normalizedPath);
       }
       case "host.file_write": {
         const args = parseToolArgs(containerFileWriteSchema, input.arguments);
         const normalizedPath = normalizeHostPath(args.path);
-        await this.assertHostScopeAllowed(input.sessionId, "write", normalizedPath);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "write",
+          normalizedPath,
+          input.approvalId,
+        );
         return this.hostAdapter.fileWrite(normalizedPath, args.content);
       }
       case "host.file_delete": {
         const args = parseToolArgs(containerFileDeleteSchema, input.arguments);
         const normalizedPath = normalizeHostPath(args.path);
-        await this.assertHostScopeAllowed(input.sessionId, "delete", normalizedPath);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "delete",
+          normalizedPath,
+          input.approvalId,
+        );
         return this.hostAdapter.fileDelete(normalizedPath);
       }
       case "host.file_list": {
         const args = parseToolArgs(containerFileListSchema, input.arguments);
         const normalizedPath = normalizeHostPath(args.path);
-        await this.assertHostScopeAllowed(input.sessionId, "list", normalizedPath);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "list",
+          normalizedPath,
+          input.approvalId,
+        );
         return this.hostAdapter.fileList(normalizedPath);
       }
       case "host.cli_exec": {
@@ -435,7 +455,12 @@ export class McpToolService {
             },
           );
         }
-        await this.assertHostScopeAllowed(input.sessionId, "exec", args.command);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "exec",
+          args.command,
+          input.approvalId,
+        );
         return this.hostAdapter.cliExec({
           command: args.command,
           args: args.args,
@@ -446,7 +471,12 @@ export class McpToolService {
       case "host.http_request": {
         const args = parseToolArgs(hostHttpRequestSchema, input.arguments);
         const url = new URL(args.url);
-        await this.assertHostScopeAllowed(input.sessionId, "http_request", url.origin);
+        await this.assertHostScopeAllowed(
+          input.sessionId,
+          "http_request",
+          url.origin,
+          input.approvalId,
+        );
         const response = await this.hostAdapter.httpRequest({
           url: args.url,
           method: args.method,
@@ -470,6 +500,7 @@ export class McpToolService {
           url: args.url,
           headers: args.headers,
           timeoutSec: args.timeoutSec,
+          approvalId: input.approvalId,
         });
       }
       case "web.post": {
@@ -487,6 +518,7 @@ export class McpToolService {
           headers: args.headers,
           body: bodyBuffer,
           timeoutSec: args.timeoutSec,
+          approvalId: input.approvalId,
         });
       }
       case "web.search": {
@@ -497,6 +529,7 @@ export class McpToolService {
           maxResults: args.maxResults,
           apiUrl: args.apiUrl,
           timeoutSec: args.timeoutSec,
+          approvalId: input.approvalId,
         });
       }
       case "memory.upsert": {
@@ -507,6 +540,7 @@ export class McpToolService {
             input.sessionId,
             "memory.upsert",
             args.namespace,
+            input.approvalId,
           );
         }
         const stored = await this.repository.upsertMemory({
@@ -597,6 +631,7 @@ export class McpToolService {
             input.sessionId,
             "memory.delete",
             args.namespace,
+            input.approvalId,
           );
         }
         await this.repository.deleteMemory(userId, args.namespace, args.key);
@@ -623,6 +658,7 @@ export class McpToolService {
           input.sessionId,
           "discord_channel_history",
           `discord_channel:${targetChannelId}`,
+          input.approvalId,
         );
         const channelSet = await this.listDiscordChannels();
         const matchedChannel = channelSet.channels.find(
@@ -702,6 +738,7 @@ export class McpToolService {
           this.options.discordGuildId?.trim()
             ? `discord_guild:${this.options.discordGuildId.trim()}`
             : "discord_guild:known_channels",
+          input.approvalId,
         );
         const channelSet = await this.listDiscordChannels();
         return {
@@ -738,6 +775,7 @@ export class McpToolService {
     sessionId: string,
     operation: string,
     scopeValue: string,
+    approvalId?: string,
   ): Promise<void> {
     const grantedPermissions = await this.repository.listPathPermissions(
       sessionId,
@@ -747,6 +785,12 @@ export class McpToolService {
       grantedPermissions.some((permission) =>
         this.isPermissionMatch(operation, permission.path, scopeValue),
       )
+    ) {
+      return;
+    }
+    if (
+      approvalId &&
+      (await this.isApprovalIdMatch(approvalId, sessionId, operation, scopeValue))
     ) {
       return;
     }
@@ -808,6 +852,7 @@ export class McpToolService {
     sessionId: string,
     operation: string,
     scopeValue: string,
+    approvalId?: string,
   ): Promise<void> {
     const grantedPermissions = await this.repository.listPathPermissions(
       sessionId,
@@ -817,6 +862,12 @@ export class McpToolService {
       grantedPermissions.some((permission) =>
         this.isPermissionMatch(operation, permission.path, scopeValue),
       )
+    ) {
+      return;
+    }
+    if (
+      approvalId &&
+      (await this.isApprovalIdMatch(approvalId, sessionId, operation, scopeValue))
     ) {
       return;
     }
@@ -1125,9 +1176,15 @@ export class McpToolService {
     headers?: Record<string, string>;
     body?: Buffer;
     timeoutSec?: number;
+    approvalId?: string;
   }): Promise<Record<string, unknown>> {
     const url = new URL(input.url);
-    await this.assertHostScopeAllowed(input.sessionId, "http_request", url.origin);
+    await this.assertHostScopeAllowed(
+      input.sessionId,
+      "http_request",
+      url.origin,
+      input.approvalId,
+    );
     const response = await this.hostAdapter.httpRequest({
       url: input.url,
       method: input.method,
@@ -1172,10 +1229,16 @@ export class McpToolService {
     maxResults: number;
     apiUrl?: string;
     timeoutSec?: number;
+    approvalId?: string;
   }): Promise<Record<string, unknown>> {
     const apiUrl = this.resolveOllamaWebSearchApiUrl(input.apiUrl);
     const endpoint = new URL(apiUrl);
-    await this.assertHostScopeAllowed(input.sessionId, "web_search", endpoint.origin);
+    await this.assertHostScopeAllowed(
+      input.sessionId,
+      "web_search",
+      endpoint.origin,
+      input.approvalId,
+    );
     const apiKey = this.options.ollamaApiKey?.trim();
     if (!apiKey) {
       throw new McpToolError(
@@ -1321,14 +1384,43 @@ export class McpToolService {
     return grantedValue === scopeValue;
   }
 
+  private async isApprovalIdMatch(
+    approvalId: string,
+    sessionId: string,
+    operation: string,
+    scopeValue: string,
+  ): Promise<boolean> {
+    const approval = await this.repository.findApprovalById(approvalId);
+    if (!approval) {
+      return false;
+    }
+    if (approval.sessionId !== sessionId) {
+      return false;
+    }
+    if (approval.status !== "approved") {
+      return false;
+    }
+    if (approval.operation !== operation) {
+      return false;
+    }
+    return this.isPermissionMatch(operation, approval.path, scopeValue);
+  }
+
   private async assertMemoryWriteApprovalGranted(
     sessionId: string,
     operation: "memory.upsert" | "memory.delete",
     namespace: string,
+    approvalId?: string,
   ): Promise<void> {
     const permissions = await this.repository.listPathPermissions(sessionId, operation);
     const isApproved = permissions.some((perm) => perm.path === namespace);
     if (!isApproved) {
+      if (
+        approvalId &&
+        (await this.isApprovalIdMatch(approvalId, sessionId, operation, namespace))
+      ) {
+        return;
+      }
       throw new McpToolError(
         "system_memory_write_approval_required",
         "System memory modifications require administrator approval.",

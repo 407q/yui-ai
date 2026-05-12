@@ -116,6 +116,7 @@ export interface ToolCallRequestPayload {
   task_id: string;
   session_id: string;
   call_id: string;
+  approval_id?: string;
   tool_name: string;
   execution_target: string;
   arguments: Record<string, unknown>;
@@ -179,4 +180,5 @@ export interface PermissionRequestInput {
 export interface PermissionRequestResult {
   decision: "allow" | "deny";
   reason: string;
+  approval_id?: string;
 }

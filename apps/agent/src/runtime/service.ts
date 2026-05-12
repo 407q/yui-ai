@@ -432,6 +432,7 @@ export class AgentRuntimeService {
       return {
         decision: "allow",
         reason: "approval_granted",
+        approval_id: approvalResult.approval?.approval_id ?? undefined,
       };
     }
 

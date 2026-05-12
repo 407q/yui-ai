@@ -2,6 +2,7 @@ export interface ToolCallRequest {
   taskId: string;
   sessionId: string;
   callId: string;
+  approvalId?: string;
   toolName: string;
   executionTarget: string;
   arguments: Record<string, unknown>;
